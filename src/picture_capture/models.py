@@ -73,9 +73,15 @@ class AppSettings:
     guide_color: str = "#ff0000"
     headword_marker_color: str = "#ff0000"
     illustration_outline_color: str = "#1565c0"
+    illustration_outline_width: int = 1
     illustration_fill_color: str = "#ffe66d"
     illustration_label_border_color: str = "#d81b60"
+    illustration_label_border_width: int = 1
     illustration_label_fill_color: str = "#ffffff"
+    illustration_label_font_family: str = "Microsoft YaHei"
+    illustration_label_font_size: int = 32
+    illustration_label_font_bold: bool = False
+    illustration_label_font_italic: bool = False
     show_column_guides: bool = True
     show_headword_markers: bool = True
     # Page-list optional columns can be hidden from the heading context menu.
@@ -85,7 +91,7 @@ class AppSettings:
     page_list_show_illustrations: bool = True
     darkness_threshold: int = 300
     dark_area_percent: int = 90
-    batch_interval: float = 5.0
+    batch_interval: float = 3.0
     # Page-level multiprocessing is used only for entry/illustration cropping.
     # 0 = automatic conservative worker count; 1 = serial crop processing.
     crop_parallel_workers: int = 0
