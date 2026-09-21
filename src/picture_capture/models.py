@@ -114,6 +114,7 @@ class AppSettings:
     crop_to_bottom_y: bool = False
     hide_overlays: bool = False
     polygon_mode: bool = False
+    show_illustration_labels: bool = False
     ocr_executable: str = "tesseract"
     image_suffix: str = ".png"
     # Overlay editor presentation at 100% page scale. The page zoom multiplies

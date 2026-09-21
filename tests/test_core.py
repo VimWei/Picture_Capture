@@ -3944,6 +3944,7 @@ def test_auxiliary_overlay_defaults_and_label_style_controls():
     assert settings.main_entry_x_ratio == 0.66
     assert settings.main_entry_font_size == 32
     assert settings.illustration_label_font_size == 32
+    assert settings.show_illustration_labels is False
     assert settings.batch_interval == 3.0
     app_text = (Path(__file__).parents[1] / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
     for token in (
@@ -3952,6 +3953,9 @@ def test_auxiliary_overlay_defaults_and_label_style_controls():
         '"illustration_label_font_bold"', '"illustration_label_font_italic"',
     ):
         assert token in app_text
+    assert 'self.quick_bool_vars["show_illustration_labels"]' in app_text
+    assert 'show_shapes = bool(self.polygon_var.get() or self.polygon_draw_var.get())' in app_text
+    assert 'show_labels = bool(self.settings.show_illustration_labels or self.polygon_draw_var.get())' in app_text
 
 
 def test_v21112_picdic_index_has_no_percent_signs(tmp_path):
