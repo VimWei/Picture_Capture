@@ -5616,8 +5616,7 @@ class PictureCaptureApp(tk.Tk):
         ttk.Entry(marker_row, textvariable=marker_value, width=5).pack(side="left", padx=(2, 10))
         label_visible_var = tk.BooleanVar(value=bool(self.settings.show_illustration_labels))
         self.quick_bool_vars["show_illustration_labels"] = label_visible_var
-        ttk.Checkbutton(marker_row, variable=label_visible_var).pack(side="left", padx=(0, 2))
-        ttk.Label(marker_row, text="插图标签：外框").pack(side="left")
+        ttk.Checkbutton(marker_row, text="插图标签：外框", variable=label_visible_var).pack(side="left")
         color_button(marker_row, "illustration_label_border_color")
         ttk.Label(marker_row, text="粗细").pack(side="left")
         label_width_var = tk.StringVar(value=str(self.settings.illustration_label_border_width)); self.quick_vars["illustration_label_border_width"] = label_width_var; self.quick_field_casts["illustration_label_border_width"] = int
