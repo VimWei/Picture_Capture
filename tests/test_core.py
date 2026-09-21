@@ -11,7 +11,7 @@ from picture_capture.formats import read_pdic, read_ppp, write_pdic, write_ppp, 
 from picture_capture.app import (
     PictureCaptureApp, _candidate_choice_rows, _parse_words_of_pages_text, _fill_page_entries,
     _build_words_page_lookup, _resolve_words_page_token, _parse_merged_pdic_text, _write_pdic_atomic,
-    _natural_text_key, _sorted_page_list_rows,
+    _natural_text_key, _sorted_page_list_rows, project_language_from_ocr,
 )
 from picture_capture.models import AppSettings, Entry, PolygonRegion
 from picture_capture.processing import Geometry, ColumnPath, sort_entries_reading_order, sort_entries_column_y
@@ -381,6 +381,7 @@ class ProcessingTests(unittest.TestCase):
             gutter=50,
             start_y=25,
             character_height=20,
+            row_padding=3,
             follow_column_deformation=False,
         )
         geometry = derive_geometry(image, settings)
@@ -2776,7 +2777,7 @@ def test_v296_existing_word_fill_runs_txt_parse_and_page_commits_in_background_b
     # inside the batch worker call path rather than on Tk's event thread.
     ensure_pos = block.index("        def ensure_mapping(")
     worker_pos = block.index("        def worker(")
-    assert block.index("txt_path.read_text", ensure_pos) < worker_pos
+    assert block.index("read_text_detected(txt_path)", ensure_pos) < worker_pos
     assert block.index("mapping, present_pages = ensure_mapping()", worker_pos) > worker_pos
     assert "self._start_batch_task(" in block
     assert '"填充既有词条"' in block
@@ -3832,6 +3833,90 @@ def test_v21111_picdic_index_export_is_background_streaming_and_exact_format():
     assert 'derive_geometry' not in body
     assert 'PicDic_index_{stamp}.txt' in body
     assert 'WORD<TAB>xx.xx<TAB>yy.yy<TAB>page' in body
+
+
+def test_project_details_language_follows_ocr_language():
+    assert project_language_from_ocr("eng") == "en"
+    assert project_language_from_ocr("spa+chi_sim") == "es"
+    assert project_language_from_ocr("chi_tra") == "zh"
+    assert project_language_from_ocr("pt") == "pt"
+    assert project_language_from_ocr("unknown") == ""
+
+
+def test_imported_text_encoding_detection_supports_unicode_and_legacy_chinese(tmp_path):
+    from picture_capture.text_encoding import read_text_detected
+
+    samples = {
+        "utf8.txt": ("词条 café", "utf-8"),
+        "utf16.txt": ("繁體詞條", "utf-16"),
+        "gb.txt": ("简体词条", "gb18030"),
+        "big5.txt": ("繁體詞條", "big5"),
+    }
+    for name, (value, encoding) in samples.items():
+        path = tmp_path / name
+        path.write_bytes(value.encode(encoding))
+        decoded, detected = read_text_detected(path)
+        assert decoded == value
+        assert detected.startswith(encoding.split("-")[0]) or detected == encoding
+
+
+def test_right_ratio_migrates_from_divisor_to_percent(tmp_path):
+    import json
+
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"right_ratio": 2}), encoding="utf-8")
+    restored = AppSettings.from_json(path)
+    assert restored.right_ratio == 50
+    assert restored.right_ratio_percent_version == 1
+
+
+def test_page_lined_metadata_is_total_count(tmp_path):
+    page = tmp_path / "0001.png"
+    Image.new("RGB", (20, 20), "white").save(page)
+    write_pdic(
+        page.with_suffix(".pdic"), [Entry("a", 1, 2), Entry("b", 1, 4)],
+        image_width=20, pages=("0001", "@", "@"),
+    )
+    app = object.__new__(PictureCaptureApp)
+    app.project = type("Project", (), {"images": [page]})()
+    app.current_index = -1
+    app.current_page = None
+    assert PictureCaptureApp._page_metadata(app, 0) == "2"
+
+
+def test_project_details_are_persisted_in_project_settings(tmp_path):
+    path = tmp_path / "settings.json"
+    AppSettings(
+        dictionary_full_name="示例词典",
+        dictionary_abbreviation="示例",
+        dictionary_isbn="978-0-00-000000-0",
+        dictionary_index_language="es",
+        dictionary_content_language="zh",
+        columns=3,
+        dictionary_body_page_range="1-1250",
+    ).to_json(path)
+    restored = AppSettings.from_json(path)
+    assert restored.dictionary_full_name == "示例词典"
+    assert restored.dictionary_abbreviation == "示例"
+    assert restored.dictionary_isbn == "978-0-00-000000-0"
+    assert restored.dictionary_index_language == "es"
+    assert restored.dictionary_content_language == "zh"
+    assert restored.columns == 3
+    assert restored.dictionary_body_page_range == "1-1250"
+
+
+def test_sidebar_has_collapsed_postproduction_section_and_project_details():
+    app_text = (Path(__file__).parents[1] / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
+    assert '"postproduction": False' in app_text
+    assert 'parent, "五、后期词典制作", padding=5, section_key="postproduction"' in app_text
+    assert 'self._section_frame(parent, "四、画线与校对"' in app_text
+    assert 'self._section_frame(sidebar, "六、页面列表"' in app_text
+    first_row = '(("切图设置", self.open_crop_settings), ("词条切图", self.split_entries_selected_scope), ("插图切图", self.split_illustrations_selected_scope))'
+    second_row = '(("项目详情", self.open_project_details), ("导出PicDic索引", self.export_picdic_index), ("PicDic制作", self.build_picdic))'
+    assert first_row in app_text
+    assert second_row in app_text
+    assert 'notebook.add(project_tab, text="词典项目详情")' in app_text
+    assert 'self.open_settings(initial_tab="project")' in app_text
 
 
 def test_v21112_picdic_index_has_no_percent_signs(tmp_path):

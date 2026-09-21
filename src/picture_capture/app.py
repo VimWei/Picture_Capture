@@ -4,6 +4,7 @@ from pathlib import Path
 from dataclasses import replace
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import bisect
+import csv
 import difflib
 import os
 import queue
@@ -15,6 +16,7 @@ from importlib import metadata as importlib_metadata
 import json
 import multiprocessing
 import re
+import statistics
 import traceback
 import unicodedata
 import webbrowser
@@ -34,7 +36,7 @@ from .paddle_headwords import (
     parse_headword_filter_rules,
 )
 from .ocr_engines import lens_status, tesseract_status
-from .layout_detection import detect_layout_parameters
+from .layout_detection import detect_layout_consistency, detect_layout_parameters
 from .collation import (
     LATIN_ORDER, available_profile_labels, collation_key, display_key,
     parse_custom_order, profile_label,
@@ -59,6 +61,7 @@ from .simplified_review import entry_key as simplified_entry_key, read_records a
 from .training_export import (
     copy_project_context, export_training_page, make_training_zip, write_training_manifest,
 )
+from .text_encoding import read_text_detected
 from .project_storage import (
     STORAGE_DIRNAME, ensure_project_storage, exports_root, has_legacy_project_data,
     headword_filter_rules_path, is_managed_project, migrate_legacy_project,
@@ -110,6 +113,31 @@ LENS_MODE_LABELS = {
 LENS_MODE_VALUES = {label: value for value, label in LENS_MODE_LABELS.items()}
 SESSION_STATE_FILENAME = "session_state.json"
 
+# ISO 639-1 codes for project metadata. Common dictionary languages are kept at
+# the front of the readonly selectors; the rest remain alphabetized.
+PROJECT_LANGUAGE_CODES = (
+    "en", "zh", "es", "fr", "de", "it", "pt", "ja", "ko", "ru",
+    "ar", "nl", "pl", "tr", "vi",
+    "af", "am", "az", "be", "bg", "bn", "bs", "ca", "cs", "cy",
+    "da", "el", "eo", "et", "eu", "fa", "fi", "ga", "gl", "gu",
+    "he", "hi", "hr", "hu", "hy", "id", "is", "ka", "kk", "km",
+    "kn", "la", "lt", "lv", "mk", "ml", "mn", "mr", "ms", "mt",
+    "ne", "no", "pa", "ro", "sk", "sl", "sq", "sr", "sv", "sw",
+    "ta", "te", "th", "tl", "uk", "ur", "uz",
+)
+
+OCR_TO_PROJECT_LANGUAGE = {
+    "eng": "en", "spa": "es", "fra": "fr", "fre": "fr", "deu": "de", "ger": "de",
+    "ita": "it", "por": "pt", "chi_sim": "zh", "chi_tra": "zh", "ch": "zh",
+    "jpn": "ja", "japan": "ja", "kor": "ko", "korean": "ko", "rus": "ru",
+}
+
+
+def project_language_from_ocr(ocr_language: str) -> str:
+    """Map the first configured OCR language to an ISO 639-1 code."""
+    first = next((part.strip().lower() for part in str(ocr_language or "").split("+") if part.strip()), "")
+    return OCR_TO_PROJECT_LANGUAGE.get(first, first if len(first) == 2 and first.isalpha() else "")
+
 OCR_SCOPE_LABELS = {"current": "当前页", "all": "全部页面"}
 OCR_SCOPE_VALUES = {label: value for value, label in OCR_SCOPE_LABELS.items()}
 OCR_REFRESH_LABELS = {
@@ -118,7 +146,7 @@ OCR_REFRESH_LABELS = {
 }
 OCR_REFRESH_VALUES = {label: value for value, label in OCR_REFRESH_LABELS.items()}
 OCR_USAGE_HELP = (
-    "主界面分为普通版面参数、OCR画线、辅助显示、功能按钮和页面列表五部分。\n\n"
+    "主界面分为普通版面参数、OCR画线、辅助显示、画线与校对、后期词典制作和页面列表六部分。\n\n"
     "检测版面：仅调用 PaddleOCR 文本检测，依据整页文本框自动估计分栏数、页眉Y、单栏宽和栏间空，不做文字识别。\n"
     "OCR画线：默认 PaddleOCR + Tesseract；可选 Google Lens。候选带宽比例 100 表示使用原候选带宽。\n"
     "页面范围：当前页、当前页至末页，或用 12~18,23,31 形式指定。画线和切图均使用这里的范围。\n\n"
@@ -639,11 +667,17 @@ def _compare_page_word_mappings(
 
 class SettingsDialog(tk.Toplevel):
     FIELDS = [
+        ("词典完整名称", "dictionary_full_name", str),
+        ("词典缩写名称", "dictionary_abbreviation", str),
+        ("ISBN", "dictionary_isbn", str),
+        ("索引语言", "dictionary_index_language", str),
+        ("内容语言", "dictionary_content_language", str),
+        ("正文页码范围", "dictionary_body_page_range", str),
         ("词典分栏", "columns", int), ("两栏中隔", "gutter", int),
         ("单栏宽距", "column_width", int), ("起始点 Y", "start_y", int),
-        ("手动 X", "manual_x", int),
+        ("首栏 X", "manual_x", int),
         ("正文缩进", "body_indent", int), ("单行字高", "character_height", int),
-        ("行间空白", "row_padding", int), ("向右比例 1/", "right_ratio", float),
+        ("行间空白", "row_padding", int), ("向右比例 %", "right_ratio", float),
         ("微调判距", "horizontal_tolerance", int), ("标记线高", "marker_height", int),
         ("垂直线宽", "guide_width", int), ("黑色阈值 RGB 和", "darkness_threshold", int),
         ("自动保存间隔（秒）", "batch_interval", float),
@@ -799,14 +833,18 @@ class SettingsDialog(tk.Toplevel):
         notebook = ttk.Notebook(outer)
         notebook.pack(fill="both", expand=True)
         profile_tab = ttk.Frame(notebook)
+        project_tab = ttk.Frame(notebook)
         params_tab = ttk.Frame(notebook)
         sort_tab = ttk.Frame(notebook)
         rules_tab = ttk.Frame(notebook)
         notebook.add(profile_tab, text="Profile")
+        notebook.add(project_tab, text="词典项目详情")
         notebook.add(params_tab, text="参数分区")
         notebook.add(sort_tab, text="词头排序")
         notebook.add(rules_tab, text="词头过滤规则")
-        if initial_tab == "sort":
+        if initial_tab == "project":
+            notebook.select(project_tab)
+        elif initial_tab == "sort":
             notebook.select(sort_tab)
         elif initial_tab == "rules":
             notebook.select(rules_tab)
@@ -816,6 +854,7 @@ class SettingsDialog(tk.Toplevel):
             notebook.select(profile_tab)
 
         self._build_profile_tab(profile_tab)
+        self._build_project_details_tab(project_tab)
 
         body = ttk.Frame(params_tab)
         body.pack(fill="both", expand=True)
@@ -1021,6 +1060,82 @@ class SettingsDialog(tk.Toplevel):
                 pass
         self.update_idletasks(); _sync_scrollregion()
         self.transient(parent); self.grab_set()
+
+    def _build_project_details_tab(self, tab: ttk.Frame) -> None:
+        """Build project metadata fields without mixing them into OCR controls."""
+        tab.columnconfigure(0, weight=1)
+        form = ttk.LabelFrame(tab, text="词典项目详情", padding=(16, 12))
+        form.grid(row=0, column=0, sticky="new", padx=14, pady=14)
+        form.columnconfigure(1, weight=1)
+
+        fields = (
+            ("词典完整名称：", "dictionary_full_name"),
+            ("词典缩写名称：", "dictionary_abbreviation"),
+            ("ISBN：", "dictionary_isbn"),
+        )
+        for row, (label, name) in enumerate(fields):
+            ttk.Label(form, text=label).grid(row=row, column=0, sticky="e", padx=(0, 8), pady=5)
+            var = tk.StringVar(value=str(getattr(self.parent.settings, name)))
+            self.vars[name] = var
+            ttk.Entry(form, textvariable=var, width=42).grid(row=row, column=1, sticky="ew", pady=5)
+
+        ocr_language = str(self.vars.get("ocr_language").get() if self.vars.get("ocr_language") else "")
+        configured_index_language = str(self.parent.settings.dictionary_index_language).strip().lower()
+        suggested_index_language = project_language_from_ocr(ocr_language)
+        self._project_index_language_auto = not configured_index_language
+        index_var = tk.StringVar(value=configured_index_language or suggested_index_language)
+        content_var = tk.StringVar(value=str(self.parent.settings.dictionary_content_language).strip().lower())
+        self.vars["dictionary_index_language"] = index_var
+        self.vars["dictionary_content_language"] = content_var
+
+        ttk.Label(form, text="索引语言：").grid(row=3, column=0, sticky="e", padx=(0, 8), pady=5)
+        index_combo = ttk.Combobox(
+            form, textvariable=index_var, values=PROJECT_LANGUAGE_CODES, state="readonly", width=12,
+        )
+        index_combo.grid(row=3, column=1, sticky="w", pady=5)
+        index_combo.bind("<<ComboboxSelected>>", lambda _event: setattr(self, "_project_index_language_auto", False))
+        ttk.Label(form, text="2 位语言代号；首次按 OCR 语言自动选择", foreground="#666666").grid(
+            row=3, column=1, sticky="w", padx=(120, 0), pady=5
+        )
+
+        ttk.Label(form, text="内容语言：").grid(row=4, column=0, sticky="e", padx=(0, 8), pady=5)
+        ttk.Combobox(
+            form, textvariable=content_var, values=PROJECT_LANGUAGE_CODES, state="readonly", width=12,
+        ).grid(row=4, column=1, sticky="w", pady=5)
+        ttk.Label(form, text="2 位语言代号", foreground="#666666").grid(
+            row=4, column=1, sticky="w", padx=(120, 0), pady=5
+        )
+
+        if "columns" not in self.vars:
+            self.vars["columns"] = tk.StringVar(value=str(self.parent.settings.columns))
+        ttk.Label(form, text="词典版面栏数：").grid(row=5, column=0, sticky="e", padx=(0, 8), pady=5)
+        ttk.Spinbox(form, textvariable=self.vars["columns"], from_=1, to=12, width=10).grid(
+            row=5, column=1, sticky="w", pady=5
+        )
+
+        page_range_var = tk.StringVar(value=str(self.parent.settings.dictionary_body_page_range))
+        self.vars["dictionary_body_page_range"] = page_range_var
+        ttk.Label(form, text="正文页码范围：").grid(row=6, column=0, sticky="e", padx=(0, 8), pady=5)
+        ttk.Entry(form, textvariable=page_range_var, width=24).grid(row=6, column=1, sticky="w", pady=5)
+        ttk.Label(form, text="例如：1-1250", foreground="#666666").grid(
+            row=6, column=1, sticky="w", padx=(205, 0), pady=5
+        )
+
+        ocr_var = self.vars.get("ocr_language")
+        if ocr_var is not None:
+            def sync_index_language(*_args) -> None:
+                if self._project_index_language_auto:
+                    mapped = project_language_from_ocr(str(ocr_var.get()))
+                    if mapped in PROJECT_LANGUAGE_CODES:
+                        index_var.set(mapped)
+
+            ocr_var.trace_add("write", sync_index_language)
+
+        ttk.Label(
+            tab,
+            text="这些资料随当前项目保存在 _PictureCapture/settings.json 中。",
+            foreground="#666666",
+        ).grid(row=1, column=0, sticky="w", padx=18)
 
     def _build_profile_tab(self, tab: ttk.Frame) -> None:
         tab.columnconfigure(0, weight=1)
@@ -1283,7 +1398,7 @@ class SettingsDialog(tk.Toplevel):
     def load_rules_editor(self) -> None:
         path = self._rules_path()
         if path and path.exists():
-            text = path.read_text(encoding="utf-8-sig")
+            text, _encoding = read_text_detected(path)
             self.rules_status_var.set(path.name)
         else:
             text = DEFAULT_HEADWORD_FILTER_RULES
@@ -1301,7 +1416,7 @@ class SettingsDialog(tk.Toplevel):
         if not path:
             return
         try:
-            text = Path(path).read_text(encoding="utf-8-sig"); parse_headword_filter_rules(text, path)
+            text, _encoding = read_text_detected(path); parse_headword_filter_rules(text, path)
         except Exception as exc:
             messagebox.showerror("规则无效", str(exc), parent=self); return
         self.rules_text.delete("1.0", "end"); self.rules_text.insert("1.0", text)
@@ -1369,6 +1484,8 @@ class SettingsDialog(tk.Toplevel):
                 raise ValueError("候选带宽比例必须在 1–100 之间；100 即原候选带宽。")
             if not 10 <= int(self.parent.settings.paddle_separator_roi_width_ratio) <= 100:
                 raise ValueError("Y精修横向分析范围必须在 10–100% 之间。")
+            if not 1 <= float(self.parent.settings.right_ratio) <= 100:
+                raise ValueError("向右比例必须在 1–100% 之间。")
             if self.parent.settings.headword_sort_mode == "custom":
                 parse_custom_order(self.parent.settings.headword_custom_order)
             self.parent.settings.dictionary_profile_id = self._current_profile_key()
@@ -4581,6 +4698,7 @@ class PictureCaptureApp(tk.Tk):
             "ocr": True,
             "aux": True,
             "actions": True,
+            "postproduction": False,
             "pages": True,
         }
         stored_sections = self._last_session.get("section_expanded", {})
@@ -4812,7 +4930,7 @@ class PictureCaptureApp(tk.Tk):
         controls.grid(row=0, column=0, sticky="ew")
         self._build_quick_settings(controls)
 
-        page_panel = self._section_frame(sidebar, "五、页面列表", padding=6, section_key="pages")
+        page_panel = self._section_frame(sidebar, "六、页面列表", padding=6, section_key="pages")
         self.page_panel = page_panel
         page_panel.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
         page_panel.columnconfigure(0, weight=1)
@@ -5396,14 +5514,17 @@ class PictureCaptureApp(tk.Tk):
         normal.pack(fill="x")
         add_field(normal, 0, 0, "分栏数：", "columns", int)
         add_field(normal, 0, 2, "页眉Y：", "start_y", int)
-        add_field(normal, 0, 4, "单栏宽：", "column_width", int)
-        add_field(normal, 1, 0, "栏间空：", "gutter", int)
-        add_field(normal, 1, 2, "单行高：", "character_height", int)
-        add_field(normal, 1, 4, "行间空：", "row_padding", int)
-        row = ttk.Frame(normal); row.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(4, 0))
+        add_field(normal, 0, 4, "页尾Y：", "bottom_y", int)
+        add_field(normal, 0, 6, "首栏X：", "manual_x", int)
+        add_field(normal, 1, 0, "单栏宽：", "column_width", int)
+        add_field(normal, 1, 2, "栏间空：", "gutter", int)
+        add_field(normal, 1, 4, "单行高：", "character_height", int)
+        add_field(normal, 1, 6, "行间空：", "row_padding", int)
+        row = ttk.Frame(normal); row.grid(row=2, column=0, columnspan=8, sticky="ew", pady=(4, 0))
         ttk.Button(row, text="检测引擎", command=self.check_ocr_engines).pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="检测版面", command=self.detect_layout_current).pack(side="left", fill="x", expand=True, padx=(5, 0))
-        for col in (1, 3, 5): normal.columnconfigure(col, weight=1)
+        ttk.Button(row, text="检测版面参数", command=self.detect_layout_current).pack(side="left", fill="x", expand=True, padx=(5, 0))
+        ttk.Button(row, text="检测版面一致性", command=self.detect_layout_consistency_selected).pack(side="left", fill="x", expand=True, padx=(5, 0))
+        for col in (1, 3, 5, 7): normal.columnconfigure(col, weight=1)
 
         ocr = self._section_frame(parent, "二、基于OCR画线（默认模式）", padding=5, section_key="ocr")
         ocr.pack(fill="x", pady=(4, 0))
@@ -5480,19 +5601,19 @@ class PictureCaptureApp(tk.Tk):
         ttk.Checkbutton(aux, text="显示插图多边形", variable=self.polygon_var, command=self.redraw).grid(row=2, column=2, columnspan=2, sticky="w")
         ttk.Checkbutton(aux, text="切图预览（主图）", variable=self.crop_preview_var, command=self._toggle_crop_preview).grid(row=3, column=0, columnspan=2, sticky="w")
         ttk.Checkbutton(aux, text="隐藏线框（插图除外）", variable=self.hide_var, command=self.redraw).grid(row=3, column=2, columnspan=2, sticky="w")
-        add_field(aux, 4, 0, "间隔时间：", "batch_interval", float, 6)
-        ttk.Checkbutton(aux, text="自动保存", variable=self.autosave_var, command=self.toggle_autosave).grid(row=4, column=2, columnspan=2, sticky="w")
+        add_field(aux, 4, 0, "向右比例%：", "right_ratio", float, 6)
+        add_field(aux, 4, 2, "间隔时间：", "batch_interval", float, 6)
+        ttk.Checkbutton(aux, text="自动保存", variable=self.autosave_var, command=self.toggle_autosave).grid(row=5, column=2, columnspan=2, sticky="w")
         aux.columnconfigure(1, weight=1); aux.columnconfigure(3, weight=1)
 
-        actions = self._section_frame(parent, "四、功能按钮", padding=5, section_key="actions")
+        actions = self._section_frame(parent, "四、画线与校对", padding=5, section_key="actions")
         actions.pack(fill="x", pady=(4, 0))
         rows = [
             (("更多参数", self.open_settings), ("保存参数", self.save_main_parameters), ("使用提示", self.show_help_dialog)),
             (("运行普通画线", self.run_normal_draw_action), ("运行OCR画线", self.run_ocr_draw_action)),
             (("清除画线", self.clear_entries), ("清除文本", self.clear_text), ("词条校对", self.open_review), ("新旧比较", self.compare_old_new_selected_scope)),
             (("选择词条文件", self.select_existing_headwords_file), ("填充既有词条", self.fill_existing_headwords), ("修复PDIC排序", self.repair_pdic_order_selected_scope), ("备份PDIC", self.backup_pdic), ("从PDIC备份恢复", self.restore_from_pdic_backup)),
-            (("切图设置", self.open_crop_settings), ("词条切图", self.split_entries_selected_scope), ("插图识别", self.detect_illustrations_selected_scope), ("编辑插图", self.toggle_polygon_drawing), ("插图切图", self.split_illustrations_selected_scope)),
-            (("PicDic制作", self.build_picdic), ("导出PicDic索引", self.export_picdic_index), ("导出训练标记包", self.export_training_package), ("保存当前页", self.save_current_page)),
+            (("插图识别", self.detect_illustrations_selected_scope), ("编辑插图", self.toggle_polygon_drawing), ("导出训练标记包", self.export_training_package), ("保存当前页", self.save_current_page)),
         ]
         for ri, specs in enumerate(rows):
             row = ttk.Frame(actions); row.grid(row=ri, column=0, sticky="ew", pady=(0 if ri == 0 else 3, 0))
@@ -5508,6 +5629,23 @@ class PictureCaptureApp(tk.Tk):
                     button = ttk.Button(row, text=text, command=command)
                 button.pack(side="left", fill="x", expand=True, padx=padx)
         actions.columnconfigure(0, weight=1)
+
+        postproduction = self._section_frame(
+            parent, "五、后期词典制作", padding=5, section_key="postproduction"
+        )
+        postproduction.pack(fill="x", pady=(4, 0))
+        production_rows = [
+            (("切图设置", self.open_crop_settings), ("词条切图", self.split_entries_selected_scope), ("插图切图", self.split_illustrations_selected_scope)),
+            (("项目详情", self.open_project_details), ("导出PicDic索引", self.export_picdic_index), ("PicDic制作", self.build_picdic)),
+        ]
+        for ri, specs in enumerate(production_rows):
+            row = ttk.Frame(postproduction)
+            row.grid(row=ri, column=0, sticky="ew", pady=(0 if ri == 0 else 3, 0))
+            for bi, (text, command) in enumerate(specs):
+                ttk.Button(row, text=text, command=command).pack(
+                    side="left", fill="x", expand=True, padx=(0 if bi == 0 else 4, 0)
+                )
+        postproduction.columnconfigure(0, weight=1)
 
         # Main-panel parameters are live: after a short debounce, valid values
         # are applied and persisted without requiring a separate Apply step.
@@ -5587,6 +5725,8 @@ class PictureCaptureApp(tk.Tk):
                     raise ValueError("Y精修安全空间必须在 0–50 px 之间。")
                 if name == "paddle_separator_roi_width_ratio" and not 10 <= int(value) <= 100:
                     raise ValueError("Y精修横向分析范围必须在 10–100% 之间。")
+                if name == "right_ratio" and not 1 <= float(value) <= 100:
+                    raise ValueError("向右比例必须在 1–100% 之间。")
                 setattr(self.settings, name, value)
             for name, var in self.quick_bool_vars.items(): setattr(self.settings, name, bool(var.get()))
             for name, var in getattr(self, "quick_color_vars", {}).items():
@@ -5921,25 +6061,79 @@ class PictureCaptureApp(tk.Tk):
         )
 
     def detect_layout_current(self) -> None:
-        if not self.guard(): return
-        if not self.apply_quick_settings(show_status=False): return
+        if not self.guard() or not self.apply_quick_settings(show_status=False): return
         try:
-            self.status_var.set("PaddleOCR 正在进行整页文本框检测（不做文字识别）…")
-            self.update_idletasks()
-            estimate = detect_layout_parameters(self.image, self.settings)
-            self.settings.columns = estimate.columns
-            self.settings.start_y = estimate.start_y
-            self.settings.column_width = estimate.column_width
-            self.settings.gutter = estimate.gutter
-            self.settings.manual_x = estimate.manual_x
-            self.sync_quick_settings(); self.redraw()
-            method_text = "PaddleOCR文本框" if estimate.method == "paddle" else "图像版面回退"
-            self.status_var.set(
-                f"版面检测完成[{method_text}]：{estimate.columns} 栏，页眉Y={estimate.start_y}，"
-                f"栏宽={estimate.column_width}，栏间空={estimate.gutter}（{estimate.source_boxes} 个检测区域）"
-            )
+            indices = self.selected_page_indices()
         except Exception as exc:
-            self.show_error("版面检测失败", exc)
+            self.show_error("页面范围无效", exc); return
+        names = [self.project.images[i].name for i in indices]
+        if not messagebox.askyesno(
+            "选择检测页面范围",
+            f"将按页面列表上方当前选择的范围检测 {len(indices)} 页。\n"
+            f"范围：{names[0]}" + (f" ～ {names[-1]}" if len(names) > 1 else "") +
+            "\n\n多页结果将取均值并自动填充全部普通版面参数。是否继续？",
+            parent=self,
+        ):
+            return
+        settings = replace(self.settings)
+        pages = list(self.project.images)
+
+        def worker(index: int, _position: int, _total: int):
+            with Image.open(pages[index]) as opened:
+                return detect_layout_parameters(opened, settings)
+
+        def done(_completed, _total, stopped, results, error) -> None:
+            if error or not results:
+                return
+            fields = ("columns", "start_y", "bottom_y", "manual_x", "column_width", "gutter", "character_height", "row_padding")
+            for name in fields:
+                setattr(self.settings, name, round(statistics.fmean(float(getattr(item, name)) for item in results)))
+            self.settings.row_padding = max(1, self.settings.row_padding)
+            self.sync_quick_settings(); self.save_settings(); self.redraw()
+            suffix = "（任务提前停止，按已完成页面计算）" if stopped else ""
+            self.status_var.set(f"版面参数检测完成：已取 {len(results)} 页均值并自动填充{suffix}")
+
+        self._start_batch_task("检测版面参数", indices, worker, done, item_label=lambda i: pages[i].name)
+
+    def detect_layout_consistency_selected(self) -> None:
+        if not self.guard() or not self.apply_quick_settings(show_status=False): return
+        try:
+            indices = self.selected_page_indices()
+        except Exception as exc:
+            self.show_error("页面范围无效", exc); return
+        if not messagebox.askyesno(
+            "检测版面一致性",
+            f"将快速扫描当前所选 {len(indices)} 页，检测页眉横线 Y 和正文最左文本框 X。\n\n"
+            "此任务使用灰度投影而非 PaddleVL/OCR，以便高效处理数千页。是否继续？",
+            parent=self,
+        ):
+            return
+        pages = list(self.project.images); settings = replace(self.settings)
+
+        def worker(index: int, _position: int, _total: int):
+            with Image.open(pages[index]) as opened:
+                estimate = detect_layout_consistency(opened, settings)
+            return pages[index].name, estimate.header_rule_y, estimate.body_left_x
+
+        def done(_completed, _total, stopped, results, error) -> None:
+            if error or not results: return
+            target = exports_root(self.project.root) / f"layout_consistency_{datetime.now():%Y%m%d_%H%M%S}.csv"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle); writer.writerow(("page", "header_rule_y", "body_left_x")); writer.writerows(results)
+            header_values = [row[1] for row in results if row[1] is not None]
+            left_values = [row[2] for row in results if row[2] is not None]
+            def summary(values) -> str:
+                return "无有效值" if not values else f"均值 {statistics.fmean(values):.1f}，范围 {min(values)}–{max(values)}，标准差 {statistics.pstdev(values):.1f}"
+            messagebox.showinfo(
+                "版面一致性统计",
+                f"完成 {len(results)} 页{'（提前停止）' if stopped else ''}\n"
+                f"页眉横线 Y：{summary(header_values)}\n正文起始 X：{summary(left_values)}\n\n结果：{target}",
+                parent=self,
+            )
+            self.status_var.set(f"版面一致性检测完成：{target.name}")
+
+        self._start_batch_task("检测版面一致性", indices, worker, done, item_label=lambda i: pages[i].name)
 
     @staticmethod
     def _normalize_suffix(value: str) -> str:
@@ -6718,6 +6912,8 @@ class PictureCaptureApp(tk.Tk):
         # silently reinterpreted whenever the user changes page zoom.
         if reset_zoom or self.settings.parameter_display_width <= 0:
             self.settings.parameter_display_width = round(self.image.width * self.view_scale)
+        if self.settings.bottom_y <= 0:
+            self.settings.bottom_y = round(self.image.height * parameter_scale(self.image, self.settings))
         self.cursor_canvas_xy = None
         self.sync_quick_settings()
         self._update_view_zoom_label()
@@ -8221,14 +8417,13 @@ class PictureCaptureApp(tk.Tk):
     def _page_metadata(self, index: int) -> str:
         if not self.project or not (0 <= index < len(self.project.images)):
             return ""
-        state = self._foreground_batch_state(index)
-        if state == "pending": return "待处理"
-        if state == "processing": return "处理中…"
-        if state == "done": return "✓ 已完成"
-        if state == "manual_locked": return "✎ 人工锁定"
         page = self.project.images[index]
-        marker_path = pdic_path(page)
-        return "✓" if marker_path.exists() and marker_path.stat().st_size > 0 else ""
+        if index == self.current_index and self.current_page is not None:
+            return str(len(self.entries))
+        try:
+            return str(len(read_pdic(pdic_path(page))))
+        except (OSError, ValueError):
+            return "0"
 
     def _page_illustration_count_text(self, index: int) -> str:
         """Return the effective PPP region count for one page, blank for zero.
@@ -8683,12 +8878,15 @@ class PictureCaptureApp(tk.Tk):
                 self.status_var.set("已自动保存")
             self.toggle_autosave()
 
-    def open_settings(self) -> None:
+    def open_settings(self, initial_tab: str | None = None) -> None:
         # Pull unsaved quick-panel values (notably OCR language) into the settings
         # object first so language-dependent options are immediately correct.
         if not self.apply_quick_settings(show_status=False, persist=False):
             return
-        SettingsDialog(self)
+        SettingsDialog(self, initial_tab=initial_tab)
+
+    def open_project_details(self) -> None:
+        self.open_settings(initial_tab="project")
 
     def ocr_current(self) -> None:
         if self._batch_active:
@@ -9482,7 +9680,7 @@ class PictureCaptureApp(tk.Tk):
                 mapping = parsed_holder.get("mapping")
                 stats = parsed_holder.get("stats")
                 if not isinstance(mapping, dict) or not isinstance(stats, dict):
-                    text_data = source.read_text(encoding="utf-8-sig")
+                    text_data, _encoding = read_text_detected(source)
                     mapping, stats = _parse_merged_pdic_text(text_data, page_stems)
                     parsed_holder["mapping"] = mapping
                     parsed_holder["stats"] = stats
@@ -9684,7 +9882,7 @@ class PictureCaptureApp(tk.Tk):
             mapping = mapping_holder["value"]
             present = mapping_holder["present"]
             if mapping is None or present is None:
-                text_data = txt_path.read_text(encoding="utf-8-sig")
+                text_data, _detected_encoding = read_text_detected(txt_path)
                 present = set()
                 mapping = _parse_words_of_pages_text(text_data, page_stems, present_pages=present)
                 mapping_holder["value"] = mapping
@@ -9790,7 +9988,8 @@ class PictureCaptureApp(tk.Tk):
             if not path_text: return False
             path = Path(path_text)
         try:
-            lines = [line for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+            text_data, _encoding = read_text_detected(path)
+            lines = [line for line in text_data.splitlines() if line.strip()]
             rich = [line for line in lines if line.count("#") >= 7]
             if len(rich) == len(lines):
                 groups: dict[str, list[str]] = {}
@@ -9935,7 +10134,7 @@ class PictureCaptureApp(tk.Tk):
             present = holder.get("present")
             if isinstance(mapping, dict) and isinstance(present, set):
                 return mapping, present
-            text_data = source.read_text(encoding="utf-8-sig")
+            text_data, _encoding = read_text_detected(source)
             present_pages: set[str] = set()
             parsed = _parse_words_of_pages_text(text_data, all_page_stems, present_pages=present_pages)
             if not (present_pages & selected_set):

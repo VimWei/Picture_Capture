@@ -9,7 +9,7 @@ description = "Python restoration of the Picture Capture dictionary-page tool"
 license = "MIT"
 license-files = ["LICENSE.txt"]
 requires-python = ">=3.10,<3.14"
-dependencies = ["Pillow>=10", "numpy>=1.24", "pypinyin>=0.53,<1", "opencc>=1.4.2,<2"]
+dependencies = ["Pillow>=10", "numpy>=1.24", "pypinyin>=0.53,<1", "opencc>=1.4.2,<2", "charset-normalizer>=3,<4"]
 
 [project.optional-dependencies]
 # Backward-compatible individual extras.

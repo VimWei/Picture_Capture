@@ -603,7 +603,7 @@ def line_box(entry: Entry, geometry: Geometry, image: Image.Image, settings: App
     scale = parameter_scale(image, settings)
     vertical_pad = round(abs(settings.row_padding) / scale)
     height = round((settings.character_height + 2 * abs(settings.row_padding)) / scale)
-    width = round(geometry.column_widths[idx] / max(1.0, settings.right_ratio))
+    width = round(geometry.column_widths[idx] * min(100.0, max(1.0, settings.right_ratio)) / 100.0)
     left_extension = round(geometry.column_starts[0] * 0.5)
     tracked_x = geometry.x_at(idx, entry.y)
     return clamp_box(
