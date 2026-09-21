@@ -3486,6 +3486,23 @@ def test_v2110_main_crop_preview_replaces_old_width_only_checkbox():
     assert 'def _draw_crop_plan_preview' in text
 
 
+def test_crop_preview_uses_export_filename_and_centered_entry_typography():
+    from picture_capture.processing import EntryCropPiecePlan, entry_crop_piece_filename
+
+    piece = EntryCropPiecePlan(7, 2, "词条", (10, 20, 110, 80), "(P2)")
+    assert entry_crop_piece_filename("0001", piece) == "0001_WW_007(P2).png"
+
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    start = text.index("    def _draw_crop_plan_preview")
+    end = text.index("    def redraw", start)
+    preview = text[start:end]
+    assert "self.settings.main_entry_font_family" in preview
+    assert "self.settings.main_entry_font_size" in preview
+    assert 'label = f"{piece.word}\\n{filename}"' in preview
+    assert 'anchor="n", justify="center"' in preview
+
+
 
 def test_v2111_entry_crop_width_uses_gutter_midlines_not_raw_column_edge():
     image = Image.new("RGB", (1800, 1200), "white")

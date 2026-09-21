@@ -90,6 +90,7 @@ from .processing import (
     illustration_crop_bounds,
     illustration_polygon_box,
     entry_crop_column_boxes,
+    entry_crop_piece_filename,
     resolve_crop_worker_count,
     split_whole_entries_job,
     split_illustrations_job,
@@ -7379,6 +7380,13 @@ class PictureCaptureApp(tk.Tk):
         # Entry pieces: cyan = ordinary crop; green = entry carrying a linked
         # illustration. Orange is used when the rectangle is unioned with a PPP.
         illustrated_entries = {p.entry_ref_index for p in plan.entry_pieces if p.source_mode == "linked_original" and p.entry_ref_index is not None}
+        preview_font_scale = scale if self.settings.main_entry_follow_zoom else 1.0
+        preview_font = _entry_font_spec(
+            self.settings.main_entry_font_family,
+            max(5, round(self.settings.main_entry_font_size * preview_font_scale)),
+            self.settings.main_entry_font_bold,
+            self.settings.main_entry_font_italic,
+        )
         for piece in plan.entry_pieces:
             x0,y0,x1,y1=piece.box
             if piece.entry_ref_index in illustrated_entries:
@@ -7388,8 +7396,13 @@ class PictureCaptureApp(tk.Tk):
                 color = "#00acc1"
                 dash = (6, 4)
             self.canvas.create_rectangle(x0*scale,y0*scale,x1*scale,y1*scale,outline=color,width=2,dash=dash,tags=("crop-plan",))
-            if piece.word:
-                self.canvas.create_text((x0+3)*scale,(y0+3)*scale,text=piece.word,fill=color,anchor="nw",font=("Microsoft YaHei",max(7,round(9*scale))),tags=("crop-plan",))
+            filename = entry_crop_piece_filename(self.current_page.stem, piece)
+            label = f"{piece.word}\n{filename}" if piece.word else filename
+            self.canvas.create_text(
+                ((x0+x1)/2)*scale, (y0+3)*scale,
+                text=label, fill=color, anchor="n", justify="center",
+                font=preview_font, tags=("crop-plan",),
+            )
             if piece.merge_polygon_indices:
                 for pi in piece.merge_polygon_indices:
                     if 0 <= pi < len(self.polygons):

@@ -108,6 +108,11 @@ class PageCropPlan:
     integrate_illustrations: bool = True
 
 
+def entry_crop_piece_filename(page_stem: str, piece: EntryCropPiecePlan) -> str:
+    """Return the exact output filename used for an entry crop-plan piece."""
+    return f"{page_stem}_WW_{piece.output_index:03d}{piece.suffix}.png"
+
+
 @dataclass(slots=True)
 class IllustrationCropEvent:
     page: str
@@ -1050,7 +1055,7 @@ def split_whole_entries(
         # filled from headword images.  Illustrations already inside an entry
         # therefore remain naturally visible in that headword crop.
         for piece in plan.entry_pieces:
-            filename = f"{image_path.stem}_WW_{piece.output_index:03d}{piece.suffix}.png"
+            filename = entry_crop_piece_filename(image_path.stem, piece)
             saved = _save_crop(image, output_dir / filename, piece.box)
             records.append(CropRecord(image_path.name, piece.output_index, piece.word, filename, saved))
         image.close()
@@ -1066,7 +1071,7 @@ def split_whole_entries(
                 for pos, piece in enumerate(plan.entry_pieces):
                     if piece.entry_ref_index != entry_ref:
                         continue
-                    filename = f"{image_path.stem}_WW_{piece.output_index:03d}{piece.suffix}.png"
+                    filename = entry_crop_piece_filename(image_path.stem, piece)
                     merge_regions = [polygons[i] for i in piece.merge_polygon_indices if 0 <= i < len(polygons)]
                     if merge_regions:
                         saved_box = _save_union_crop(source, output_dir / filename, piece.box, merge_regions)
@@ -1083,7 +1088,7 @@ def split_whole_entries(
             for pos, piece in enumerate(plan.entry_pieces):
                 if pos in completed_positions:
                     continue
-                filename = f"{image_path.stem}_WW_{piece.output_index:03d}{piece.suffix}.png"
+                filename = entry_crop_piece_filename(image_path.stem, piece)
                 saved = _save_crop(cleaned, output_dir / filename, piece.box)
                 records.append(CropRecord(image_path.name, piece.output_index, piece.word, filename, saved))
         finally:
@@ -1096,7 +1101,7 @@ def split_whole_entries(
     by_filename = {r.filename: r for r in records}
     ordered_records: list[CropRecord] = []
     for piece in plan.entry_pieces:
-        filename = f"{image_path.stem}_WW_{piece.output_index:03d}{piece.suffix}.png"
+        filename = entry_crop_piece_filename(image_path.stem, piece)
         record = by_filename.get(filename)
         if record is not None:
             ordered_records.append(record)
