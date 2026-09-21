@@ -1,0 +1,42 @@
+name: Bug report
+description: 报告可以稳定复现的程序错误
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 感谢反馈。请避免在日志或截图中包含密码、令牌等敏感信息。
+  - type: input
+    id: version
+    attributes:
+      label: Picture Capture 版本
+      placeholder: 例如 v2.13.2
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 操作系统与 Python 版本
+      placeholder: 例如 Windows 11 / Python 3.13
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请列出能够稳定触发问题的最小步骤。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为与日志
+      description: 可粘贴相关日志或拖入截图，请先移除敏感信息。
+    validations:
+      required: true
