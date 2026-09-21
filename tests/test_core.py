@@ -4480,26 +4480,33 @@ def test_v21122_hotfix2_review_ui_exposes_shared_and_single_height_plus_main_ocr
     assert 'self.parent.settings.review_single_cjk_line_height = line_height' in review
 
 
-def test_v21122_hotfix2_main_canvas_ocr_aids_are_suppressed_only_during_review_by_default():
-    from types import SimpleNamespace
+def test_v21122_hotfix2_main_canvas_ocr_aids_follow_their_switches():
     from picture_capture.app import PictureCaptureApp
-
-    class Review:
-        def winfo_exists(self): return 1
 
     app = object.__new__(PictureCaptureApp)
     app.settings = AppSettings()
     app.review_window = None
-    assert app._main_ocr_review_option_enabled("review_main_show_ocr_choices") is True
-    assert app._main_ocr_review_option_enabled("review_main_show_ocr_background") is True
-
-    app.review_window = Review()
     assert app._main_ocr_review_option_enabled("review_main_show_ocr_choices") is False
     assert app._main_ocr_review_option_enabled("review_main_show_ocr_background") is False
     app.settings.review_main_show_ocr_choices = True
     app.settings.review_main_show_ocr_background = True
     assert app._main_ocr_review_option_enabled("review_main_show_ocr_choices") is True
     assert app._main_ocr_review_option_enabled("review_main_show_ocr_background") is True
+
+
+def test_main_ocr_visibility_controls_apply_immediately_and_candidate_boxes_are_source_agnostic():
+    from pathlib import Path
+    import inspect
+    import picture_capture.app as app_module
+
+    text = Path(inspect.getsourcefile(app_module)).read_text(encoding="utf-8")
+    assert 'command=lambda n=name, v=var: self._apply_overlay_visibility_toggle(n, v)' in text
+    assert '"paddle_show_candidate_checkboxes", candidate_var' in text
+    start = text.index("            show_candidates = (")
+    end = text.index("        show_shapes =", start)
+    candidate_block = text[start:end]
+    assert "if show_candidates:" in candidate_block
+    assert 'self.settings.detection_method == "paddleocr"' not in candidate_block
 
 
 def test_v21122_hotfix3_page_word_text_and_diff_classify_add_delete_modify():

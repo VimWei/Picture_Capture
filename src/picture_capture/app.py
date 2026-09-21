@@ -5659,11 +5659,19 @@ class PictureCaptureApp(tk.Tk):
         ocr_display_row = ttk.Frame(aux); ocr_display_row.grid(row=5, column=0, columnspan=4, sticky="ew")
         for label, name in (("显示OCR内容选择", "review_main_show_ocr_choices"), ("显示OCR比对底色结果", "review_main_show_ocr_background")):
             var = tk.BooleanVar(value=bool(getattr(self.settings, name))); self.quick_bool_vars[name] = var
-            ttk.Checkbutton(ocr_display_row, text=label, variable=var).pack(side="left", padx=(0, 8))
+            ttk.Checkbutton(
+                ocr_display_row, text=label, variable=var,
+                command=lambda n=name, v=var: self._apply_overlay_visibility_toggle(n, v),
+            ).pack(side="left", padx=(0, 8))
 
         candidate_var = tk.BooleanVar(value=bool(self.settings.paddle_show_candidate_checkboxes)); self.quick_bool_vars["paddle_show_candidate_checkboxes"] = candidate_var
         option_row = ttk.Frame(aux); option_row.grid(row=6, column=0, columnspan=4, sticky="ew")
-        ttk.Checkbutton(option_row, text="显示单行候选框", variable=candidate_var).pack(side="left")
+        ttk.Checkbutton(
+            option_row, text="显示单行候选框", variable=candidate_var,
+            command=lambda: self._apply_overlay_visibility_toggle(
+                "paddle_show_candidate_checkboxes", candidate_var,
+            ),
+        ).pack(side="left")
         ttk.Checkbutton(option_row, text="显示切图预览", variable=self.crop_preview_var, command=self._toggle_crop_preview).pack(side="left", padx=(8, 0))
         ttk.Checkbutton(option_row, text="隐藏线框(插图除外)", variable=self.hide_var, command=self.redraw).pack(side="left", padx=(8, 0))
         save_row = ttk.Frame(aux); save_row.grid(row=7, column=0, columnspan=4, sticky="ew")
@@ -5758,6 +5766,19 @@ class PictureCaptureApp(tk.Tk):
             self._quick_autosave_job = None
         delay = 1 if immediate else 450
         self._quick_autosave_job = self.after(delay, self._run_quick_autosave)
+
+    def _apply_overlay_visibility_toggle(self, setting_name: str, variable: tk.BooleanVar) -> None:
+        """Apply a canvas visibility switch immediately and persist it.
+
+        These switches control widgets created by ``redraw``.  Waiting for the
+        general-purpose delayed parameter autosave made a click appear to do
+        nothing, and the OCR switches were additionally masked outside the
+        proofreading window.  Update the model first so redraw observes the
+        new value, then persist through the normal quick-settings path.
+        """
+        setattr(self.settings, setting_name, bool(variable.get()))
+        self._quick_parameter_changed(immediate=True)
+        self.redraw()
 
     def _run_quick_autosave(self) -> None:
         self._quick_autosave_job = None
@@ -7138,20 +7159,7 @@ class PictureCaptureApp(tk.Tk):
         return self._display_geometry_cache
 
     def _main_ocr_review_option_enabled(self, setting_name: str) -> bool:
-        """Return whether a main-canvas OCR aid should remain visible.
-
-        Outside proofreading the main canvas keeps its normal OCR UI. While the
-        proofreading window is open, the two dedicated review settings decide
-        whether the OCR choice menu and confidence background remain visible.
-        """
-        review = getattr(self, "review_window", None)
-        if review is None:
-            return True
-        try:
-            if not review.winfo_exists():
-                return True
-        except tk.TclError:
-            return True
+        """Return the persisted visibility of a main-canvas OCR aid."""
         return bool(getattr(self.settings, setting_name, False))
 
     def _draw_entry_overlay(
@@ -7477,7 +7485,7 @@ class PictureCaptureApp(tk.Tk):
                 if hasattr(self, "quick_bool_vars") and "paddle_show_candidate_checkboxes" in self.quick_bool_vars
                 else self.settings.paddle_show_candidate_checkboxes
             )
-            if show_candidates and self.settings.detection_method == "paddleocr":
+            if show_candidates:
                 for cand in self.ocr_review_candidates:
                     try:
                         col = max(0, min(len(geometry.column_starts) - 1, int(cand.get("column", 0))))
