@@ -30,6 +30,12 @@ Picture Capture 是一个面向**多栏词典扫描页**的桌面制作与校对
 
 ---
 
+# 获取正式版本
+
+普通用户请从 GitHub 的 [Releases 页面](https://github.com/chigre/Picture_Capture/releases/latest) 下载最新正式版本的 **Release ZIP**，完整解压后再安装和运行。不要使用 GitHub 自动生成的 “Source code” 压缩包代替正式发布包；仓库源码和 source archive 主要供开发者使用。
+
+---
+
 # Windows 推荐安装
 
 ## 1. 安装 uv

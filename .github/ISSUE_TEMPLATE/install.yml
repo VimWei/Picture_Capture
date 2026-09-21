@@ -1,0 +1,41 @@
+name: Installation issue
+description: 报告安装、依赖或启动环境问题
+title: "[Install]: "
+labels: [installation]
+body:
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: 安装方式
+      options:
+        - GitHub Release ZIP
+        - Git clone / source archive
+        - 其他
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 操作系统、Python 与 uv 版本
+      placeholder: 例如 Windows 11 / Python 3.13 / uv 0.11
+    validations:
+      required: true
+  - type: input
+    id: profile
+    attributes:
+      label: OCR profile
+      placeholder: 例如 CPU、CUDA 12.6、Lens only 或 Core only
+  - type: textarea
+    id: commands
+    attributes:
+      label: 执行的命令或安装步骤
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: 完整错误信息
+      description: 请移除用户名、路径中的隐私信息以及所有凭据。
+      render: shell
+    validations:
+      required: true

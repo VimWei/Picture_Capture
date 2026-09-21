@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv and Python 3.13
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked --group dev
+
+      - name: Run pytest
+        run: uv run --locked pytest
+
+      - name: Run compatibility test runner
+        run: uv run --locked python run_tests.py
+
+      - name: Compile Python sources
+        run: uv run --locked python -m compileall -q src run.py run_tests.py
+
+      - name: Build wheel
+        run: uv build --wheel
+
+      - name: Build source and release archives
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          package="Picture_Capture-${VERSION}"
+
+          git archive --format=zip --prefix="${package}-source/" \
+            --output="dist/${package}-source.zip" HEAD
+
+          staging="$(mktemp -d)"
+          mkdir -p "${staging}/${package}"
+          cp -R \
+            src docs examples \
+            README.md CHANGELOG.md LICENSE.txt pyproject.toml uv.lock .python-version \
+            run.py run_tests.py run_windows.bat install_ocr_windows.bat \
+            "${staging}/${package}/"
+          (cd "${staging}" && zip -qr "${GITHUB_WORKSPACE}/dist/${package}-release.zip" "${package}")
+
+      - name: Generate SHA256 checksums
+        working-directory: dist
+        run: sha256sum *.whl *.zip > SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/*.whl dist/*.zip dist/SHA256SUMS.txt --generate-notes --verify-tag
