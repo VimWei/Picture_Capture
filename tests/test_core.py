@@ -5268,3 +5268,41 @@ def test_v21212_review_highlight_uses_rgba_alpha_not_stipple():
     assert '(255, 238, 128, 92)' in body
     assert 'create_image(' in body
     assert 'stipple=' not in body
+
+
+def test_v2132_declares_cpu_and_gpu_ocr_profiles():
+    import tomllib
+    from pathlib import Path
+
+    data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    extras = data["project"]["optional-dependencies"]
+    assert set(("ocr-cpu", "ocr-gpu-cu118", "ocr-gpu-cu126", "ocr-gpu-cu129")) <= set(extras)
+    assert "paddlepaddle==3.3.0" in extras["ocr-cpu"]
+    for name in ("ocr-gpu-cu118", "ocr-gpu-cu126", "ocr-gpu-cu129"):
+        assert "paddleocr>=3.7,<4" in extras[name]
+        assert "chrome-lens-py>=3.4,<4" in extras[name]
+        assert not any(item.startswith("paddlepaddle") for item in extras[name])
+
+
+def test_v2132_windows_ocr_installer_has_three_cuda_profiles_and_persists_profile():
+    from pathlib import Path
+
+    text = Path("install_ocr_windows.bat").read_text(encoding="utf-8")
+    assert "ocr-gpu-cu118" in text
+    assert "ocr-gpu-cu126" in text
+    assert "ocr-gpu-cu129" in text
+    assert "packages/stable/cu118/" in text
+    assert "packages/stable/cu126/" in text
+    assert "packages/stable/cu129/" in text
+    assert '"paddlepaddle-gpu==3.3.0"' in text
+    assert ".picture_capture_ocr_extra" in text
+    assert "verify_ocr_environment.py" in text
+
+
+def test_v2132_windows_launcher_reuses_saved_ocr_profile():
+    from pathlib import Path
+
+    text = Path("run_windows.bat").read_text(encoding="utf-8")
+    assert '.picture_capture_ocr_extra' in text
+    assert '--extra "%PC_OCR_EXTRA%"' in text
+    assert 'uv run --locked' in text
