@@ -19,8 +19,17 @@ class LayoutEstimate:
     column_width: int
     gutter: int
     manual_x: int
+    bottom_y: int
+    character_height: int
+    row_padding: int
     source_boxes: int
     method: str = "paddle"
+
+
+@dataclass(slots=True)
+class LayoutConsistencyEstimate:
+    header_rule_y: int | None
+    body_left_x: int | None
 
 
 _TEXT_DETECTION_CACHE: dict[str, Any] = {}
@@ -245,6 +254,11 @@ def infer_layout_from_boxes(
         gutter_source = int(round(float(np.median(gap_widths)))) if gap_widths else 0
 
     start_y_source = _estimate_start_y(filtered, height)
+    bottom_y_source = int(np.percentile([box[3] for box in filtered], 99))
+    character_height_source = max(1, round(float(np.median([box[3] - box[1] for box in filtered]))))
+    ordered_tops = sorted({box[1] for box in filtered})
+    top_steps = [b - a for a, b in zip(ordered_tops, ordered_tops[1:]) if b - a > character_height_source * 0.5]
+    row_padding_source = max(1, round((float(np.median(top_steps)) - character_height_source) / 2)) if top_steps else 1
     scale = max(0.01, float(display_scale))
     return LayoutEstimate(
         columns=len(starts),
@@ -252,6 +266,9 @@ def infer_layout_from_boxes(
         column_width=max(10, round(float(np.median(col_widths)) * scale)),
         gutter=max(0, round(gutter_source * scale)),
         manual_x=max(0, round(starts[0] * scale)),
+        bottom_y=max(1, round(bottom_y_source * scale)),
+        character_height=max(1, round(character_height_source * scale)),
+        row_padding=max(1, round(row_padding_source * scale)),
         source_boxes=len(filtered),
         method="paddle",
     )
@@ -415,6 +432,9 @@ def _projection_layout_estimate(source: Image.Image, settings: AppSettings) -> L
         column_width=max(10, round(float(np.median(widths)) * factor)),
         gutter=max(0, round((float(np.median(gutters)) if gutters else 0.0) * factor)),
         manual_x=max(0, round(starts[0] * factor)),
+        bottom_y=max(1, round(body_bottom * factor)),
+        character_height=max(1, round(max(1, h * 0.008) * factor)),
+        row_padding=1,
         source_boxes=max(1, len(starts) + len(chosen)),
         method="projection_fallback",
     )
@@ -459,3 +479,36 @@ def detect_layout_parameters(image: Image.Image, settings: AppSettings) -> Layou
             f"PaddleOCR 整页版面检测失败：{paddle_error}\n"
             f"兼容回退检测也失败：{fallback_exc}"
         ) from fallback_exc
+
+
+def detect_layout_consistency(image: Image.Image, settings: AppSettings) -> LayoutConsistencyEstimate:
+    """Quickly measure header-rule Y and first body-text X using projections.
+
+    This deliberately avoids OCR/VLM inference: downscaled grayscale projections
+    are deterministic and substantially cheaper for projects containing thousands
+    of pages.
+    """
+    source = normalize_page_rgb(image)
+    scale = min(1.0, 1600.0 / max(source.size))
+    work = source.resize(
+        (max(1, round(source.width * scale)), max(1, round(source.height * scale))),
+        Image.Resampling.BILINEAR,
+    ) if scale < 1.0 else source
+    gray = np.asarray(ImageOps.grayscale(work), dtype=np.uint8)
+    ink = gray < _otsu_threshold(gray)
+    parameter_to_source = 1.0 / max(0.01, parameter_scale(source, settings))
+    header_limit = min(ink.shape[0], max(1, round(settings.start_y * parameter_to_source * scale)))
+    header_density = ink[:header_limit].mean(axis=1)
+    header_rule_y: int | None = None
+    if header_density.size and float(header_density.max()) >= 0.12:
+        header_rule_y = round(int(np.argmax(header_density)) / scale * parameter_scale(source, settings))
+
+    body = ink[header_limit:, :]
+    body_left_x: int | None = None
+    if body.size:
+        column_density = body.mean(axis=0)
+        threshold = max(0.002, float(np.percentile(column_density[column_density > 0], 20)) * 0.35) if np.any(column_density > 0) else 0.002
+        active = np.flatnonzero(column_density > threshold)
+        if active.size:
+            body_left_x = round(int(active[0]) / scale * parameter_scale(source, settings))
+    return LayoutConsistencyEstimate(header_rule_y=header_rule_y, body_left_x=body_left_x)

@@ -1425,6 +1425,7 @@ name = "picture-capture-restored"
 version = "2.13.2"
 source = { editable = "." }
 dependencies = [
+    { name = "charset-normalizer" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "opencc" },
@@ -1466,6 +1467,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "charset-normalizer", specifier = ">=3,<4" },
     { name = "chrome-lens-py", marker = "extra == 'lens'", specifier = ">=3.4,<4" },
     { name = "chrome-lens-py", marker = "extra == 'ocr-cpu'", specifier = ">=3.4,<4" },
     { name = "chrome-lens-py", marker = "extra == 'ocr-gpu-cu118'", specifier = ">=3.4,<4" },

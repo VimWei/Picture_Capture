@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .models import Entry, PolygonRegion
+from .text_encoding import read_text_detected
 from .project_storage import pdic_path_for_image
 
 
@@ -15,7 +16,7 @@ def read_pdic(path: Path) -> list[Entry]:
     entries: list[Entry] = []
     if not path.exists():
         return entries
-    for number, raw in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
+    for number, raw in enumerate(read_text_detected(path)[0].splitlines(), 1):
         if not raw.strip():
             continue
         fields = raw.split("#")
@@ -67,7 +68,7 @@ def read_picdic_index_records(path: Path, fallback_page: str = "") -> list[str]:
     records: list[str] = []
     if not path.exists():
         return records
-    for number, raw in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
+    for number, raw in enumerate(read_text_detected(path)[0].splitlines(), 1):
         if not raw.strip():
             continue
         fields = raw.split("#")
@@ -91,7 +92,7 @@ def read_ppp(path: Path) -> list[PolygonRegion]:
     regions: list[PolygonRegion] = []
     if not path.exists():
         return regions
-    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+    for raw in read_text_detected(path)[0].splitlines():
         if not raw.strip():
             continue
         fields = raw.split("\t")
@@ -115,4 +116,3 @@ def write_ppp(path: Path, regions: list[PolygonRegion], page_stem: str) -> None:
         coords = "".join(f"|{x},{y}" for x, y in region.points)
         lines.append(f"{index}\t{label}\t{coords}")
     path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-

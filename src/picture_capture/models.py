@@ -61,8 +61,10 @@ class AppSettings:
     manual_y: int = 400
     body_indent: int = 28
     character_height: int = 26
-    row_padding: int = 3
-    right_ratio: float = 1.0
+    row_padding: int = 1
+    # Percentage of the detected column width used by rightward entry boxes.
+    right_ratio: float = 100.0
+    right_ratio_percent_version: int = 1
     horizontal_tolerance: int = 5
     marker_height: int = 2
     guide_width: int = 4
@@ -301,6 +303,10 @@ class AppSettings:
     @classmethod
     def from_json(cls, path: Path) -> "AppSettings":
         raw = json.loads(path.read_text(encoding="utf-8"))
+        if int(raw.get("right_ratio_percent_version", 0) or 0) < 1:
+            old_divisor = max(0.01, float(raw.get("right_ratio", 1.0) or 1.0))
+            raw["right_ratio"] = 100.0 / old_divisor
+            raw["right_ratio_percent_version"] = 1
         # Transparently upgrade the untouched v1.4 default regex. Without this
         # migration, an existing project would keep matching only the first
         # syllable of display forms such as ``a·ga·rrón``. User-customized
@@ -455,6 +461,7 @@ class AppSettings:
             idx = int(parts[18])
             if 0 <= idx < len(legacy_languages):
                 settings.ocr_language = legacy_languages[idx]
+        settings.right_ratio = 100.0 / max(0.01, float(settings.right_ratio))
         return settings
 
 
@@ -540,10 +547,11 @@ def read_noncomment_lines(path: Path) -> list[str]:
     text stream avoids the temporary giant string + ``splitlines()`` copy created by
     ``Path.read_text`` and keeps project opening responsive and memory-predictable.
     """
+    from .text_encoding import read_text_detected
     rows: list[str] = []
-    with path.open("r", encoding="utf-8-sig") as handle:
-        for raw in handle:
-            line = raw.strip()
-            if line and not raw.lstrip().startswith("'"):
-                rows.append(line)
+    text, _encoding = read_text_detected(path)
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line and not raw.lstrip().startswith("'"):
+            rows.append(line)
     return rows
