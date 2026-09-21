@@ -29,3 +29,6 @@ Desktop.ini
 # Picture Capture project data (software writes into user project dirs)
 _PictureCapture/
 *.log
+
+# Local OCR runtime profile selected by install_ocr_windows.bat
+.picture_capture_ocr_extra

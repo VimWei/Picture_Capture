@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "picture-capture-restored"
-version = "2.13.1"
+version = "2.13.2"
 description = "Python restoration of the Picture Capture dictionary-page tool"
 license = "MIT"
 license-files = ["LICENSE.txt"]
@@ -12,8 +12,16 @@ requires-python = ">=3.10,<3.14"
 dependencies = ["Pillow>=10", "numpy>=1.24", "pypinyin>=0.53,<1", "opencc>=1.4.2,<2"]
 
 [project.optional-dependencies]
+# Backward-compatible individual extras.
 paddleocr = ["paddleocr>=3.7,<4", "paddlepaddle==3.3.0"]
 lens = ["chrome-lens-py>=3.4,<4"]
+
+# Recommended OCR profiles. GPU profiles intentionally keep the CUDA runtime
+# installer-managed so the correct PaddlePaddle CUDA index can be selected.
+ocr-cpu = ["paddleocr>=3.7,<4", "paddlepaddle==3.3.0", "chrome-lens-py>=3.4,<4"]
+ocr-gpu-cu118 = ["paddleocr>=3.7,<4", "chrome-lens-py>=3.4,<4"]
+ocr-gpu-cu126 = ["paddleocr>=3.7,<4", "chrome-lens-py>=3.4,<4"]
+ocr-gpu-cu129 = ["paddleocr>=3.7,<4", "chrome-lens-py>=3.4,<4"]
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]

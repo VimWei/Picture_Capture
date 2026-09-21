@@ -1422,7 +1422,7 @@ wheels = [
 
 [[package]]
 name = "picture-capture-restored"
-version = "2.13.1"
+version = "2.13.2"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1440,6 +1440,23 @@ paddleocr = [
     { name = "paddleocr" },
     { name = "paddlepaddle" },
 ]
+ocr-cpu = [
+    { name = "chrome-lens-py" },
+    { name = "paddleocr" },
+    { name = "paddlepaddle" },
+]
+ocr-gpu-cu118 = [
+    { name = "chrome-lens-py" },
+    { name = "paddleocr" },
+]
+ocr-gpu-cu126 = [
+    { name = "chrome-lens-py" },
+    { name = "paddleocr" },
+]
+ocr-gpu-cu129 = [
+    { name = "chrome-lens-py" },
+    { name = "paddleocr" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1450,14 +1467,23 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "chrome-lens-py", marker = "extra == 'lens'", specifier = ">=3.4,<4" },
+    { name = "chrome-lens-py", marker = "extra == 'ocr-cpu'", specifier = ">=3.4,<4" },
+    { name = "chrome-lens-py", marker = "extra == 'ocr-gpu-cu118'", specifier = ">=3.4,<4" },
+    { name = "chrome-lens-py", marker = "extra == 'ocr-gpu-cu126'", specifier = ">=3.4,<4" },
+    { name = "chrome-lens-py", marker = "extra == 'ocr-gpu-cu129'", specifier = ">=3.4,<4" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "opencc", specifier = ">=1.4.2,<2" },
     { name = "paddleocr", marker = "extra == 'paddleocr'", specifier = ">=3.7,<4" },
+    { name = "paddleocr", marker = "extra == 'ocr-cpu'", specifier = ">=3.7,<4" },
+    { name = "paddleocr", marker = "extra == 'ocr-gpu-cu118'", specifier = ">=3.7,<4" },
+    { name = "paddleocr", marker = "extra == 'ocr-gpu-cu126'", specifier = ">=3.7,<4" },
+    { name = "paddleocr", marker = "extra == 'ocr-gpu-cu129'", specifier = ">=3.7,<4" },
     { name = "paddlepaddle", marker = "extra == 'paddleocr'", specifier = "==3.3.0", index = "https://www.paddlepaddle.org.cn/packages/stable/cpu/" },
+    { name = "paddlepaddle", marker = "extra == 'ocr-cpu'", specifier = "==3.3.0", index = "https://www.paddlepaddle.org.cn/packages/stable/cpu/" },
     { name = "pillow", specifier = ">=10" },
     { name = "pypinyin", specifier = ">=0.53,<1" },
 ]
-provides-extras = ["paddleocr", "lens"]
+provides-extras = ["paddleocr", "lens", "ocr-cpu", "ocr-gpu-cu118", "ocr-gpu-cu126", "ocr-gpu-cu129"]
 
 [package.metadata.requires-dev]
 dev = [

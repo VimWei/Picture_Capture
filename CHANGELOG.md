@@ -1,3 +1,16 @@
+## v2.13.2
+
+### Windows OCR 一键安装与 GPU profile
+
+- 新增 `install_ocr_windows.bat`，统一安装/切换 PaddleOCR、PaddlePaddle CPU/GPU runtime 与 Google Lens。
+- GPU 用户可直接选择 CUDA 11.8 / 12.6 / 12.9；安装器自动使用对应 PaddlePaddle 官方 CUDA 索引安装 `paddlepaddle-gpu==3.3.0`。
+- 新增正式 uv profile extras：`ocr-cpu`、`ocr-gpu-cu118`、`ocr-gpu-cu126`、`ocr-gpu-cu129`；旧 `paddleocr` / `lens` extras 继续兼容。
+- GPU profile extras 锁定 PaddleOCR + Google Lens；CUDA runtime 由安装器按所选专用索引补齐，避免 CPU/GPU runtime 同时安装。
+- 安装成功后写入本机 `.picture_capture_ocr_extra`；`run_windows.bat` 自动读取该 profile 并带对应 `--extra` 启动，不再要求用户记忆命令。
+- 新增 `scripts/verify_ocr_environment.py`，自动检查 PaddleOCR、Google Lens、CPU/GPU runtime 冲突、CUDA build 与当前设备。
+- `run_windows.bat` 在没有 profile 时仍可只启动核心环境；OCR 安装失败不会改变核心项目数据。
+- 更新 README 与 `docs/ocr-install.md`，集中说明 CPU/GPU 安装、CUDA 切换、profile 持久化和验证方式。
+
 ## v2.13.1
 
 ### 在 v2.13.0 的 uv 架构上补回 v2.12.10–v2.12.12 功能
