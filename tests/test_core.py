@@ -11,7 +11,7 @@ from picture_capture.formats import read_pdic, read_ppp, write_pdic, write_ppp, 
 from picture_capture.app import (
     PictureCaptureApp, _candidate_choice_rows, _parse_words_of_pages_text, _fill_page_entries,
     _build_words_page_lookup, _resolve_words_page_token, _parse_merged_pdic_text, _write_pdic_atomic,
-    _natural_text_key, _sorted_page_list_rows,
+    _natural_text_key, _sorted_page_list_rows, project_language_from_ocr,
 )
 from picture_capture.models import AppSettings, Entry, PolygonRegion
 from picture_capture.processing import Geometry, ColumnPath, sort_entries_reading_order, sort_entries_column_y
@@ -3832,6 +3832,49 @@ def test_v21111_picdic_index_export_is_background_streaming_and_exact_format():
     assert 'derive_geometry' not in body
     assert 'PicDic_index_{stamp}.txt' in body
     assert 'WORD<TAB>xx.xx<TAB>yy.yy<TAB>page' in body
+
+
+def test_project_details_language_follows_ocr_language():
+    assert project_language_from_ocr("eng") == "en"
+    assert project_language_from_ocr("spa+chi_sim") == "es"
+    assert project_language_from_ocr("chi_tra") == "zh"
+    assert project_language_from_ocr("pt") == "pt"
+    assert project_language_from_ocr("unknown") == ""
+
+
+def test_project_details_are_persisted_in_project_settings(tmp_path):
+    path = tmp_path / "settings.json"
+    AppSettings(
+        dictionary_full_name="示例词典",
+        dictionary_abbreviation="示例",
+        dictionary_isbn="978-0-00-000000-0",
+        dictionary_index_language="es",
+        dictionary_content_language="zh",
+        columns=3,
+        dictionary_body_page_range="1-1250",
+    ).to_json(path)
+    restored = AppSettings.from_json(path)
+    assert restored.dictionary_full_name == "示例词典"
+    assert restored.dictionary_abbreviation == "示例"
+    assert restored.dictionary_isbn == "978-0-00-000000-0"
+    assert restored.dictionary_index_language == "es"
+    assert restored.dictionary_content_language == "zh"
+    assert restored.columns == 3
+    assert restored.dictionary_body_page_range == "1-1250"
+
+
+def test_sidebar_has_collapsed_postproduction_section_and_project_details():
+    app_text = (Path(__file__).parents[1] / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
+    assert '"postproduction": False' in app_text
+    assert 'parent, "五、后期词典制作", padding=5, section_key="postproduction"' in app_text
+    assert 'self._section_frame(parent, "四、画线与校对"' in app_text
+    assert 'self._section_frame(sidebar, "六、页面列表"' in app_text
+    first_row = '(("切图设置", self.open_crop_settings), ("词条切图", self.split_entries_selected_scope), ("插图切图", self.split_illustrations_selected_scope))'
+    second_row = '(("项目详情", self.open_project_details), ("导出PicDic索引", self.export_picdic_index), ("PicDic制作", self.build_picdic))'
+    assert first_row in app_text
+    assert second_row in app_text
+    assert 'notebook.add(project_tab, text="词典项目详情")' in app_text
+    assert 'self.open_settings(initial_tab="project")' in app_text
 
 
 def test_v21112_picdic_index_has_no_percent_signs(tmp_path):

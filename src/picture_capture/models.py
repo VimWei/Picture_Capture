@@ -40,6 +40,14 @@ class PolygonRegion:
 
 @dataclass(slots=True)
 class AppSettings:
+    # Project-level dictionary metadata. It is stored with the project but does
+    # not participate in OCR, line detection, cropping, or PDIC serialization.
+    dictionary_full_name: str = ""
+    dictionary_abbreviation: str = ""
+    dictionary_isbn: str = ""
+    dictionary_index_language: str = ""
+    dictionary_content_language: str = ""
+    dictionary_body_page_range: str = ""
     # Geometric values use the old program's displayed-image pixel convention.
     # ``parameter_display_width`` records that displayed image width so batch
     # processing can convert the values back to source-image pixels.
