@@ -5602,6 +5602,9 @@ class PictureCaptureApp(tk.Tk):
         ttk.Entry(line_row, textvariable=guide_value, width=5).pack(side="left", padx=(2, 10))
         ttk.Checkbutton(line_row, text="插图形状：轮廓", variable=self.polygon_var, command=self.redraw).pack(side="left")
         color_button(line_row, "illustration_outline_color")
+        ttk.Label(line_row, text="粗细").pack(side="left")
+        outline_width_var = tk.StringVar(value=str(self.settings.illustration_outline_width)); self.quick_vars["illustration_outline_width"] = outline_width_var; self.quick_field_casts["illustration_outline_width"] = int
+        ttk.Entry(line_row, textvariable=outline_width_var, width=4).pack(side="left", padx=(2, 5))
         ttk.Label(line_row, text="背景").pack(side="left")
         color_button(line_row, "illustration_fill_color")
 
@@ -5613,6 +5616,9 @@ class PictureCaptureApp(tk.Tk):
         ttk.Entry(marker_row, textvariable=marker_value, width=5).pack(side="left", padx=(2, 10))
         ttk.Label(marker_row, text="插图标签：外框").pack(side="left")
         color_button(marker_row, "illustration_label_border_color")
+        ttk.Label(marker_row, text="粗细").pack(side="left")
+        label_width_var = tk.StringVar(value=str(self.settings.illustration_label_border_width)); self.quick_vars["illustration_label_border_width"] = label_width_var; self.quick_field_casts["illustration_label_border_width"] = int
+        ttk.Entry(marker_row, textvariable=label_width_var, width=4).pack(side="left", padx=(2, 5))
         ttk.Label(marker_row, text="背景").pack(side="left")
         color_button(marker_row, "illustration_label_fill_color")
 
@@ -5627,7 +5633,7 @@ class PictureCaptureApp(tk.Tk):
         ttk.Checkbutton(entry_row, text="跟随缩放", variable=follow_var).pack(side="left", padx=(8, 0))
 
         font_row = ttk.Frame(aux); font_row.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(2, 0))
-        ttk.Label(font_row, text="字体").pack(side="left")
+        ttk.Label(font_row, text="词条字体").pack(side="left")
         family_var = tk.StringVar(value=self.settings.main_entry_font_family); self.quick_vars["main_entry_font_family"] = family_var; self.quick_field_casts["main_entry_font_family"] = str
         ttk.Combobox(font_row, textvariable=family_var, values=tuple(sorted(set(font.families()), key=str.casefold)), width=16).pack(side="left")
         ttk.Label(font_row, text="字号").pack(side="left", padx=(8, 2))
@@ -5637,17 +5643,28 @@ class PictureCaptureApp(tk.Tk):
             var = tk.BooleanVar(value=bool(getattr(self.settings, name))); self.quick_bool_vars[name] = var
             ttk.Checkbutton(font_row, text=label, variable=var).pack(side="left", padx=(7, 0))
 
-        ocr_display_row = ttk.Frame(aux); ocr_display_row.grid(row=4, column=0, columnspan=4, sticky="ew")
+        label_font_row = ttk.Frame(aux); label_font_row.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+        ttk.Label(label_font_row, text="标签字体").pack(side="left")
+        label_family_var = tk.StringVar(value=self.settings.illustration_label_font_family); self.quick_vars["illustration_label_font_family"] = label_family_var; self.quick_field_casts["illustration_label_font_family"] = str
+        ttk.Combobox(label_font_row, textvariable=label_family_var, values=tuple(sorted(set(font.families()), key=str.casefold)), width=16).pack(side="left")
+        ttk.Label(label_font_row, text="字号").pack(side="left", padx=(8, 2))
+        label_size_var = tk.StringVar(value=str(self.settings.illustration_label_font_size)); self.quick_vars["illustration_label_font_size"] = label_size_var; self.quick_field_casts["illustration_label_font_size"] = int
+        ttk.Entry(label_font_row, textvariable=label_size_var, width=5).pack(side="left")
+        for label, name in (("粗体", "illustration_label_font_bold"), ("斜体", "illustration_label_font_italic")):
+            var = tk.BooleanVar(value=bool(getattr(self.settings, name))); self.quick_bool_vars[name] = var
+            ttk.Checkbutton(label_font_row, text=label, variable=var).pack(side="left", padx=(7, 0))
+
+        ocr_display_row = ttk.Frame(aux); ocr_display_row.grid(row=5, column=0, columnspan=4, sticky="ew")
         for label, name in (("显示OCR内容选择", "review_main_show_ocr_choices"), ("显示OCR比对底色结果", "review_main_show_ocr_background")):
             var = tk.BooleanVar(value=bool(getattr(self.settings, name))); self.quick_bool_vars[name] = var
             ttk.Checkbutton(ocr_display_row, text=label, variable=var).pack(side="left", padx=(0, 8))
 
         candidate_var = tk.BooleanVar(value=bool(self.settings.paddle_show_candidate_checkboxes)); self.quick_bool_vars["paddle_show_candidate_checkboxes"] = candidate_var
-        option_row = ttk.Frame(aux); option_row.grid(row=5, column=0, columnspan=4, sticky="ew")
+        option_row = ttk.Frame(aux); option_row.grid(row=6, column=0, columnspan=4, sticky="ew")
         ttk.Checkbutton(option_row, text="显示单行候选框", variable=candidate_var).pack(side="left")
         ttk.Checkbutton(option_row, text="显示切图预览", variable=self.crop_preview_var, command=self._toggle_crop_preview).pack(side="left", padx=(8, 0))
         ttk.Checkbutton(option_row, text="隐藏线框(插图除外)", variable=self.hide_var, command=self.redraw).pack(side="left", padx=(8, 0))
-        save_row = ttk.Frame(aux); save_row.grid(row=6, column=0, columnspan=4, sticky="ew")
+        save_row = ttk.Frame(aux); save_row.grid(row=7, column=0, columnspan=4, sticky="ew")
         ttk.Checkbutton(save_row, text="自动保存", variable=self.autosave_var, command=self.toggle_autosave).pack(side="left")
         ttk.Label(save_row, text="间隔时间(秒)").pack(side="left", padx=(8, 2))
         interval_var = tk.StringVar(value=str(self.settings.batch_interval)); self.quick_vars["batch_interval"] = interval_var; self.quick_field_casts["batch_interval"] = float
@@ -5785,6 +5802,10 @@ class PictureCaptureApp(tk.Tk):
                     if not 0 <= float(value) <= 125:
                         raise ValueError("词条文本框偏移必须在 0–125% 之间。")
                     value = float(value) / 100.0
+                if name in {"illustration_outline_width", "illustration_label_border_width"} and not 1 <= int(value) <= 20:
+                    raise ValueError("插图轮廓/标签外框粗细必须在 1–20 之间。")
+                if name == "illustration_label_font_size" and not 5 <= int(value) <= 200:
+                    raise ValueError("插图标签字号必须在 5–200 之间。")
                 setattr(self.settings, name, value)
             for name, var in self.quick_bool_vars.items(): setattr(self.settings, name, bool(var.get()))
             for name, var in getattr(self, "quick_color_vars", {}).items():
@@ -7494,7 +7515,8 @@ class PictureCaptureApp(tk.Tk):
                     continue
                 polygon_item = self.canvas.create_polygon(
                     coords, fill=self.settings.illustration_fill_color, stipple="gray50",
-                    outline=self.settings.illustration_outline_color, width=2,
+                    outline=self.settings.illustration_outline_color,
+                    width=max(1, int(self.settings.illustration_outline_width)),
                     tags=("ppp-overlay", f"ppp-region-{region_index}"),
                 )
                 handles: list[int] = []
@@ -7525,11 +7547,20 @@ class PictureCaptureApp(tk.Tk):
                                 tags=("ppp-overlay", f"ppp-edge-{region_index}-{side}"),
                             )
 
-                label_frame = tk.Frame(self.canvas, bg=self.settings.illustration_label_border_color, bd=0, padx=1, pady=1)
+                label_border_width = max(1, int(self.settings.illustration_label_border_width))
+                label_frame = tk.Frame(
+                    self.canvas, bg=self.settings.illustration_label_border_color,
+                    bd=0, padx=label_border_width, pady=label_border_width,
+                )
                 label_entry = tk.Entry(
                     label_frame, width=18, relief="flat", bd=0, highlightthickness=0,
                     bg=self.settings.illustration_label_fill_color,
-                    font=("Microsoft YaHei", max(7, round(9 * self.view_scale))),
+                    font=_entry_font_spec(
+                        self.settings.illustration_label_font_family,
+                        max(7, round(self.settings.illustration_label_font_size * self.view_scale)),
+                        self.settings.illustration_label_font_bold,
+                        self.settings.illustration_label_font_italic,
+                    ),
                 )
                 label_entry.insert(0, self._polygon_display_name(region, region_index))
                 label_entry.bind("<FocusOut>", lambda _e, r=region, w=label_entry: self._update_polygon_label(r, w))

@@ -3932,6 +3932,28 @@ def test_sidebar_has_collapsed_postproduction_section_and_project_details():
     assert 'self.open_settings(initial_tab="project")' in app_text
 
 
+def test_auxiliary_overlay_defaults_and_label_style_controls():
+    settings = AppSettings()
+    assert settings.guide_color == "#ff0000"
+    assert settings.headword_marker_color == "#ff0000"
+    assert settings.guide_width == 4
+    assert settings.marker_height == 2
+    assert settings.illustration_outline_width == 1
+    assert settings.illustration_label_border_width == 1
+    assert settings.main_entry_width_chars == 18
+    assert settings.main_entry_x_ratio == 0.66
+    assert settings.main_entry_font_size == 32
+    assert settings.illustration_label_font_size == 32
+    assert settings.batch_interval == 3.0
+    app_text = (Path(__file__).parents[1] / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
+    for token in (
+        '"illustration_outline_width"', '"illustration_label_border_width"',
+        '"illustration_label_font_family"', '"illustration_label_font_size"',
+        '"illustration_label_font_bold"', '"illustration_label_font_italic"',
+    ):
+        assert token in app_text
+
+
 def test_v21112_picdic_index_has_no_percent_signs(tmp_path):
     pdic = tmp_path / "0001.pdic"
     pdic.write_text("一#10#20#0.85#19.07#0001###\n", encoding="utf-8")
