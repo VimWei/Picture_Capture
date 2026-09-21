@@ -5614,6 +5614,9 @@ class PictureCaptureApp(tk.Tk):
         ttk.Label(marker_row, text="高度：").pack(side="left")
         marker_value = tk.StringVar(value=str(self.settings.marker_height)); self.quick_vars["marker_height"] = marker_value; self.quick_field_casts["marker_height"] = int
         ttk.Entry(marker_row, textvariable=marker_value, width=5).pack(side="left", padx=(2, 10))
+        label_visible_var = tk.BooleanVar(value=bool(self.settings.show_illustration_labels))
+        self.quick_bool_vars["show_illustration_labels"] = label_visible_var
+        ttk.Checkbutton(marker_row, variable=label_visible_var).pack(side="left", padx=(0, 2))
         ttk.Label(marker_row, text="插图标签：外框").pack(side="left")
         color_button(marker_row, "illustration_label_border_color")
         ttk.Label(marker_row, text="粗细").pack(side="left")
@@ -7508,17 +7511,21 @@ class PictureCaptureApp(tk.Tk):
                     )
                     self.overlay_widgets.append(check)
                     self.canvas.create_window(cx + cwidth * 0.955, cy, window=check, anchor="nw")
-        if self.polygon_var.get() or self.polygon_draw_var.get():
+        show_shapes = bool(self.polygon_var.get() or self.polygon_draw_var.get())
+        show_labels = bool(self.settings.show_illustration_labels or self.polygon_draw_var.get())
+        if show_shapes or show_labels:
             for region_index, region in enumerate(self.polygons):
                 coords = [value * self.view_scale for point in region.points for value in point]
                 if len(coords) < 6:
                     continue
-                polygon_item = self.canvas.create_polygon(
-                    coords, fill=self.settings.illustration_fill_color, stipple="gray50",
-                    outline=self.settings.illustration_outline_color,
-                    width=max(1, int(self.settings.illustration_outline_width)),
-                    tags=("ppp-overlay", f"ppp-region-{region_index}"),
-                )
+                polygon_item = None
+                if show_shapes:
+                    polygon_item = self.canvas.create_polygon(
+                        coords, fill=self.settings.illustration_fill_color, stipple="gray50",
+                        outline=self.settings.illustration_outline_color,
+                        width=max(1, int(self.settings.illustration_outline_width)),
+                        tags=("ppp-overlay", f"ppp-region-{region_index}"),
+                    )
                 handles: list[int] = []
                 edge_handles: dict[str, int] = {}
                 if self.polygon_draw_var.get():
@@ -7547,37 +7554,40 @@ class PictureCaptureApp(tk.Tk):
                                 tags=("ppp-overlay", f"ppp-edge-{region_index}-{side}"),
                             )
 
-                label_border_width = max(1, int(self.settings.illustration_label_border_width))
-                label_frame = tk.Frame(
-                    self.canvas, bg=self.settings.illustration_label_border_color,
-                    bd=0, padx=label_border_width, pady=label_border_width,
-                )
-                label_entry = tk.Entry(
-                    label_frame, width=18, relief="flat", bd=0, highlightthickness=0,
-                    bg=self.settings.illustration_label_fill_color,
-                    font=_entry_font_spec(
-                        self.settings.illustration_label_font_family,
-                        max(7, round(self.settings.illustration_label_font_size * self.view_scale)),
-                        self.settings.illustration_label_font_bold,
-                        self.settings.illustration_label_font_italic,
-                    ),
-                )
-                label_entry.insert(0, self._polygon_display_name(region, region_index))
-                label_entry.bind("<FocusOut>", lambda _e, r=region, w=label_entry: self._update_polygon_label(r, w))
-                label_entry.bind("<Return>", lambda _e, r=region, w=label_entry: self._commit_polygon_label_return(r, w))
-                label_entry.pack(side="left")
-                delete_button = tk.Button(
-                    label_frame, text="×", width=2, height=1, padx=0, pady=0, relief="flat",
-                    command=lambda r=region: self._delete_polygon_region(r),
-                )
-                delete_button.pack(side="left", padx=(2, 0))
-                self.overlay_widgets.append(label_frame)
-                self.polygon_label_bindings.append((label_entry, region))
-                label_frame.update_idletasks()
-                label_x, label_y = self._polygon_label_canvas_position(region, label_frame)
-                label_item = self.canvas.create_window(
-                    label_x, label_y, window=label_frame, anchor="nw", tags=("ppp-overlay",)
-                )
+                label_item = None
+                label_frame = None
+                if show_labels:
+                    label_border_width = max(1, int(self.settings.illustration_label_border_width))
+                    label_frame = tk.Frame(
+                        self.canvas, bg=self.settings.illustration_label_border_color,
+                        bd=0, padx=label_border_width, pady=label_border_width,
+                    )
+                    label_entry = tk.Entry(
+                        label_frame, width=18, relief="flat", bd=0, highlightthickness=0,
+                        bg=self.settings.illustration_label_fill_color,
+                        font=_entry_font_spec(
+                            self.settings.illustration_label_font_family,
+                            max(7, round(self.settings.illustration_label_font_size * self.view_scale)),
+                            self.settings.illustration_label_font_bold,
+                            self.settings.illustration_label_font_italic,
+                        ),
+                    )
+                    label_entry.insert(0, self._polygon_display_name(region, region_index))
+                    label_entry.bind("<FocusOut>", lambda _e, r=region, w=label_entry: self._update_polygon_label(r, w))
+                    label_entry.bind("<Return>", lambda _e, r=region, w=label_entry: self._commit_polygon_label_return(r, w))
+                    label_entry.pack(side="left")
+                    delete_button = tk.Button(
+                        label_frame, text="×", width=2, height=1, padx=0, pady=0, relief="flat",
+                        command=lambda r=region: self._delete_polygon_region(r),
+                    )
+                    delete_button.pack(side="left", padx=(2, 0))
+                    self.overlay_widgets.append(label_frame)
+                    self.polygon_label_bindings.append((label_entry, region))
+                    label_frame.update_idletasks()
+                    label_x, label_y = self._polygon_label_canvas_position(region, label_frame)
+                    label_item = self.canvas.create_window(
+                        label_x, label_y, window=label_frame, anchor="nw", tags=("ppp-overlay",)
+                    )
                 self._polygon_canvas_items[region_index] = {
                     "polygon": polygon_item,
                     "handles": handles,
