@@ -75,6 +75,7 @@ class AppSettings:
     illustration_outline_color: str = "#1565c0"
     illustration_fill_color: str = "#ffe66d"
     illustration_label_border_color: str = "#d81b60"
+    illustration_label_fill_color: str = "#ffffff"
     show_column_guides: bool = True
     show_headword_markers: bool = True
     # Page-list optional columns can be hidden from the heading context menu.
@@ -84,7 +85,7 @@ class AppSettings:
     page_list_show_illustrations: bool = True
     darkness_threshold: int = 300
     dark_area_percent: int = 90
-    batch_interval: float = 3.0
+    batch_interval: float = 5.0
     # Page-level multiprocessing is used only for entry/illustration cropping.
     # 0 = automatic conservative worker count; 1 = serial crop processing.
     crop_parallel_workers: int = 0
@@ -112,11 +113,12 @@ class AppSettings:
     # Overlay editor presentation at 100% page scale. The page zoom multiplies
     # the base font, so text boxes zoom together with the scanned page.
     main_entry_font_family: str = "Microsoft YaHei"
-    main_entry_font_size: int = 10
+    main_entry_font_size: int = 32
     main_entry_font_bold: bool = False
     main_entry_font_italic: bool = False
     main_entry_width_chars: int = 18
     main_entry_x_ratio: float = 0.66
+    main_entry_follow_zoom: bool = True
     # Review zoom and typography are independent from the main page viewer and
     # are persisted per project. 64% is a practical default for large scans.
     review_zoom_percent: int = 64
