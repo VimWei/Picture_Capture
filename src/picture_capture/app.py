@@ -4647,7 +4647,7 @@ class PictureCaptureApp(tk.Tk):
         self._page_list_sort_descending = False
         self._page_list_sort_job: str | None = None
         # Pages whose line count disagreed with the last page-aware TXT fill.
-        # Only the ``已画线`` cell is overlaid in pale red; the page-name cell
+        # Only the ``画线`` cell is overlaid in pale red; the page-name cell
         # remains untouched so the warning is visually scoped to the count issue.
         self._word_fill_mismatch_pages: set[int] = set()
         # v2.9.9: persist the last page-aware fill count check so pale-red
@@ -4669,7 +4669,7 @@ class PictureCaptureApp(tk.Tk):
         self._page_lined_overlays: dict[int, tk.Label] = {}
         # v2.9.12: the visible fill-status cell carries its own semantic color
         # (match/mismatch/stale/no-data), while the legacy mismatch warning in
-        # the 已画线 cell is retained for compatibility and quick scanning.
+        # the 画线 cell is retained for compatibility and quick scanning.
         self._page_fill_status_overlays: dict[int, tk.Label] = {}
         # v2.9.13: cell-overlay repaints are coalesced.  Older builds queued an
         # after_idle repaint for every row metadata update/scroll callback; on
@@ -4941,7 +4941,7 @@ class PictureCaptureApp(tk.Tk):
         self.page_panel = page_panel
         page_panel.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
         page_panel.columnconfigure(0, weight=1)
-        page_panel.rowconfigure(3, weight=1)
+        page_panel.rowconfigure(2, weight=1)
 
         self.page_range_var = tk.StringVar(value="current")
         self.page_range_spec_var = tk.StringVar(value="")
@@ -4950,8 +4950,8 @@ class PictureCaptureApp(tk.Tk):
         range_row = ttk.Frame(page_panel)
         range_row.grid(row=0, column=0, sticky="ew", pady=(0, 3))
         ttk.Label(range_row, text="页面范围：").pack(side="left")
-        ttk.Radiobutton(range_row, text="仅当前页", variable=self.page_range_var, value="current").pack(side="left")
-        ttk.Radiobutton(range_row, text="当前页至末页", variable=self.page_range_var, value="to_end").pack(side="left", padx=(4, 0))
+        ttk.Radiobutton(range_row, text="当前页", variable=self.page_range_var, value="current").pack(side="left")
+        ttk.Radiobutton(range_row, text="当前至末页", variable=self.page_range_var, value="to_end").pack(side="left", padx=(4, 0))
         ttk.Radiobutton(range_row, text="指定：", variable=self.page_range_var, value="specified").pack(side="left", padx=(4, 0))
         ttk.Entry(range_row, textvariable=self.page_range_spec_var, width=14).pack(side="left", fill="x", expand=True)
         ttk.Button(range_row, text="跳到", command=self.jump_to_page_spec).pack(side="left", padx=(4, 0))
@@ -4965,22 +4965,19 @@ class PictureCaptureApp(tk.Tk):
         view_zoom_entry.bind("<Return>", self.apply_view_zoom_text)
         view_zoom_entry.bind("<FocusOut>", self.apply_view_zoom_text)
         ttk.Button(size_row, text="+", width=3, command=lambda: self.zoom(1.15)).pack(side="left")
-        ttk.Button(size_row, text="适合宽度", command=self.fit_page_width).pack(side="left", padx=(7, 3))
-        ttk.Button(size_row, text="适合高度", command=self.fit_page_height).pack(side="left")
-
-        nav_row = ttk.Frame(page_panel)
-        nav_row.grid(row=2, column=0, sticky="ew", pady=(0, 4))
-        ttk.Button(nav_row, text="上一页", command=lambda: self.change_page(-1)).pack(side="left", fill="x", expand=True)
-        ttk.Button(nav_row, text="下一页", command=lambda: self.change_page(1)).pack(side="left", fill="x", expand=True, padx=(5, 0))
+        ttk.Button(size_row, text="↔", width=3, command=self.fit_page_width).pack(side="left", padx=(7, 3))
+        ttk.Button(size_row, text="↕", width=3, command=self.fit_page_height).pack(side="left")
+        ttk.Button(size_row, text="上一页", command=lambda: self.change_page(-1)).pack(side="left", padx=(7, 3))
+        ttk.Button(size_row, text="下一页", command=lambda: self.change_page(1)).pack(side="left")
 
         list_frame = ttk.Frame(page_panel)
-        list_frame.grid(row=3, column=0, sticky="nsew")
+        list_frame.grid(row=2, column=0, sticky="nsew")
         list_frame.columnconfigure(0, weight=1); list_frame.rowconfigure(0, weight=1)
         columns = ("page", "lined", "fill_status", "illustrations")
         self.page_list = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="browse", height=12)
-        self._page_list_heading_labels = {"page": "页面", "lined": "已画线", "fill_status": "填充状态", "illustrations": "插图"}
+        self._page_list_heading_labels = {"page": "页面", "lined": "画线", "fill_status": "填充状态", "illustrations": "插图"}
         self.page_list.heading("page", text="页面")
-        self.page_list.heading("lined", text="已画线")
+        self.page_list.heading("lined", text="画线")
         self.page_list.heading("fill_status", text="填充状态")
         self.page_list.heading("illustrations", text="插图")
         self.page_list.heading("page", command=lambda: self._sort_page_list("page"))
@@ -5067,7 +5064,7 @@ class PictureCaptureApp(tk.Tk):
         page_var = tk.BooleanVar(value=True)
         menu.add_checkbutton(label="页面", variable=page_var, state="disabled")
         menu.add_checkbutton(
-            label="已画线", variable=self._page_column_vars["lined"],
+            label="画线", variable=self._page_column_vars["lined"],
             command=lambda: self._apply_page_list_display_columns(save=True),
         )
         menu.add_checkbutton(
@@ -5121,7 +5118,7 @@ class PictureCaptureApp(tk.Tk):
         if not hasattr(self, "page_list"):
             return
         labels = getattr(self, "_page_list_heading_labels", {
-            "page": "页面", "lined": "已画线", "fill_status": "填充状态", "illustrations": "插图",
+            "page": "页面", "lined": "画线", "fill_status": "填充状态", "illustrations": "插图",
         })
         active = self._page_list_sort_column
         arrow = " ▼" if self._page_list_sort_descending else " ▲"
@@ -6204,6 +6201,13 @@ class PictureCaptureApp(tk.Tk):
             indices = self.selected_page_indices()
         except Exception as exc:
             self.show_error("页面范围无效", exc); return
+        if len(indices) < 2:
+            messagebox.showwarning(
+                "检测版面一致性",
+                "版面一致性检测至少需要选择 2 页；当前页面范围不足 2 页，未执行检测。",
+                parent=self,
+            )
+            return
         if not messagebox.askyesno(
             "检测版面一致性",
             f"将快速扫描当前所选 {len(indices)} 页，检测页眉横线 Y 和正文最左文本框 X。\n\n"
@@ -6298,21 +6302,18 @@ class PictureCaptureApp(tk.Tk):
             range_match = re.fullmatch(r"\s*(\d+)\s*[-~～–—−]\s*(\d+)\s*", token)
             if range_match:
                 lo, hi = sorted((int(range_match.group(1)), int(range_match.group(2))))
-                matched = [
-                    index
-                    for number, indices in numeric_page_indices.items()
-                    if lo <= number <= hi
-                    for index in indices
-                ]
-                if not matched and not numeric_page_indices:
-                    matched = [
+                page_number_indices = numeric_page_indices or trailing_number_indices
+                if page_number_indices:
+                    missing = [number for number in range(lo, hi + 1) if number not in page_number_indices]
+                    if missing:
+                        shown = ", ".join(str(number) for number in missing[:12])
+                        suffix = " …" if len(missing) > 12 else ""
+                        raise ValueError(f"页面范围中以下页码不存在：{shown}{suffix}")
+                    selected.extend(
                         index
-                        for number, indices in trailing_number_indices.items()
-                        if lo <= number <= hi
-                        for index in indices
-                    ]
-                if matched:
-                    selected.extend(matched)
+                        for number in range(lo, hi + 1)
+                        for index in page_number_indices[number]
+                    )
                 elif 1 <= lo <= hi <= len(self.project.images):
                     selected.extend(range(lo - 1, hi))
                 else:
@@ -8670,7 +8671,7 @@ class PictureCaptureApp(tk.Tk):
             self._page_meta_job = None
 
     def _refresh_page_quality_colors(self) -> None:
-        """Refresh the lightweight '已画线' state without reading OCR confidence caches."""
+        """Refresh the lightweight '画线' state without reading OCR confidence caches."""
         if not self.project:
             return
         self._page_meta_generation += 1

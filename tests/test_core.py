@@ -149,6 +149,16 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(app._parse_page_spec("1-100"), list(range(12, 112)))
         self.assertEqual(app._parse_page_spec("1"), [12])
 
+    def test_page_range_rejects_missing_page_before_work_starts(self) -> None:
+        class FakeProject:
+            images = [Path("0001.png"), Path("0002.png"), Path("0004.png")]
+
+        app = PictureCaptureApp.__new__(PictureCaptureApp)
+        app.project = FakeProject()
+
+        with self.assertRaisesRegex(ValueError, "以下页码不存在：3"):
+            app._parse_page_spec("1-4")
+
 
     def test_v276_projection_layout_fallback_detects_two_columns(self) -> None:
         image = Image.new("RGB", (1200, 1600), "white")
@@ -3436,7 +3446,7 @@ def test_v2110_page_list_heading_context_menu_has_optional_columns_and_permanent
     text = source.read_text(encoding="utf-8")
     assert 'self.page_list.bind("<Button-3>", self._page_list_right_click)' in text
     assert 'menu.add_checkbutton(label="页面", variable=page_var, state="disabled")' in text
-    assert 'label="已画线"' in text and 'label="填充状态"' in text and 'label="插图"' in text
+    assert 'label="画线"' in text and 'label="填充状态"' in text and 'label="插图"' in text
 
 
 
@@ -3484,6 +3494,19 @@ def test_v2110_main_crop_preview_replaces_old_width_only_checkbox():
     assert 'text="显示切图预览"' in text
     assert 'command=self._toggle_crop_preview' in text
     assert 'def _draw_crop_plan_preview' in text
+
+
+def test_page_list_compact_labels_navigation_order_and_consistency_minimum():
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    assert 'text="当前页"' in text
+    assert 'text="当前至末页"' in text
+    assert 'text="↔"' in text
+    assert 'text="↕"' in text
+    assert text.index('text="↕"') < text.index('text="上一页"') < text.index('text="下一页"')
+    assert '"lined": "画线"' in text
+    assert 'if len(indices) < 2:' in text
+    assert '至少需要选择 2 页' in text
 
 
 def test_crop_preview_uses_export_filename_and_centered_entry_typography():
