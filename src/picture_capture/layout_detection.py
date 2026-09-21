@@ -30,6 +30,7 @@ class LayoutEstimate:
 class LayoutConsistencyEstimate:
     header_rule_y: int | None
     body_left_x: int | None
+    is_blank: bool = False
 
 
 _TEXT_DETECTION_CACHE: dict[str, Any] = {}
@@ -496,6 +497,11 @@ def detect_layout_consistency(image: Image.Image, settings: AppSettings) -> Layo
     ) if scale < 1.0 else source
     gray = np.asarray(ImageOps.grayscale(work), dtype=np.uint8)
     ink = gray < _otsu_threshold(gray)
+    active_rows = int(np.count_nonzero(ink.mean(axis=1) > 0.002))
+    active_columns = int(np.count_nonzero(ink.mean(axis=0) > 0.002))
+    is_blank = float(ink.mean()) < 0.0008 or active_rows < 6 or active_columns < 12
+    if is_blank:
+        return LayoutConsistencyEstimate(None, None, is_blank=True)
     parameter_to_source = 1.0 / max(0.01, parameter_scale(source, settings))
     header_limit = min(ink.shape[0], max(1, round(settings.start_y * parameter_to_source * scale)))
     header_density = ink[:header_limit].mean(axis=1)
@@ -511,4 +517,4 @@ def detect_layout_consistency(image: Image.Image, settings: AppSettings) -> Layo
         active = np.flatnonzero(column_density > threshold)
         if active.size:
             body_left_x = round(int(active[0]) / scale * parameter_scale(source, settings))
-    return LayoutConsistencyEstimate(header_rule_y=header_rule_y, body_left_x=body_left_x)
+    return LayoutConsistencyEstimate(header_rule_y=header_rule_y, body_left_x=body_left_x, is_blank=False)

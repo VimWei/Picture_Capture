@@ -1853,23 +1853,14 @@ class ReviewWindow(tk.Toplevel):
         self.review_single_cjk_line_height_spin.pack(side="left")
         ttk.Label(height_row, text="px").pack(side="left", padx=(2, 0))
 
-        main_ocr_row = ttk.Frame(review_info)
-        main_ocr_row.pack(fill="x", pady=(4, 0))
-        ttk.Label(main_ocr_row, text="主界面：").pack(side="left")
-        ttk.Checkbutton(
-            main_ocr_row, text="显示 OCR 内容选择", variable=self.review_main_ocr_choices_var,
-            command=self._apply_review_main_ocr_display_options,
-        ).pack(side="left")
-        ttk.Checkbutton(
-            main_ocr_row, text="显示 OCR 底色", variable=self.review_main_ocr_background_var,
-            command=self._apply_review_main_ocr_display_options,
-        ).pack(side="left", padx=(7, 0))
-
         zoom_row = ttk.Frame(review_info)
         zoom_row.pack(fill="x")
         ttk.Label(zoom_row, text="词条切图显示大小：").pack(side="left")
         ttk.Button(zoom_row, text="−", width=3, command=lambda: self.change_review_zoom(0.8)).pack(side="left")
-        ttk.Label(zoom_row, textvariable=self.review_zoom_var, width=6, anchor="center").pack(side="left", padx=2)
+        review_zoom_entry = ttk.Entry(zoom_row, textvariable=self.review_zoom_var, width=6, justify="center")
+        review_zoom_entry.pack(side="left", padx=2)
+        review_zoom_entry.bind("<Return>", self.apply_review_zoom_text)
+        review_zoom_entry.bind("<FocusOut>", self.apply_review_zoom_text)
         ttk.Button(zoom_row, text="+", width=3, command=lambda: self.change_review_zoom(1.25)).pack(side="left")
         ttk.Button(zoom_row, text="100%", width=5, command=self.reset_review_zoom).pack(side="left", padx=(4, 0))
 
@@ -2974,6 +2965,21 @@ class ReviewWindow(tk.Toplevel):
     def change_review_zoom(self, factor: float) -> None:
         self._commit_edits()
         self.review_zoom = max(0.20, min(2.5, self.review_zoom * factor))
+        self.parent.settings.review_zoom_percent = round(self.review_zoom * 100)
+        self.review_zoom_var.set(f"{round(self.review_zoom * 100):d}%")
+        active = self.active_index
+        self.render_rows()
+        if self.editors:
+            self.focus_index(min(active, len(self.editors) - 1))
+
+    def apply_review_zoom_text(self, _event=None) -> None:
+        try:
+            percent = float(self.review_zoom_var.get().strip().rstrip("%"))
+        except ValueError:
+            self.review_zoom_var.set(f"{round(self.review_zoom * 100):d}%")
+            return
+        self._commit_edits()
+        self.review_zoom = min(2.5, max(0.20, percent / 100.0))
         self.parent.settings.review_zoom_percent = round(self.review_zoom * 100)
         self.review_zoom_var.set(f"{round(self.review_zoom * 100):d}%")
         active = self.active_index
@@ -4947,12 +4953,16 @@ class PictureCaptureApp(tk.Tk):
         ttk.Radiobutton(range_row, text="当前页至末页", variable=self.page_range_var, value="to_end").pack(side="left", padx=(4, 0))
         ttk.Radiobutton(range_row, text="指定：", variable=self.page_range_var, value="specified").pack(side="left", padx=(4, 0))
         ttk.Entry(range_row, textvariable=self.page_range_spec_var, width=14).pack(side="left", fill="x", expand=True)
+        ttk.Button(range_row, text="跳到", command=self.jump_to_page_spec).pack(side="left", padx=(4, 0))
 
         size_row = ttk.Frame(page_panel)
         size_row.grid(row=1, column=0, sticky="ew", pady=(0, 4))
         ttk.Label(size_row, text="页面大小：").pack(side="left")
         ttk.Button(size_row, text="−", width=3, command=lambda: self.zoom(0.87)).pack(side="left")
-        ttk.Label(size_row, textvariable=self.view_zoom_var, width=6, anchor="center").pack(side="left", padx=2)
+        view_zoom_entry = ttk.Entry(size_row, textvariable=self.view_zoom_var, width=6, justify="center")
+        view_zoom_entry.pack(side="left", padx=2)
+        view_zoom_entry.bind("<Return>", self.apply_view_zoom_text)
+        view_zoom_entry.bind("<FocusOut>", self.apply_view_zoom_text)
         ttk.Button(size_row, text="+", width=3, command=lambda: self.zoom(1.15)).pack(side="left")
         ttk.Button(size_row, text="适合宽度", command=self.fit_page_width).pack(side="left", padx=(7, 3))
         ttk.Button(size_row, text="适合高度", command=self.fit_page_height).pack(side="left")
@@ -5573,37 +5583,78 @@ class PictureCaptureApp(tk.Tk):
             "illustration_outline_color": tk.StringVar(value=self.settings.illustration_outline_color),
             "illustration_fill_color": tk.StringVar(value=self.settings.illustration_fill_color),
             "illustration_label_border_color": tk.StringVar(value=self.settings.illustration_label_border_color),
+            "illustration_label_fill_color": tk.StringVar(value=self.settings.illustration_label_fill_color),
         }
+
+        def color_button(row: ttk.Frame, name: str) -> tk.Button:
+            button = tk.Button(row, text="", width=2, padx=0, pady=0, bd=1, highlightthickness=0)
+            button.configure(command=lambda n=name, b=button: self.choose_overlay_color(n, b))
+            button.pack(side="left", padx=(2, 5), fill="y")
+            self.quick_color_buttons[name] = button
+            self._style_color_button(button, str(self.quick_color_vars[name].get()))
+            return button
 
         line_row = ttk.Frame(aux); line_row.grid(row=0, column=0, columnspan=4, sticky="ew")
         ttk.Checkbutton(line_row, text="栏左垂线", variable=guide_var, command=self._quick_parameter_changed).pack(side="left")
-        guide_color_btn = tk.Button(line_row, text="", width=2, height=1, padx=0, pady=0, command=lambda: self.choose_overlay_color("guide_color", guide_color_btn))
-        guide_color_btn.pack(side="left", padx=(2, 4)); self.quick_color_buttons["guide_color"] = guide_color_btn; self._style_color_button(guide_color_btn, self.settings.guide_color)
+        color_button(line_row, "guide_color")
         ttk.Label(line_row, text="宽度：").pack(side="left")
         guide_value = tk.StringVar(value=str(self.settings.guide_width)); self.quick_vars["guide_width"] = guide_value; self.quick_field_casts["guide_width"] = int
         ttk.Entry(line_row, textvariable=guide_value, width=5).pack(side="left", padx=(2, 10))
-        ttk.Checkbutton(line_row, text="词头横线", variable=marker_var, command=self._quick_parameter_changed).pack(side="left")
-        marker_color_btn = tk.Button(line_row, text="", width=2, height=1, padx=0, pady=0, command=lambda: self.choose_overlay_color("headword_marker_color", marker_color_btn))
-        marker_color_btn.pack(side="left", padx=(2, 4)); self.quick_color_buttons["headword_marker_color"] = marker_color_btn; self._style_color_button(marker_color_btn, self.settings.headword_marker_color)
-        ttk.Label(line_row, text="高度：").pack(side="left")
-        marker_value = tk.StringVar(value=str(self.settings.marker_height)); self.quick_vars["marker_height"] = marker_value; self.quick_field_casts["marker_height"] = int
-        ttk.Entry(line_row, textvariable=marker_value, width=5).pack(side="left", padx=(2, 0))
+        ttk.Checkbutton(line_row, text="插图形状：轮廓", variable=self.polygon_var, command=self.redraw).pack(side="left")
+        color_button(line_row, "illustration_outline_color")
+        ttk.Label(line_row, text="背景").pack(side="left")
+        color_button(line_row, "illustration_fill_color")
 
-        ppp_color_row = ttk.Frame(aux); ppp_color_row.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(3, 1))
-        for text, name in (("插图轮廓颜色", "illustration_outline_color"), ("插图区域颜色", "illustration_fill_color"), ("插图标签外框颜色", "illustration_label_border_color")):
-            ttk.Label(ppp_color_row, text=text + "：").pack(side="left", padx=(0 if name == "illustration_outline_color" else 10, 2))
-            btn = tk.Button(ppp_color_row, text="", width=2, height=1, padx=0, pady=0)
-            btn.configure(command=lambda n=name, b=btn: self.choose_overlay_color(n, b))
-            btn.pack(side="left"); self.quick_color_buttons[name] = btn; self._style_color_button(btn, str(self.quick_color_vars[name].get()))
+        marker_row = ttk.Frame(aux); marker_row.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+        ttk.Checkbutton(marker_row, text="词头横线", variable=marker_var, command=self._quick_parameter_changed).pack(side="left")
+        color_button(marker_row, "headword_marker_color")
+        ttk.Label(marker_row, text="高度：").pack(side="left")
+        marker_value = tk.StringVar(value=str(self.settings.marker_height)); self.quick_vars["marker_height"] = marker_value; self.quick_field_casts["marker_height"] = int
+        ttk.Entry(marker_row, textvariable=marker_value, width=5).pack(side="left", padx=(2, 10))
+        ttk.Label(marker_row, text="插图标签：外框").pack(side="left")
+        color_button(marker_row, "illustration_label_border_color")
+        ttk.Label(marker_row, text="背景").pack(side="left")
+        color_button(marker_row, "illustration_label_fill_color")
+
+        entry_row = ttk.Frame(aux); entry_row.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+        ttk.Label(entry_row, text="词条文本框：宽度(字符)").pack(side="left")
+        for name, width in (("main_entry_width_chars", 5), ("main_entry_x_ratio", 5)):
+            shown = getattr(self.settings, name) * 100 if name == "main_entry_x_ratio" else getattr(self.settings, name)
+            var = tk.StringVar(value=str(round(shown) if name == "main_entry_x_ratio" else shown)); self.quick_vars[name] = var; self.quick_field_casts[name] = int if name.endswith("chars") else float
+            if name == "main_entry_x_ratio": ttk.Label(entry_row, text="偏移%").pack(side="left", padx=(8, 2))
+            ttk.Entry(entry_row, textvariable=var, width=width).pack(side="left")
+        follow_var = tk.BooleanVar(value=bool(self.settings.main_entry_follow_zoom)); self.quick_bool_vars["main_entry_follow_zoom"] = follow_var
+        ttk.Checkbutton(entry_row, text="跟随缩放", variable=follow_var).pack(side="left", padx=(8, 0))
+
+        font_row = ttk.Frame(aux); font_row.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+        ttk.Label(font_row, text="字体").pack(side="left")
+        family_var = tk.StringVar(value=self.settings.main_entry_font_family); self.quick_vars["main_entry_font_family"] = family_var; self.quick_field_casts["main_entry_font_family"] = str
+        ttk.Combobox(font_row, textvariable=family_var, values=tuple(sorted(set(font.families()), key=str.casefold)), width=16).pack(side="left")
+        ttk.Label(font_row, text="字号").pack(side="left", padx=(8, 2))
+        size_var = tk.StringVar(value=str(self.settings.main_entry_font_size)); self.quick_vars["main_entry_font_size"] = size_var; self.quick_field_casts["main_entry_font_size"] = int
+        ttk.Entry(font_row, textvariable=size_var, width=5).pack(side="left")
+        for label, name in (("粗体", "main_entry_font_bold"), ("斜体", "main_entry_font_italic")):
+            var = tk.BooleanVar(value=bool(getattr(self.settings, name))); self.quick_bool_vars[name] = var
+            ttk.Checkbutton(font_row, text=label, variable=var).pack(side="left", padx=(7, 0))
+
+        ocr_display_row = ttk.Frame(aux); ocr_display_row.grid(row=4, column=0, columnspan=4, sticky="ew")
+        for label, name in (("显示OCR内容选择", "review_main_show_ocr_choices"), ("显示OCR比对底色结果", "review_main_show_ocr_background")):
+            var = tk.BooleanVar(value=bool(getattr(self.settings, name))); self.quick_bool_vars[name] = var
+            ttk.Checkbutton(ocr_display_row, text=label, variable=var).pack(side="left", padx=(0, 8))
 
         candidate_var = tk.BooleanVar(value=bool(self.settings.paddle_show_candidate_checkboxes)); self.quick_bool_vars["paddle_show_candidate_checkboxes"] = candidate_var
-        ttk.Checkbutton(aux, text="显示候选复选框", variable=candidate_var, command=self._quick_parameter_changed).grid(row=2, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(aux, text="显示插图多边形", variable=self.polygon_var, command=self.redraw).grid(row=2, column=2, columnspan=2, sticky="w")
-        ttk.Checkbutton(aux, text="切图预览（主图）", variable=self.crop_preview_var, command=self._toggle_crop_preview).grid(row=3, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(aux, text="隐藏线框（插图除外）", variable=self.hide_var, command=self.redraw).grid(row=3, column=2, columnspan=2, sticky="w")
-        add_field(aux, 4, 0, "向右比例%：", "right_ratio", float, 6)
-        add_field(aux, 4, 2, "间隔时间：", "batch_interval", float, 6)
-        ttk.Checkbutton(aux, text="自动保存", variable=self.autosave_var, command=self.toggle_autosave).grid(row=5, column=2, columnspan=2, sticky="w")
+        option_row = ttk.Frame(aux); option_row.grid(row=5, column=0, columnspan=4, sticky="ew")
+        ttk.Checkbutton(option_row, text="显示单行候选框", variable=candidate_var).pack(side="left")
+        ttk.Checkbutton(option_row, text="显示切图预览", variable=self.crop_preview_var, command=self._toggle_crop_preview).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(option_row, text="隐藏线框(插图除外)", variable=self.hide_var, command=self.redraw).pack(side="left", padx=(8, 0))
+        save_row = ttk.Frame(aux); save_row.grid(row=6, column=0, columnspan=4, sticky="ew")
+        ttk.Checkbutton(save_row, text="自动保存", variable=self.autosave_var, command=self.toggle_autosave).pack(side="left")
+        ttk.Label(save_row, text="间隔时间(秒)").pack(side="left", padx=(8, 2))
+        interval_var = tk.StringVar(value=str(self.settings.batch_interval)); self.quick_vars["batch_interval"] = interval_var; self.quick_field_casts["batch_interval"] = float
+        ttk.Entry(save_row, textvariable=interval_var, width=6).pack(side="left")
+        ttk.Label(save_row, text="向右比例%").pack(side="left", padx=(10, 2))
+        ratio_var = tk.StringVar(value=str(self.settings.right_ratio)); self.quick_vars["right_ratio"] = ratio_var; self.quick_field_casts["right_ratio"] = float
+        ttk.Entry(save_row, textvariable=ratio_var, width=6).pack(side="left")
         aux.columnconfigure(1, weight=1); aux.columnconfigure(3, weight=1)
 
         actions = self._section_frame(parent, "四、画线与校对", padding=5, section_key="actions")
@@ -5700,7 +5751,10 @@ class PictureCaptureApp(tk.Tk):
         if not hasattr(self, "quick_vars"):
             return
         for name, var in self.quick_vars.items():
-            if hasattr(self.settings, name): var.set(str(getattr(self.settings, name)))
+            if hasattr(self.settings, name):
+                value = getattr(self.settings, name)
+                if name == "main_entry_x_ratio": value = round(float(value) * 100)
+                var.set(str(value))
         for name, var in getattr(self, "quick_bool_vars", {}).items():
             if hasattr(self.settings, name): var.set(bool(getattr(self.settings, name)))
         for name, var in getattr(self, "quick_color_vars", {}).items():
@@ -5727,6 +5781,10 @@ class PictureCaptureApp(tk.Tk):
                     raise ValueError("Y精修横向分析范围必须在 10–100% 之间。")
                 if name == "right_ratio" and not 1 <= float(value) <= 100:
                     raise ValueError("向右比例必须在 1–100% 之间。")
+                if name == "main_entry_x_ratio":
+                    if not 0 <= float(value) <= 125:
+                        raise ValueError("词条文本框偏移必须在 0–125% 之间。")
+                    value = float(value) / 100.0
                 setattr(self.settings, name, value)
             for name, var in self.quick_bool_vars.items(): setattr(self.settings, name, bool(var.get()))
             for name, var in getattr(self, "quick_color_vars", {}).items():
@@ -6109,26 +6167,48 @@ class PictureCaptureApp(tk.Tk):
         ):
             return
         pages = list(self.project.images); settings = replace(self.settings)
+        range_name = pages[indices[0]].stem if len(indices) == 1 else f"{pages[indices[0]].stem}-{pages[indices[-1]].stem}"
+        range_name = re.sub(r'[^0-9A-Za-z_.-]+', "_", range_name)
 
         def worker(index: int, _position: int, _total: int):
             with Image.open(pages[index]) as opened:
                 estimate = detect_layout_consistency(opened, settings)
-            return pages[index].name, estimate.header_rule_y, estimate.body_left_x
+            return pages[index].name, estimate.header_rule_y, estimate.body_left_x, estimate.is_blank
 
         def done(_completed, _total, stopped, results, error) -> None:
             if error or not results: return
-            target = exports_root(self.project.root) / f"layout_consistency_{datetime.now():%Y%m%d_%H%M%S}.csv"
+            base = f"layout_consistency_{range_name}_{datetime.now():%Y%m%d_%H%M%S}"
+            target = exports_root(self.project.root) / f"{base}.csv"
+            report = exports_root(self.project.root) / f"{base}_report.txt"
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open("w", encoding="utf-8-sig", newline="") as handle:
-                writer = csv.writer(handle); writer.writerow(("page", "header_rule_y", "body_left_x")); writer.writerows(results)
-            header_values = [row[1] for row in results if row[1] is not None]
-            left_values = [row[2] for row in results if row[2] is not None]
+                writer = csv.writer(handle); writer.writerow(("page", "header_rule_y", "body_left_x", "status"))
+                writer.writerows((name, y, x, "blank_skipped" if blank else "analyzed") for name, y, x, blank in results)
+            analyzed = [row for row in results if not row[3]]
+            blanks = [row[0] for row in results if row[3]]
+            header_values = [row[1] for row in analyzed if row[1] is not None]
+            left_values = [row[2] for row in analyzed if row[2] is not None]
             def summary(values) -> str:
                 return "无有效值" if not values else f"均值 {statistics.fmean(values):.1f}，范围 {min(values)}–{max(values)}，标准差 {statistics.pstdev(values):.1f}"
+            def outliers(column: int) -> list[str]:
+                pairs = [(row[0], row[column]) for row in analyzed if row[column] is not None]
+                if len(pairs) < 3: return []
+                values = [value for _name, value in pairs]; mean = statistics.fmean(values); deviation = statistics.pstdev(values)
+                tolerance = max(3.0, deviation * 2.5)
+                return [name for name, value in pairs if abs(value - mean) > tolerance]
+            abnormal = sorted(set(outliers(1) + outliers(2)))
+            report_text = (
+                f"页面范围：{range_name}\n总页数：{len(results)}\n有效分析：{len(analyzed)}\n"
+                f"空白页跳过：{len(blanks)}（{', '.join(blanks) or '无'}）\n"
+                f"页眉横线 Y：{summary(header_values)}\n正文起始 X：{summary(left_values)}\n"
+                f"异常页面：{', '.join(abnormal) or '无'}\n"
+            )
+            report.write_text(report_text, encoding="utf-8-sig")
             messagebox.showinfo(
                 "版面一致性统计",
-                f"完成 {len(results)} 页{'（提前停止）' if stopped else ''}\n"
-                f"页眉横线 Y：{summary(header_values)}\n正文起始 X：{summary(left_values)}\n\n结果：{target}",
+                f"完成 {len(results)} 页，有效 {len(analyzed)} 页，跳过空白页 {len(blanks)} 页"
+                f"{'（提前停止）' if stopped else ''}\n页眉横线 Y：{summary(header_values)}\n"
+                f"正文起始 X：{summary(left_values)}\n异常页面：{', '.join(abnormal) or '无'}\n\n结果：{target}\n报告：{report}",
                 parent=self,
             )
             self.status_var.set(f"版面一致性检测完成：{target.name}")
@@ -6214,6 +6294,21 @@ class PictureCaptureApp(tk.Tk):
         if mode == "current": return [self.current_index] if self.current_index >= 0 else []
         if mode == "to_end": return list(range(max(0, self.current_index), len(self.project.images)))
         return self._parse_page_spec(self.page_range_spec_var.get())
+
+    def jump_to_page_spec(self) -> None:
+        """Navigate to the first page number typed in the specified-range box."""
+        match = re.search(r"\d+", self.page_range_spec_var.get())
+        if not match:
+            messagebox.showinfo("跳到页面", "请先在“指定”文本框输入页码。", parent=self)
+            return
+        try:
+            indices = self._parse_page_spec(match.group(0))
+        except ValueError as exc:
+            self.show_error("无法定位页面", exc)
+            return
+        if indices:
+            self.page_range_var.set("specified")
+            self.load_page(indices[0])
 
     def _foreground_batch_state(self, index: int | None = None) -> str:
         if index is None:
@@ -7064,7 +7159,8 @@ class PictureCaptureApp(tk.Tk):
             )
             record["canvas_items"].append(item)
 
-        editor_font_size = max(5, round(self.settings.main_entry_font_size * self.view_scale))
+        font_scale = self.view_scale if self.settings.main_entry_follow_zoom else 1.0
+        editor_font_size = max(5, round(self.settings.main_entry_font_size * font_scale))
         editor = tk.Entry(
             self.canvas,
             width=max(4, int(self.settings.main_entry_width_chars)),
@@ -7432,6 +7528,7 @@ class PictureCaptureApp(tk.Tk):
                 label_frame = tk.Frame(self.canvas, bg=self.settings.illustration_label_border_color, bd=0, padx=1, pady=1)
                 label_entry = tk.Entry(
                     label_frame, width=18, relief="flat", bd=0, highlightthickness=0,
+                    bg=self.settings.illustration_label_fill_color,
                     font=("Microsoft YaHei", max(7, round(9 * self.view_scale))),
                 )
                 label_entry.insert(0, self._polygon_display_name(region, region_index))
@@ -7478,6 +7575,19 @@ class PictureCaptureApp(tk.Tk):
             self._update_view_zoom_label()
             self.redraw()
             self._set_idle_cursor_status()
+
+    def apply_view_zoom_text(self, _event=None) -> None:
+        if not self.image:
+            return
+        try:
+            percent = float(self.view_zoom_var.get().strip().rstrip("%"))
+        except ValueError:
+            self._update_view_zoom_label()
+            return
+        self.view_scale = min(3.0, max(0.08, percent / 100.0))
+        self._update_view_zoom_label()
+        self.redraw()
+        self._set_idle_cursor_status()
 
     def fit_page_width(self) -> None:
         if not self.image:
@@ -10254,6 +10364,15 @@ class PictureCaptureApp(tk.Tk):
         # Capture any text still being edited on the main canvas before the
         # review window starts using the shared Entry objects.
         self._sync_entry_editor_texts()
+        # Keep the established behavior: proofreading starts with both main
+        # canvas OCR aids disabled, even though their controls now live in the
+        # main Auxiliary Options section.
+        self.settings.review_main_show_ocr_choices = False
+        self.settings.review_main_show_ocr_background = False
+        if hasattr(self, "quick_bool_vars"):
+            for name in ("review_main_show_ocr_choices", "review_main_show_ocr_background"):
+                if name in self.quick_bool_vars:
+                    self.quick_bool_vars[name].set(False)
         review = ReviewWindow(self)
         self.review_window = review
         # Proofreading owns OCR selection while it is open, so simplify the

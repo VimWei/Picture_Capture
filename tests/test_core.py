@@ -3481,7 +3481,7 @@ def test_v2116_page_illustration_count_uses_ppp_without_opening_page_pixels(tmp_
 def test_v2110_main_crop_preview_replaces_old_width_only_checkbox():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
-    assert 'text="切图预览（主图）"' in text
+    assert 'text="显示切图预览"' in text
     assert 'command=self._toggle_crop_preview' in text
     assert 'def _draw_crop_plan_preview' in text
 
@@ -3539,7 +3539,7 @@ def test_v2111_rectangular_ppp_supports_four_side_drag_geometry():
 def test_v2111_ui_restores_hide_overlay_and_removes_crop_dialog_preview():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
-    assert 'text="隐藏线框（插图除外）"' in text
+    assert 'text="隐藏线框(插图除外)"' in text
     crop_class = text.split('class CropSettingsDialog', 1)[1].split('class PictureCaptureApp', 1)[0]
     assert 'preview_canvas' not in crop_class
     assert '主界面完整预览' not in crop_class
@@ -4446,8 +4446,10 @@ def test_v21122_hotfix2_review_ui_exposes_shared_and_single_height_plus_main_ocr
     assert 'textvariable=self.review_line_height_var' in review
     assert 'text="单字行高："' in review
     assert 'textvariable=self.review_single_cjk_line_height_var' in review
-    assert 'text="显示 OCR 内容选择"' in review
-    assert 'text="显示 OCR 底色"' in review
+    assert 'text="显示 OCR 内容选择"' not in review
+    assert 'text="显示 OCR 底色"' not in review
+    assert 'self.settings.review_main_show_ocr_choices = False' in text
+    assert 'self.settings.review_main_show_ocr_background = False' in text
     assert 'self.parent.settings.character_height = line_height' in review
     assert 'self.parent.settings.review_single_cjk_line_height = line_height' in review
 
