@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "picture-capture-restored"
+version = "2.13.1"
+description = "Python restoration of the Picture Capture dictionary-page tool"
+license = "MIT"
+license-files = ["LICENSE.txt"]
+requires-python = ">=3.10,<3.14"
+dependencies = ["Pillow>=10", "numpy>=1.24", "pypinyin>=0.53,<1", "opencc>=1.4.2,<2"]
+
+[project.optional-dependencies]
+paddleocr = ["paddleocr>=3.7,<4", "paddlepaddle==3.3.0"]
+lens = ["chrome-lens-py>=3.4,<4"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+picture-capture = "picture_capture.app:main"
+picture-capture-cli = "picture_capture.cli:main"
+
+[[tool.uv.index]]
+name = "paddle-cpu"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cpu/"
+explicit = true
+
+[tool.uv.sources]
+paddlepaddle = { index = "paddle-cpu" }
+
+[tool.uv]
+required-version = ">=0.11"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+picture_capture = ["data/*.json", "data/profile_previews/*.jpg"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

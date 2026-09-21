@@ -1,0 +1,847 @@
+## v2.13.1
+
+### 在 v2.13.0 的 uv 架构上补回 v2.12.10–v2.12.12 功能
+
+- 保留 v2.13.0 的 `uv` / `.venv` / Python 3.13 / `uv.lock` 安装体系，不恢复旧版全局 pip、requirements 或多个安装脚本。
+- Windows 启动改为 `uv run --locked python run.py`，确保日常运行直接使用项目锁文件与项目专属 `.venv`。
+- 修正文档中 GPU Paddle 安装说明：`paddleocr` extra 是 CPU 预设，会安装 `paddlepaddle==3.3.0`；GPU 用户不应与该 CPU extra 叠加，避免 CPU/GPU runtime 同时提供 `paddle` 模块。
+- 修正【OCR / 简化环境状态】里仍遗留的旧 `pip/run_windows 自动修复 OpenCC` 提示，统一改为 uv 环境下的 `uv sync` / `uv sync --reinstall-package opencc` 处理方式。
+
+### CC-CEDICT 繁体→简体词形比较
+
+- CC-CEDICT 本地索引除“是否收录”外，新增 `Traditional -> Simplified` 与 `Simplified -> Traditional` 映射。
+- 校对工具栏新增 `CC简` 状态：`CC简(√)` 表示 OpenCC 结果与 CC-CEDICT Simplified 字段一致；不一致时显示唯一候选或候选数；未找到映射时显示 `×`，但不自动判定 OpenCC 错误。
+- 点击 `CC简` 可查看原词条、OpenCC 结果、当前简体和 CC-CEDICT 简体候选的完整对照。
+- 支持同一个繁体词对应多个 CC-CEDICT 简体候选。
+
+### 已保存简体数据不再被重新生成覆盖
+
+- `_PictureCapture/data/Simplified/<页码>.json` 中只要已存在该词条记录，无论 `manual=true` 还是 `manual=false`，重新打开页面时都以已保存文本为准。
+- OpenCC 只负责“从未保存过的词条”的首次简体初始化；已有 sidecar 记录不会在重开页面时被静默重新生成。
+- 当前会话中尚未首次保存的新行仍可随原词条实时更新 OpenCC 建议；保存后即成为正式数据。
+
+### 校对窗口与主界面联动
+
+- 校对窗口默认宽度、默认高度均改为当前屏幕的 **70%**，并居中打开。
+- 校对词条聚焦时，主界面对应词条高亮改为真正的 RGBA 半透明淡黄色覆盖；去掉 `gray50` 点阵/磨砂效果。
+- 版面行为中的【手动分栏】与【跟随词头列倾斜和局部变形】改为默认不勾选。
+- 对旧项目执行一次性设置迁移：首次进入新版本时将上述两个选项重置为关闭；之后用户再次手工勾选的选择会正常保存，不会每次启动被强制关闭。
+
+### 测试与源码结构
+
+- 将回归测试目录恢复到源码树，使 README 中的 `uv run pytest` 可以直接执行，而不是只声明测试命令却没有 `tests/`。
+- 新增并保留 CC-CEDICT 映射、简体保存保护、70% 校对窗口、版面行为默认值与 RGBA 高亮回归测试。
+
+## v2.13.0
+
+### 构建与依赖环境迁移到 uv
+
+- 项目改用 [uv](https://docs.astral.sh/uv/) 管理依赖环境，新增 `uv.lock` 与 `.python-version`（锁定 Python 3.13）。
+- 依赖统一声明在 `pyproject.toml`：核心依赖、`paddleocr` / `lens` 可选组，以及 `dev` 开发依赖组（pytest、ruff）。
+- PaddlePaddle CPU 运行时通过 `[tool.uv.index]` 声明的官方专用索引解析，`uv sync --extra paddleocr` 可一步装全。
+- 删除 `requirements.txt`、`requirements-paddleocr.txt`、`requirements-lens.txt` 和 `install_paddleocr_windows.bat`、`install_ocr_extras_windows.bat`。
+- `run_windows.bat` 改为 `uv run python run.py`；移除全局 OpenCC 卸载/修复逻辑（虚拟环境隔离后不再需要）。
+- 新增 `.gitignore`；构建产物 `dist/` 不再纳入版本控制。
+
+### 文档重组
+
+- 新增精简的 `README.md`，聚焦版本渊源、安装与运行。
+- 长期参考文档集中于 `docs/`：`usage.md`、`architecture.md`、`legacy-function-map.md`、`cc-cedict-install.md`；示例配置移入 `examples/`；`CHANGELOG.md` 保留在根目录。
+- 删除与 CHANGELOG 重复且无人引用的 `RELEASE_INFO.txt`。
+- 原 README 堆积的版本叙述并入本文件并规范标题；本文件是唯一的版本历史来源。
+## v2.12.9
+
+- 校对界面：将“字体”改名为“词条字体”。
+- 校对界面：新增独立“简体字体”设置，可分别选择字体、字号、粗体和斜体，并实时作用于简化文本框。
+- 简体字体设置随项目持久化，且不再随词条字体修改而被同步覆盖。
+- 兼容旧项目：若没有简体字体设置，首次加载时自动继承已有词条字体。
+- 校对界面：“上下安全空间”改名为“上下边距”；内部参数名与历史设置保持兼容。
+- 保持简化模式双文本框约 50% / 50% 布局；关闭简化后原词条文本框恢复全宽。
+- OCR 结果区压缩为单行：`OCR结果： P: ...  T: ...  L: ...  融: ...`，分别对应 PaddleOCR、Tesseract、Google Lens 与融合结果。
+- 有 OCR 文本的 P/T/L/融仍可点击直接写入当前词条；相似度底色继续保留，缺失来源以 `-` 显示。
+- 回归验证：pytest **274 passed**；传统 `run_tests.py` **70 passed**。
+## v2.12.8
+
+### 校对界面：词典核验状态改为单行直观显示
+
+- 网络核验区调整为紧凑布局：`[自动检查]  [立即]  CC-CEDICT(√/×)  萌(√/×)  Wiki(√/×)  [网络搜索]`。
+- `√` 表示该来源检出精确词条，`×` 表示该来源明确未检出，`?` 表示网络异常/状态未知；非中文来源不适用时显示 `—`。
+- CC-CEDICT 未安装时显示 `CC-CEDICT(未装)`，避免把“未安装”误判为“未收录”。
+- 【立即检查】精简为【立即】；萌典和 Wiktionary 状态按钮可直接打开对应词条页。
+
+### 新增本地 CC-CEDICT 支持
+
+- 中文词条核验顺序增加本地 CC-CEDICT；同时保留萌典与中文 Wiktionary 网络核验。
+- CC-CEDICT 同时索引繁体、简体字段，因此原词条和简化词条都可直接核验。
+- CC-CEDICT 为全用户项目共享资源，默认安装在 `%LOCALAPPDATA%\PictureCapture\dictionaries\cc-cedict\`，不写入项目目录 `_PictureCapture`。
+- 程序不会自动抓取 MDBG 网站；点击 `CC-CEDICT(未装)` 后，可选择已下载的官方 ZIP/GZ/TXT/U8 文件安装，或打开官方下载页。
+- 安装时先验证 CC-CEDICT 格式与条目数量，再原子替换本地数据库；保留来源、许可和安装时间元数据。
+- 【OCR / 简化环境状态】新增 CC-CEDICT 安装状态、条目数与本地路径显示。
+- CC-CEDICT 数据遵循 CC BY-SA 4.0；程序仅本地读取，不修改词典内容。
+
+### 回归验证
+
+- pytest：**270 passed**。
+- 传统 `run_tests.py`：**70 passed**。
+## v2.12.7
+
+- 修复【OCR / 简化环境状态】显示 OpenCC 已安装、但校对界面却显示“OpenCC未安装”的矛盾状态。此前环境窗口只检查 pip 分发包元数据，而校对模块会把任何 OpenCC 初始化异常都误标为“未安装”。
+- 环境检测现在执行真实运行测试：导入 `opencc`、加载 `t2s.json` 并完成一次实际转换；若失败会显示具体初始化错误。
+- 校对界面的错误提示改为“OpenCC不可用”，准确区分“包未安装”和“运行初始化失败”。
+- 修复官方 OpenCC 与旧 `opencc-python-reimplemented` 共享模块名时的迁移隐患：卸载旧包后强制重装官方 OpenCC，避免 pip 元数据仍存在但共享 `opencc` 模块文件已被旧包卸载过程删除。
+- `run_windows.bat` 增加 OpenCC 功能性启动自检；若导入、配置加载或转换失败，会自动强制重装官方 OpenCC 并再次验证。
+## v2.12.6
+
+### 简化引擎切换为官方 OpenCC
+
+- 简化引擎从第三方 `opencc-python-reimplemented` 切换为 OpenCC 官方 Python 包 `opencc>=1.4.2,<2`。
+- 转换配置改为官方标准 `t2s.json`，继续使用 OpenCC 的词组/上下文优先转换规则，而不是逐字机械替换。
+- `run_windows.bat` 会先检测并卸载旧的 `opencc-python-reimplemented`，再安装官方 OpenCC，避免两个发行包都提供 `opencc` 同名模块造成环境混用。
+- 【检测引擎】窗口扩展为【OCR / 简化环境状态】，显示官方 OpenCC 版本与 `t2s.json（词组优先）` 配置；若仍检测到旧兼容包会明确警告。
+- 校对界面的简化数据格式、自动保存、人工编辑、网络查询以及与原词条的逐行同步逻辑均保持不变。
+
+### 兼容性
+
+- 现有 `_PictureCapture/data/Simplified/<页码>.json` 无需迁移，升级后直接继续使用。
+- 首次使用 v2.12.6 建议通过 `run_windows.bat` 启动一次，以自动完成旧 OpenCC 包到官方包的环境迁移。
+## v2.12.5
+
+### 简化词条：自动结果也作为正式对齐数据保存
+
+- 原词条与简化词条明确为一一对齐的同一词条行数据；OpenCC 自动生成结果与人工修改结果均保存。
+- 用户仅检查并认可自动简化结果时，无需额外编辑：开启【简化】并显示该页后，自动结果会进入保存队列；自动保存、翻页、关闭校对窗口或显式保存时写入 `_PictureCapture/data/Simplified/<页码>.json`。
+- 自动结果与原词条相同时界面仍显示 `√`，但实际保存值是该词条本身，而不是符号 `√`。
+- 人工修改的简化内容继续以 `manual=true` 保存，并保持独立，不会被后续原词条编辑自动覆盖。
+
+### 删除同步
+
+- 校对界面删除词条时，继续同步删除同一行的简化记录。
+- 主界面通过 `Delete` / 反引号等现有删除路径删除词条时，现在也会同步删除 `_PictureCapture/data/Simplified/<页码>.json` 中相同坐标的简化记录。
+- 如果校对窗口同时打开，会同步清理其内存缓存并刷新校对行，避免旧简化记录在后续保存时重新出现。
+
+### 回归验证
+
+- pytest：**264 passed**。
+- 传统 `run_tests.py`：**70 passed**。
+## v2.12.4
+
+### 校对界面：简化词条可编辑并保存
+
+- 【简化】右侧不再是只读对照框，OpenCC 结果可直接人工修改。
+- OpenCC 仍负责首次自动生成简化建议；自动结果与原词条一致时继续显示 `√`。
+- 人工修改后的简化词条独立保留，之后修改原词条不会覆盖人工简化结果。
+- 新增每页简化词条 sidecar：`_PictureCapture/data/Simplified/<页码>.json`；PDIC 仍保持历史 8 字段格式，兼容既有 PicDic、切图和导出流程。
+- 保存、自动保存、翻页、关闭校对窗口时同步保存简化词条；删除词条时同步清理相应简化记录。
+- 剪贴板粘贴/剪切也会进入简化词条的人工编辑与自动保存流程。
+
+### 校对界面：简化词条网络核验
+
+- 每个简化词条右侧新增【网查】按钮。
+- 点击后复用现有免费网络词汇核验，无需 AI/API Token，并把查询结果显示在右侧网络核验区域。
+- 自动简化显示 `√` 时，实际查询原词条；人工简化时查询人工编辑后的文本。
+- “网页搜索”按钮会跟随最近一次实际查询词，因此从简化词条发起核验后可继续网页检索同一词。
+
+### 回归验证
+
+- pytest：**261 passed**。
+- 传统 `run_tests.py`：**70 passed**。
+## v2.12.3
+
+### 校对界面：排序控件精简
+
+- 【词条排序规则】改名为【排序规则】。
+- 删除“词条排序检查：”提示文字；保留【当前页】/【所有页】范围选择。
+- 原【检查】按钮改名为【排序检查】，含义更明确。
+
+### 校对界面：OpenCC 简化对照
+
+- 在【与OCR比较】后新增【简化】开关，并按项目保存开关状态。
+- 开启后，每个词条原文本框右侧增加只读的 OpenCC `t2s` 简化结果；原词条与简化结果各占剩余文本区域约 50%。
+- 如果 OpenCC 简化后的文本与原词条完全一致，右侧不重复显示词条，直接显示 `√`。
+- 编辑、OCR候选替换、参考词表单击填入、连续填充等操作都会实时刷新右侧简化结果。
+- 关闭【简化】后，右侧简化框隐藏，原词条文本框恢复占用 100% 的可用文本宽度。
+- 新增纯 Python 依赖 `opencc-python-reimplemented>=0.1.7,<1`，避免 Windows 用户额外配置 OpenCC 本地二进制。
+- 回归测试：pytest **257 passed**；传统 `run_tests.py` **70 passed**。
+## v2.12.2
+
+### 校对：无页码外部 wordslist 的排序定位
+
+- 新增 `wordslist_locator_mode`：`auto / sorted / sequential`。
+- 校对面板参考词表增加“定位”下拉框：自动、外部索引（拼音/字母）、同源连续词表。
+- 中文项目在“自动”模式下默认采用外部排序索引定位，适合从另一部词典导出的、仅有词条且无页码的 `wordslist.txt`。
+- 外部索引定位优先精确匹配；未精确命中时按拼音/字母键二分定位。中文拼音通过免费开源 `pypinyin` 生成，不依赖网络或 AI Token。
+- 相邻已确认词条只用于限制搜索区间，不再假定两个词典一一对应，也不会因外部索引多/少若干词而持续累计偏移。
+- 外部索引模式下禁用“从所选词开始连续填充”，避免把另一部词典的增删差异误写进当前页；需要连续填充时可显式切回“同源连续词表”。
+- 为大词表优化：不预计算 10 万–20 万词条的全部拼音，仅在二分搜索时按需计算并缓存约 `O(log n)` 个键。
+
+### 校对：免费网络词汇核验
+
+- 在 wordslist 上方新增“网络词汇核验（免费，无需 Token）”。
+- 中文词条后台并行检查萌典与中文维基词典；非中文词条使用英文维基词典。
+- 显示“有网络词典收录 / 免费词典源未检出 / 来源不可用”三态结果，并可点击来源直接打开对应词条。
+- 增加“自动检查”开关、立即检查、网页搜索；网页搜索使用默认浏览器打开精确短语检索。
+- 网络请求采用后台线程、550 ms 输入防抖、序列号防止旧结果覆盖新词条、会话缓存，避免影响连续校对。
+- 明确区分“未检出”和“不存在”：免费来源无精确结果时不会把词条判为错误。
+
+### 依赖
+
+- 核心依赖新增 `pypinyin>=0.53,<1`，用于中文外部索引的本地拼音定位。
+## v2.12.1
+
+- PaddleOCR 最低版本调整为 `>=3.7,<4`，与 PP-OCRv6 的正式发布版本保持一致。
+- 默认 OCR 模型继续使用 `PP-OCRv6`；若检测到 PaddleOCR < 3.7，“检测引擎”会明确提示当前环境不支持 PP-OCRv6。
+- “检测引擎”新增 Paddle 环境详情：显示 PaddleOCR、PaddleX、PaddlePaddle CPU/GPU 版本、项目配置的 OCR 模型与设备，以及 CUDA/GPU 可用状态。
+- Windows PaddleOCR 安装脚本不再无条件安装 `paddlepaddle` CPU 包：若机器已安装 `paddlepaddle-gpu` 或其他可用 Paddle runtime，会直接保留现有 runtime，避免 CPU/GPU 包冲突。
+- `pyproject.toml` 的 `paddleocr` 可选依赖不再强制安装 CPU PaddlePaddle；CPU/GPU runtime 由用户环境决定。
+- 当前推荐组合：PaddleOCR 3.7.0 + PaddleX 3.7.2 + PaddlePaddle/PaddlePaddle-GPU 3.3.x。
+## v2.12.0
+
+- 新增 Project Storage v2：项目根目录只保留用户原始资料，软件数据统一进入 `_PictureCapture/`。
+- 新项目首次打开自动创建 `_PictureCapture/project.json`；空目录/误选目录不会被写入软件文件。
+- 项目参数改存 `_PictureCapture/settings.json`；dictionary profile、替换规则和词头过滤规则均集中到软件数据根目录。
+- PDIC/PPP 不再与扫描图并排写入，分别保存到 `_PictureCapture/data/PDIC/` 与 `_PictureCapture/data/PPP/`。
+- 原 QT 体系整体保留但迁入 `_PictureCapture/QT/`，包括 PaddleOCR、PSW、PWW、PIC、PicDic、CropPlan、切图日志和状态文件。
+- `TrainingExports`、PicDic 索引、PDIC 备份等程序输出统一放入 `_PictureCapture/output/`。
+- 旧项目首次打开提供“整理旧版项目”：复制并逐文件校验成功后才发布新数据目录并清理旧软件文件；原图和 `wordslist.txt` 不移动。用户也可选择暂不整理，继续兼容旧目录结构。
+- 新旧比较导出对话框在新版项目中默认定位到 `_PictureCapture/output/exports/`，避免再次污染项目根目录。
+- 新增 4 项 Project Storage v2 回归测试；pytest 共 247 项通过，传统 `run_tests.py` 70 项通过。
+## v2.11.22 hotfix5
+
+- 【词条校对】每个文本框左侧新增 `[X]` 删除按钮；点击后立即删除该词条的校对切图与文本框。
+- 校对文本框支持与主界面一致的反引号键 `` ` `` 快速删除当前词条。
+- 删除前先按当前校对行对象提交整页文本，避免删除中间行时后续文本错位到上一词条。
+- 删除操作直接修改主界面共享词条数据并立即保存 PDIC、重绘主界面，因此对应横线与主界面文本框同步消失。
+- 对带 OCR candidate_id 的词条，删除同时写入人工取消选择记录，避免后续重新载入/处理时被 OCR 候选静默恢复。
+- 全量回归测试 243 项通过。
+## v2.11.22 hotfix4
+
+- 【词条校对】切换上一页/下一页时，后台预加载相邻页面：原图、PDIC、PPP、OCR sidecar、主界面缩放图以及校对单行切图均提前准备；若预加载尚未完成则自动回退到原有同步读取，不影响正确性。
+- 校对翻页不再先重绘即将离开的主界面，也避免主界面旧文本框在翻页保存时覆盖刚完成的校对文字，从而进一步减少等待。
+- 点击/聚焦校对窗口任一词条文本框时，主界面对应词条行以淡黄色单行高亮；高亮位于扫描图之上、编辑控件之下，不遮挡主界面文字框。
+- 关闭校对窗口时自动清除主界面淡黄色高亮。
+- 【新旧比较】保存差异报告时，默认文件名加入当前比较页面范围，例如 `words_diff_0055-0070_20260920_185400.txt`。
+- 全量回归测试 241 项通过。
+## v2.11.22 hotfix3
+
+- 主界面【词条校对】后新增【新旧比较】按钮，直接复用主界面的页面范围（仅当前页 / 当前页至末页 / 指定范围）。
+- 比较时将所选范围内当前 PDIC 词条按 `页码\t词条` 汇总为“新”文本，并读取所选 page-aware wordslist TXT 中相应页面的全部行作为“旧”文本。
+- 逐页使用序列比对识别【新增 / 删除 / 修改】，避免单纯按行号比较导致一次插入后整页错位。
+- 新增比较窗口：显示差异类型、页码、旧/新行号与旧/新词条；可按新增/删除/修改筛选。
+- 比较窗口另提供【当前 PDIC 合集】与【旧 wordslist 片段】两个文本页签，并可另存 PDIC 合集或差异报告。
+- 旧词表支持 `page<TAB>词条`、完整 8 字段 PDIC/_WordsOfPages，以及 `[页码]` / `页码:` 分组格式；无页码边界的普通单列词表会提示重新选择。
+- 全量回归测试 241 项通过。
+## v2.11.22 hotfix2
+
+- 词条校对右上角新增“单行高”，直接复用并实时写回主界面的 `character_height`。
+- 新增独立“单字行高”；中文 OCR / CJK Profile 在未显式设置时默认按单行高的 2.5 倍显示。
+- 单字校对切图改为尊重显式单字行高，不再因下一条手动画线位置偏近而强制截短。
+- 校对窗口打开时，主界面默认隐藏每个文字框旁的 OCR 内容选择，并取消 OCR 置信度底色；关闭校对窗口后自动恢复。
+- 校对窗口右上角新增“显示 OCR 内容选择”“显示 OCR 底色”两个开关；详细参数中也可持久化设置。
+- 全量回归测试 238 项通过。
+## v2.11.22
+
+- Hotfix 1：修复“上下安全空间”新增后校对窗口在创建 Spinbox 前因 `review_vertical_padding_var` 未初始化而中断的问题；同时补齐延迟应用任务句柄初始化。
+
+- 校对窗口第一行新增“上下安全空间（px）”，为文本框上下对称增加内部安全空间，避免重音/特殊字形被正常行高裁切。
+- 该设置只影响校对文本框显示，不改变字体字号、单行切图、PDIC、OCR 或正式切图。
+## v2.11.21
+
+- 校对窗口在【检查】后新增【与OCR比较】来源选择：融合结果 / PaddleOCR / Tesseract / LENS。
+- 所选 OCR 与文本框内容不同时显示红色外框，相同或该 OCR 来源无结果时不显示额外外框。
+- 校对文本框支持 ↑ / ↓ 直接跳到上一/下一词条，并自动滚动让目标切图与文本框可见。
+- 右侧当前 OCR 结果继续显示 LENS 候选（存在时）。
+## v2.11.20
+
+- 校对窗口单行切图新增“单个 CJK 词头自动增高”：单字大字词头不再被固定单行字高裁掉上下笔画。
+- 自动增高只影响校对显示，不修改 PDIC、OCR 参数或正式词条切图。
+- 若同栏下一词条距离较近，自动扩展会在下一词条线前截停，避免带入下一词条。
+- 普通多字词条继续使用原有单行切图高度。
+## v2.11.19
+
+- 校对窗口第一行新增“文本左边距（px）”，范围 0–80 px；只改变输入框内部文字起始位置，立即应用并按项目保存。
+- 当前 OCR 结果逐项与当前编辑词条实时比较：规范化全/半角、大小写、空白和标点后计算字符相似度，并用绿/黄/橙红/灰色底色提示接近程度。
+- 点击参考词表、OCR 候选或插入变音字符后，OCR 相似度颜色同步刷新。
+## v2.11.18
+
+- 校对窗口左右“上一页 / 下一页”纵向按钮改为稍深的灰色，便于快速定位。
+- 点击上一页或下一页后，左侧单行切图与文本框滚动区固定回到最上方；在布局完成后的 idle 阶段再次归零，避免旧页滚动位置被恢复。
+## v2.11.17
+
+- 校对窗口重新按高频工作流布局：标题栏实时显示图片名、当前、剩余与合计；左侧保留保存/自动保存/数字替换、排序检查、折叠辅助面板和主校对区；右侧集中切图显示大小、字体、OCR 与参考词表。
+- 校对窗口自动保存直接复用主界面的自动保存开关与周期，不再维护第二套自动保存逻辑。
+- 数字替换映射与变音字符面板默认折叠；上一页/下一页改为主校对区两侧的纵向按钮。
+- 参考词表定位优先使用当前编辑词条上下已校对并存在于 wordslist 的邻近词条作为锚点；必要时向更远邻居和上一页末尾回溯，避免当前空词或错误词把参考列表带偏。
+- 参考词表支持单击词条直接填入当前编辑框；“从所选词开始填充至本页结束”保留在参考词表区。
+## v2.11.16
+
+- 校对窗口恢复可编辑的 0–9 数字替换映射；默认仍为 `1–0 → áéíóúãçñõü`，映射按项目保存。
+- “数字转变音字母”不再依赖写死常量，而是即时读取校对窗口中的映射值。
+- 变音字符面板按 acute / grave / circumflex / diaeresis / macron 分组，每组固定按 a/e/i/o/u 排列；ã/ñ/õ/ç 单列为其他字符。
+- 数字映射采用 1–5、6–0 两行紧凑布局，便于边看映射边输入，不再与字符面板混成无序长条。
+## v2.11.15
+
+- 校对窗口右上控制区新增字体设置：字体、字号、粗体、斜体。
+- 校对字体与单行图片缩放继续保持独立；修改字体不会改变 26%/100% 等图片缩放比例。
+- 字体设置修改后立即更新现有词条文本框，并保存到项目 `picture_capture_settings.json`。
+- 字号改变时同步重算文本框字符宽度，尽量保持文本框与当前单行切图宽度一致。
+## v2.11.14
+
+- 修复校对窗口升级到“固定字体大小”后，旧项目中原本按缩放比例保存的超大基础字号被直接当作固定字号使用，导致文本框异常增高的问题。
+- 对明显属于旧语义的校对字号执行一次性迁移：例如旧 `72 @ 26%` 自动换算为固定字号约 `19`；普通 18/20/24 等固定字号不受影响。
+- 新增 `review_font_semantics_version=2` 标记，避免后续重复迁移。
+- 校对图片缩放继续只影响单行图片，文本框字体保持固定。
+## v2.11.13
+
+- 修复校对窗口单行切图在第二、第三栏开始水平坐标累计偏移的问题：校对单行的水平分栏几何始终使用项目真实版面参数，校对拟合宽度只用于稳定单行垂直高度。
+- 校对窗口的 `+ / − / 100%` 仅缩放单行图片，不再改变词条文本框字体大小。
+- “校对界面字号（100%）”更名为“校对界面字号”，含义改为固定字号。
+## v2.11.12
+
+- 【导出PicDic索引】的 X/Y 两列改为纯数字，移除 `%` 符号；格式为 `WORD\txx.xx\tyy.yy\tpage`。
+- 坐标仍直接采用 PDIC 已保存的 X/Y 比例并保留两位小数。
+## v2.11.11
+- 【绘制/编辑插图】更名为【编辑插图】。
+- 新增【导出PicDic索引】：整项目后台流式读取 PDIC，输出 `WORD\txx.xx\tyy.yy\tpage` 四列无表头文本。
+- 索引直接采用 PDIC 已保存的 X/Y 百分比，并统一两位小数；输出 `PicDic_index_时间戳.txt`。
+- 大项目导出不读取扫描图、不触发页面元数据全量刷新；支持批处理进度、暂停和停止。
+## v2.11.10
+- 修复大项目【备份PDIC】在 Tk 主线程同步读取并累积全部记录导致界面假死的问题。
+- 改为后台、逐页、低内存写入临时备份文件；支持现有批处理进度、暂停和停止。
+- 成功后原子生成 `all_pdic_backup_时间戳.txt`；停止或异常时删除临时文件。
+- 备份过程中不读取扫描图像；备份结束后不再触发无关的全项目页面元数据刷新。
+## v2.11.9
+- 【切图设置】成为词条切图 / PPP插图切图的唯一用户可见切图参数入口。
+- 【更多参数】移除重复的“裁剪终点 Y”“使用裁剪终点 Y”“词条/插图切图并行进程数”，避免两个界面产生设置冲突。
+- 【切图设置】统一包含一般页切图上下边界、特殊页上下边界、词条左右额外留白、是否综合插图、PPP多边形外扩和并行进程。
+- 版面检测所需的“页眉Y / start_y”仍保留在版面参数中，与切图上边界明确分离。
+- `_CropSettings.json` 配置版本升级到 5；旧 v4 配置继续兼容读取。
+## v2.11.8
+- 切图设置新增“是否综合插图计算切图信息”。默认开启以保持既有行为。
+- 关闭后词条切图仅按词条矩形生成，不由 PPP 扩框/联合、不改变词条切图顺序，也不会从词条图中填白 PPP；词条内部插图会自然保留。
+- PPP 与词条的包含/相交关系仍会用于插图切图去重，避免词条内部 PPP 重复生成 (P数字) 图片。
+## v2.11.7
+
+- PPP 名称文本框移到 PPP 区域外侧的右上角，不再遮挡插图内容。
+- PPP 靠近页面右缘时，名称框自动改到右上方并保持右对齐；极端边缘位置继续自动避让。
+- 拖动 PPP 顶点或矩形边时，名称框实时跟随新的轮廓边界。
+## v2.11.6
+
+- 页面列表新增“插图”列，显示每页有效 PPP 插图数量；无插图时留空。
+- “插图”栏头支持与页面/已画线/填充状态相同的点击排序；数字采用自然数值顺序，空值保持在末尾。
+- 页面列表栏头右键菜单新增“插图”显示/隐藏开关；页面列仍固定显示，列显示状态按项目持久化。
+- PPP 数量沿用异步页面元数据刷新，不打开或解码扫描图片；当前页新增/删除 PPP 以及批量插图识别后会自动刷新。
+- 新增 PPP 数量读取与插图列排序回归测试。
+## v2.11.5
+
+- 修复“填充既有词条”在 v2.11.2+ 中的严重性能回退：不再逐页完整解码扫描图，仅读取图片头尺寸并使用轻量 nominal geometry 完成栏号/阅读顺序判定。
+- 大批量填充的状态汇总不再同步刷新每一个 Treeview 行，避免 7,000+ 页完成阶段 UI 长时间卡顿。
+- 【修复PDIC排序】和【从PDIC备份恢复】同步使用轻量栏几何。
+- 新增回归测试，确保大批量填充热路径不调用 `normalize_page_rgb()`，并验证 nominal geometry 的栏区间与完整 geometry 一致。
+## v2.11.4
+
+- 【修复PDIC排序】改为严格按“栏号 → Y”稳定排序，X 完全不参与。
+- 同栏且 Y 相同的记录保留原 PDIC 相对顺序，避免人工线/OCR线的横向位置影响修复结果。
+- 其他日常 OCR/人工词条合并排序逻辑保持不变。
+## v2.11.3
+
+- 修复校对窗口、当前页 OCR/导入导出、主图编号仍残留原始 `(X, Y)` 排序的问题；所有词条顺序统一为“栏号 → Y → X”。
+- 新增 `[修复PDIC排序]`：按主界面页码范围批量原子重写已有 PDIC 的记录顺序，保持每条词条文字与其 X/Y 坐标绑定。
+- 对已发生“词条文字配错横线”的页面，排序修复不会猜测重配；需从 PDIC 备份恢复或在修复几何顺序后重新填充/OCR。
+## v2.11.2
+
+- 修复人工词条线与 OCR 自动词条线合并后的顺序错误：统一使用“栏号 → 同栏 Y → X”阅读顺序，不再按原始 `(X, Y)` 排序。
+- 人工线吸附栏左、OCR 线保留实际 X 时，不会再导致人工线整体跑到 OCR 线之前。
+- PDIC 序列化改为保留调用方已经确定的规范顺序；当前页保存、重载、批量 OCR、既有词条填充与 PDIC 备份恢复均统一进行几何阅读顺序归一化。
+- 新增人工/OCR 混合排序回归测试。
+
+
+- 恢复“隐藏线框（插图除外）”复选框。
+- 矩形 PPP 支持四边直接拖动；PPP 名称框增加单个删除按钮。
+- 缩小所有框线/PPP 颜色选择按钮为紧凑色块。
+- 修复词条切图横向宽度：使用栏间空白中线作为相邻栏切图边界，并修正最后一栏宽度；切图设置增加左右额外留白。
+- 移除“切图设置”中的独立预览，完整 Crop Plan 只在主界面预览。
+- pytest 177/177 通过；旧版 unittest 67/67 通过。
+## v2.11.1
+## v2.11.0
+
+- 页面列表表头支持鼠标右键选择可见列；“页面”列固定显示，“已画线 / 填充状态”可独立隐藏并按项目保存。
+- PPP 自动识别增加右侧安全分析空间与独立右侧外扩参数，修复经典双栏词典插图右边界偏小。
+- 每个 PPP 均显示名称文本框；“绘制/编辑插图”模式可拖动现有多边形顶点并立即保存。
+- 统一“切图设置”：词条切图与插图切图共用页眉、底部、PPP 外扩和并行进程参数。
+- 新增完整 Crop Plan：正式切图前先判断词条片段与 PPP 的几何/名称关联，并写入 `QT/CropPlan/<page>.json`。
+- PPP 名称与页面词头一致时视为关联：完整包含于词条切图或部分相交时不再单独 PPP 切图；完全位于词条切图外时独立导出为对应词条文件基座的 `(P数字).png`。
+- 部分相交的关联 PPP 使用“词条矩形 ∪ PPP 多边形”的联合掩膜切图，避免简单扩矩形带入邻近正文。
+- 词条切图执行顺序改为：先切带关联插图的词条（保留本词条 PPP、填白其他 PPP），再将全部 PPP 填白后切普通词条。
+- PPP 插图切图新增 `QT/_illustration_crop_log.txt`，明确记录“完整包含跳过 / 部分相交合并跳过 / 外部独立切图 / 未关联独立切图”。
+- 主界面新增“切图预览（主图）”：启用时暂时隐藏普通编辑线框，直接显示普通词条框、随词条 PPP、部分联合 PPP 与独立 PPP；切图设置窗口可一键跳回主界面完整预览。
+- 栏左垂线/词头横线颜色选择移到各自选项旁；新增 PPP 轮廓、区域、标签外框颜色。参数改动即时应用/保存。
+- 新增 `[备份PDIC]` 与 `[从PDIC备份恢复]`，备份为 `all_pdic_backup_时间戳.txt`，恢复严格受主界面页面范围约束。
+- `[应用参数]` 合并到 `[保存参数]`；`[使用提示]` 移至参数按钮行；原位置改为 `[导出训练标记包]`。
+- pytest 173/173、旧版 unittest 67/67 通过，并完成 Xvfb 页面列隐藏与主图切图预览 GUI 冒烟测试。
+## v2.10.3
+
+- 大型 wordslist（实测 190,000 条）改为虚拟窗口显示，右侧 Listbox 最多渲染 501 条。
+- 精确索引与成员集合只在词表重载时建立一次；键入和页面重绘不再重复构造大型 set。
+- 辅助近似定位使用轻量 Unicode 键；正式词典顺序核对仍使用完整 collation 规则。
+- 新增前500/后500浏览与当前显示范围提示。
+- wordslist 文件改为流式逐行读取。
+- pytest 168/168、unittest 67/67 通过。
+## v2.10.2
+
+- 校对界面移除“导入_WordsOfPages.txt”按钮。
+- 新增持久化 `wordslist_path` 设置，默认 `wordslist.txt`，相对路径按项目根目录解析。
+- 详细设置新增“辅助词表 / wordslist.txt 位置”，提供浏览按钮。
+- 校对界面新增“选择wordslist文件”，选择后立即刷新右侧辅助词表、排序定位索引和词条成员颜色；主界面 wordslist 边框提示同步更新。
+- 外部 wordslist 保存绝对路径；项目内 wordslist 保存相对路径，方便项目迁移。
+## v2.10.1
+
+- 主界面新增 `[插图识别]`，直接使用页面列表上方的所选范围批量检测插图。
+- 自动识别结果写入现有 PPP 格式，以四点矩形多边形保存，可继续用“绘制插图多边形”人工修正并直接用于“插图切图”。
+- 自动结果使用 `|AUTO_XX|` 标签；重复识别只替换旧 AUTO 区域，人工 PPP 多边形始终保留。
+- 插图识别采用 Pillow + NumPy 的版面/墨迹连通结构分析，不新增 OpenCV/SciPy 依赖。
+- 批量识别支持暂停/停止，并沿用前台人工锁定保护：正在手工修改的待处理页不会被后台覆盖。
+- 新增自动插图识别与 PPP 幂等/人工标注保护测试；pytest 162/162 通过。
+## v2.10.0
+
+- 新增基于版面描述的 Dictionary Profile v2，并将 Profile 入口放到“更多参数”的第一个页签。
+- Profile 可弹窗预览经典词典名称与代表样页；真实预览图随软件包安装。
+- Profile 管理 OCR/语言、分栏、左缘/粗体/字号/空白证据、结构门控与 Y 精修参数，并保存项目级 overrides。
+- 新增英语音标密集、罗曼语紧邻词性、西语编号词性、中文圆点拼音、中文括号/大字等版面族；保留结构符号型作为旧项目兼容预设。
+- 葡语/意语共用版面族但拥有独立 POS grammar；新增 XXH 数字编号 POS 解析与 CNIT 标记式中文词头解析。
+- CJK parser 改为 Profile 显式门控；底层直接 API 仍保留旧的“按中文 OCR 语言启用”兼容行为。
+- `dictionary_profile.json` 升级为 v2，同时保留 v1 读取兼容与旧文件保护。
+- 自动回归测试扩展到 160 项，并增加 Xvfb Profile UI/样图预览冒烟测试。
+## v2.9.14
+- 修复按“填充状态”排序后滚动页面列表会被自动拉回最初选中页的问题：后台自动重排不再调用 `Treeview.see()` 强制回到选中行。
+- 主动点击栏头排序时仍会确保当前页可见；后台元数据刷新只维持排序，不干扰用户正在浏览的列表位置。
+- 页面列表程序化切页改为严格单选，避免旧选中项残留后被延迟 `<<TreeviewSelect>>` 回放。
+- 仅当当前排序列的值确实发生变化时才安排重新排序；按“填充状态”排序时，后台逐页补充“已画线”状态不会再触发无意义重排。
+- 新增排序视口、单选同步和按列条件重排回归测试；完整测试 152/152 通过。
+## v2.9.13
+- 修复大型项目启动时页面列表明显卡顿：列表单元格着色刷新改为合并调度，同一时刻最多保留一个待执行刷新。
+- 填充状态/已画线颜色覆盖层只处理当前可见行，不再每次扫描项目全部页面。
+- 保留 v2.9.12 的填充状态颜色、v2.9.11 的列表排序以及原有页面稳定 ID/跳转行为。
+## v2.9.12
+
+- 页面列表“填充状态”列新增单元格级语义颜色：一致淡绿、少/多淡红、待重新核对淡黄、无资料淡灰，未核对保持默认背景。
+- 保留原“已画线”列对数量不一致页的淡红提示；排序、滚动、窗口调整后两处单元格提示均与原始页面索引保持一致。
+## v2.9.11
+- 页面列表三列（页面、已画线、填充状态）支持点击栏头排序；首次点击升序，再次点击降序，并以 ▲/▼ 标示当前方向。
+- 页面名采用自然排序，数字片段按数值比较（如 `page2` 排在 `page10` 前）。
+- 排序只改变页面列表的显示顺序，不改项目图片顺序或页面索引；排序后选择、跳页、淡红数量异常提示仍指向原始页面。
+- 异步刷新“已画线/填充状态”时会自动重新套用当前排序，避免状态更新后列表失序。
+## v2.9.10
+- 页面列表新增“填充状态”列，逐页显示 `一致`、`少 N`、`多 N`、`无资料`、`未核对`、`待重新核对`。
+- `少/多` 以当前画线数相对 TXT 词条数计算，并与已有淡红色数量不一致提示同步。
+- `QT/_WordFillStatus.json` 升级为 version 2，持久化 `match/mismatch/stale/no_data` 状态，同时兼容读取 v2.9.9 的旧版 sidecar。
+- 人工增删横线导致画线数变化后，不再直接用旧 TXT 计数宣告“已重新一致”，而是标记为 `待重新核对`；仅修改词条文字不会使核查状态失效。
+- 解析 page-aware TXT 时同时记录实际出现过的页面；TXT 完全没有该页记录时显示 `无资料`，与明确存在的空页区分。
+- 新增上述状态显示、持久化、无资料识别及文字编辑不误作废核查状态的回归测试。
+## v2.9.9
+- 持久化“填充既有词条”的逐页数量核查状态，关闭/重新打开项目后，数量不一致页面的“已画线”单元格仍保持淡红提示。
+- 新增项目侧车文件 `QT/_WordFillStatus.json`，保存每页画线数、TXT 词条数、是否不一致及来源文件名；使用原子写入，避免异常中断留下半文件。
+- 人工增删横线并保存后，会依据上次记录的 TXT 词条数重新计算该页是否仍不一致；修正到相同数量后淡红提示会自动清除，并在下次打开项目时保持正确状态。
+- 从整体 PDIC 恢复页面时，会清除对应页旧的“填充既有词条”数量核查记录，避免已经被整体 PDIC 重建的页面继续显示过期淡红提示。
+## v2.9.8
+
+- 将主界面原来的单个 `[填充既有词条]` 拆为 `[选择词条文件]` + `[填充既有词条]`。
+- 选择文件只负责记住词条 TXT；填充按钮不再重复弹出文件选择框，可在调整主界面页码范围后反复重填不一致页面。
+- 首次填充仍在后台解析大型 TXT，并缓存 page→words 索引；同一项目后续填充直接复用缓存。
+- 若已选 TXT 的大小或修改时间发生变化，下一次填充自动失效旧缓存并重新解析。
+- 切换项目时清空已选词条文件及其解析缓存，避免把上一词典的页码映射带入新项目。
+## v2.9.7
+
+- 新增主界面 `[从整体PDIC恢复]`：选择合并后的整体 PDIC 文本，按主界面页面范围拆分并覆盖重建各页 `.pdic`。
+- 恢复严格按 PDIC 第 6 字段的页码归页；范围外页面不修改，选定页在源文件无记录时重建为空文件，不会从相邻页面借用记录。
+- 整体 PDIC 解析和逐页覆盖在后台任务中执行，显示逐页进度并支持暂停/继续/停止。每页使用临时文件 + `os.replace` 原子提交，已完成页面在停止后保持有效。
+- 空整体 PDIC、字段不足、坐标无效或完全无法对应当前项目页面时拒绝执行，避免误覆盖。
+## v2.9.6
+
+- 大规模 `[填充既有词条]` 改为后台逐页批处理，底部显示页面级进度，支持暂停/继续/安全停止。
+- TXT 页码解析改为一次预建 exact/numeric/suffix 索引，避免每个词条重复扫描全部项目页面；7,822 页/19 万词条场景从近似 O(words×pages) 降为 O(words+pages) 的页码匹配。
+- 填充任务启动前强制提交当前页实时编辑；任务运行期间禁止前台切页/编辑，防止 PDIC 并发覆盖。
+- 快速批量任务的 Tk 事件队列改为分片消费（每轮最多 120 条），避免进度事件本身造成界面再次卡顿。
+- 完成或停止后仅重新载入当前页一次，并按已完成页面恢复数量不一致的淡红提示。
+## v2.9.5
+
+- 主界面“功能按钮”新增 `[填充既有词条]`：按主界面页面范围逐页填入带页码边界的 TXT 词条，严格禁止跨页借词/溢出；每页先比较已画线数与 TXT 对应页词条数。
+- 数量不一致的页面仍照常填充当前页可对应的词条，但仅“已画线”单元格显示淡红底色提示；数量一致的页面取消该提示。
+- 新导入器支持完整 PDIC/_WordsOfPages 记录、`page<TAB>词条` 和 `[页码]`/`页码:` 分组；无分页的纯词表会拒绝导入，避免某页多/少一条后污染后续所有页面。
+- 非 PPP 插图绘制模式下，主画布鼠标右键改为“下一页”；PPP 多边形绘制仍保留右键闭合多边形。后台 OCR 期间单纯右键翻页不会把待处理页误标为人工锁定。
+- `[插图切图]` 改为先打开专用“插图切图设置”窗口：集中设置一般页眉Y、一般底部Y、多边形外扩、并行进程以及特殊页面的页眉/底部覆盖。
+- 插图切图设置窗口内置页面选择预览、PPP 多边形轮廓、有效页眉/底部边界及实际导出框预览，并提供 `[预览]` / `[确认切图]`。
+- 插图切图参数保存到 `QT/_IllustrationCropSettings.json`；页眉/底部只限制导出有效区，不修改 `.ppp` 原始多边形坐标。
+- 插图切图预览与正式多进程切图共用同一套坐标换算/裁剪函数，特殊页覆盖不会出现“预览一套、导出另一套”的几何差异。
+- 自动测试 124/124 通过；另通过 Xvfb GUI 冒烟测试（页面列表提示、插图切图设置窗口及预览）。
+## v2.9.4
+
+- 校对候选复选框改为局部更新：增加/移除画线时只创建或销毁对应词条的 marker、文本框、OCR 菜单和切图预览，不再整页 `redraw()`。
+- 页面背景 PhotoImage 按“当前原图对象 + 显示尺寸”缓存；普通校对点击不会重复执行整页 LANCZOS resize。
+- 显示用版面 geometry 增加安全缓存，键包含当前页面和所有参与 `derive_geometry()` 的版面参数；调整分栏/页眉/栏宽/栏间空/列形变参数后会自动失效重算，缩放本身不会污染原始坐标。
+- 候选复选框的 `.pdic` 与 `*_manual_selection.json` 写盘改为 300 ms debounce：内存状态和界面立即更新，连续点击合并成一次磁盘提交。
+- 切页、切项目、关闭、显式保存、自动保存、启动任何后台批处理之前都会强制 flush；后台 OCR 仍使用原有 `pending / processing / done / manual_locked` 页级锁，前台人工修改不会被后台覆盖。
+- 延迟保存使用不可变的 Entry 快照；即使随后内存对象变化，也不会把错误状态写到前一页。
+- 后台正在处理当前页时，复选框若被点击会恢复到真实选择状态，避免 UI 与内存数据分叉。
+- 新增 Xvfb GUI 集成验证：100 个候选下，局部取消/增加均复用同一背景 PhotoImage；示例环境中整页重绘约 300 ms，而局部复选框操作约 2 ms。
+- 自动测试 117/117 通过。
+## v2.9.3
+
+- 透明底图片输入标准化：检测到 alpha 通道或调色板透明信息时，先按纯白背景进行 alpha 合成，再转换为 RGB。
+- 主界面显示、普通/OCR画线、PaddleOCR、Tesseract、Google Lens 临时图、版面检测、训练标注导出统一使用同一白底 RGB 像素语义。
+- 普通不透明 RGB 扫描图保持逐像素不变；透明区域不会因直接丢弃 alpha 而变黑或暴露隐藏 RGB。
+- 插图多边形切图仍保留 RGBA/透明 PNG 输出语义，不受本次 OCR 输入标准化影响。
+- 新增透明 RGBA、P 模式透明、普通 RGB 等回归测试；总测试 111/111 通过。
+## v2.9.2
+
+- 内存生命周期优化，不改变 OCR/画线语义：主界面原图由 RGBA 改为 RGB；显示缩放不再先制造一份全尺寸 RGB 副本。
+- OCR 同一次页面处理只建立一次共享 RGB NumPy 源数组，所有栏的 OCR band / separator band 复用；共享数组严格校验当前页面尺寸，禁止跨页复用。
+- PaddleOCR 主模型缓存限制为当前配置；切换语言/设备/版本时移除旧缓存强引用，但不失效正在执行调用持有的局部引用。
+- TextDetection 缓存限制为当前设备配置。
+- 大图文件读取统一在 worker 中及时关闭源文件句柄；OCR JSON 改为流式写入，避免额外构造整份 JSON 字符串。
+- 新增内存优化等价性回归：共享/非共享 band 逐像素一致、separator band 逐像素一致、跨页共享拒绝、缩放仅影响显示、模型缓存安全淘汰。
+- 自动测试 107/107 通过。
+## v2.9.1
+- Added `[导出训练标注包]` in the main function panel.
+- Exports every saved `.pdic` page as a training/benchmark package containing original images, final PDIC labels, optional PPP polygons, OCR cache/provenance, manual selection overrides, original/coarse/anchor/refined Y data, project settings and a dataset manifest.
+- Export runs in the existing background task bar and supports pause/stop; incomplete stopped exports are discarded rather than emitted as partial ZIPs.
+- Added page-level candidate-to-ground-truth linkage so rejected OCR rows are retained as useful negative candidates without changing the saved PDIC ground truth.
+## v2.9.0
+- Added independent image-only separator candidates from local blank-to-ink transitions.
+- Added mutual-nearest matching between OCR headword lines and image separator candidates; matched accepted headwords use the image boundary geometry while unmatched pages fall back to the existing OCR refinement path.
+- Added `paddle_separator_roi_width_ratio` (default 60%, range 10–100%) to limit separator/Y-refinement analysis to the left local portion of each column.
+- Stored image-boundary match metadata in OCR diagnostics and final review candidates.
+- Added regression tests for X-ROI geometry and OCR/image-boundary mutual matching.
+## v2.8.19
+- Preserve four Y layers for CJK headwords: original OCR box, OCR coarse Y, image-derived anchor Y, and final refined Y.
+- Detect when OCR box.y begins in the preceding line: search downward for a real inter-line blank run followed by sustained ink, then relocate the headword onset.
+- For oversized single-Han entries confirmed by visual projection, use the visual run as the authoritative vertical anchor instead of OCR box.y.
+- The blue fallback checkbox now returns to the image-derived anchor Y when available; the original OCR box/coarse Y remain stored for diagnostics.
+## v2.8.18
+- Preserve both pre-refinement and refined headword marker geometry in OCR review data (`original_box`, `coarse_source_y`, `refined_source_y`, `separator_refinement`).
+- Expose the pre-refinement Y as an unchecked light-blue fallback checkbox in the main canvas whenever Y refinement moved the marker.
+- Refined/original Y checkboxes are mutually exclusive: selecting one automatically deselects the sibling and updates the page entry in one action.
+- Manual position choice persists through the existing manual-selection cache, so a later page reload keeps the chosen Y variant.
+- Original-Y fallback rows are excluded from OCR agreement/page-quality statistics; they are editing alternatives, not additional OCR observations.
+## v2.8.17
+
+- 将 Y 精修“安全空间”由固定 2 px 改为可配置参数，默认 2 px。
+- 主界面 Lens模式右侧新增 `Y安全空间：[2] px`，范围 0–50。
+- 参数同时保存到项目设置，并影响大字单字及中文括号词头的局部 Y 精修。
+## v2.8.16
+
+- Reworked CJK separator-Y refinement into a per-entry local boundary trace.
+- Starting at the OCR/visual box top, if the row already contains ink the search reverses upward immediately; if it is blank, the search moves downward until sustained entry ink is found.
+- The nearest consecutive near-blank run immediately above the headword becomes the separator band; marker Y is placed at its lower edge with about 2 px safety for the marker thickness.
+- Exact-white is not required: a low ink-ratio threshold plus consecutive-row requirement tolerates scan noise.
+- Dense pages with no stable blank run fall back to the legacy local ink-valley refiner.
+- Vertical-rule suppression now removes only narrow persistent dark runs, avoiding accidental removal of broad text blocks.
+## v2.8.15
+- 中文括号词头支持跨行未闭合形式：行首 `【/〔/［/[` 即使本行没有右括号，也可作为结构性词头起点。
+- 支持 OCR 行只有单独一个 `【` 的情况；在栏左缘/页眉以下仍可生成词条分隔线，供人工校对后补全文本。
+- 完整闭合中文括号词头的长度上限由 16 字符放宽至 64 字符；未闭合首行保留最多 48 字符，避免吞入整段正文。
+- 未闭合括号候选仍必须经过栏左缘、页眉范围、内部关系标签等几何/结构过滤，降低正文括号误检。
+## v2.8.14
+
+- 大字单字重复 Y 画线采用独立去重策略：普通词头仍用 0.22×普通单行高；单字大字在同一大型字形区域内允许 0.55×普通单行高的去重容差。
+- 单字去重不要求 OCR 文字完全相同；结合各引擎单字解析轨迹与字形框几何判断同一实际大字。
+- 重复线合并后保留更靠下的安全 Y，保持“尽量贴近当前词条”的精修原则。
+- 为每个候选保存 normal-line height reference，避免用大字自身高度误算去重阈值。
+## v2.8.13
+
+- 中文词头自适应 Y 精修改为下偏策略：明显/普通空白时横线贴近词头上缘，仅保留少量安全间隙；紧密版面优先取低墨迹谷的下部。
+- 保留 v2.8.12 的疏松/普通/紧密版面自动分流及手动画线栏位修复。
+## v2.8.12
+- 中文词头横线 Y 改为自适应精修：以页面普通 OCR 行中位高度作为单行高，按前一行至当前词头的实际空白自动区分疏松/普通/紧密版面。
+- 疏松版面优先在词头前空白带落线；超大空白最多向上偏约 1/4 行，避免页码/装饰造成横线漂到空白中央。
+- 紧密版面（含 0–1 px 行间空白）继续使用既有局部墨迹谷精修，避免新策略破坏贴行词典。
+- 大字号单字视觉补漏与 【】/〔〕/[] 复合词头共用同一套自适应 Y 精修。
+- 修复鼠标左键手动画线的分栏判断：按栏的真实水平区间判定，不再按最近栏起点；点击栏后半段不会误画到后一栏。
+- 右键按栏重新识别也使用相同的栏区间判断。
+## v2.8.11
+
+- OCR/普通批量画线支持后台运行时前台安全翻页和人工校对。
+- 页面级状态：待处理 / 处理中 / 已完成 / 人工锁定。
+- 人工编辑待处理页会原子锁定该页，本轮后台自动跳过，防止 PDIC 覆盖。
+- 正在处理页自动只读，完成后若未人工锁定会刷新后台结果。
+- 批量期间禁止再启动前台 OCR 推理，但允许改文本、增删画线、选择 OCR 候选、词条校对和保存。
+## v2.8.10
+
+- [保存当前页] 改为按当前编辑模式保存：普通/画线模式仅写 `.pdic`（画线与词条文本框），插图多边形绘制模式仅写 `.ppp`。
+- 上一页、下一页及页面列表切页前沿用同一模式化保存逻辑。
+- “显示插图多边形”仅控制显示，不会触发 `.ppp` 保存模式；只有“绘制插图多边形”激活时才视为插图模式。
+## v2.8.9
+
+- Final separator-line deduplication is now text-independent: within the same column, selected markers closer than 0.22 of the source-scaled single-line height are merged.
+- Fixes duplicate near-identical lines even when PaddleOCR/Tesseract disagree on the recognized headword.
+- Text equality and CJK bracket structure are no longer required for final line deduplication.
+## v2.8.7
+
+- **仅“词条切图 / 插图切图”启用页面级 CPU 多进程并行**；普通画线、OCR画线、批量 OCR 与其他画线/识别路径保持 v2.8.6 的顺序执行逻辑，不改变识别结果。
+- “更多参数 → 批量切图”新增 `切图并行进程数（0=自动）`：自动模式按 CPU 核心保守选择，最多 4 个 worker；手动可设 1–8，设为 1 即串行。
+- 并行调度采用按需派发：暂停后不再提交新页面，已启动页面安全完成后完全暂停；停止同理，已完成结果全部保留。
+- worker 进程只写各自页面独有的 PNG/manifest；共享 `QT/_file_log.txt` 由协调线程统一追加，避免多进程抢写日志。
+- Windows/`spawn` 启动入口增加 `__main__` 防护与 `freeze_support()`，防止创建切图进程时重复启动 GUI。
+## v2.8.6
+
+- 多页 OCR画线、普通画线、词条切图、插图切图及批量 OCR/整体切图改为后台工作线程执行，Tk 主界面不再被整批循环占用。
+- 主窗口底部新增批量任务条：显示当前页/总页数、当前文件和确定型进度条，并提供“暂停/继续”“停止”按钮。
+- 暂停与停止采用页边界安全生效：当前页先完整处理和写盘，随后暂停/停止，避免生成半写的 PDIC/PPP/OCR 缓存。
+- 停止后保留所有已完成页面结果；关闭窗口时若任务仍在运行，会先询问并安全停止后退出。
+- 批处理期间阻止页面切换和画布编辑；自动保存暂缓，防止主界面旧数据覆盖后台刚生成的页面结果。
+## v2.8.5
+
+- 修复 v2.8.4 左栏折叠后仅隐藏控件、`ttk.LabelFrame` 仍保留展开高度而出现大块空白框的问题。
+- 折叠时关闭分组的 grid geometry propagation，并把分组高度压缩到标题行；展开时恢复传播和原有控件布局。
+- “页面列表”展开时继续自动占用其余可用高度；其他分组折叠后释放的高度会立即让给页面列表。
+- 修正主窗口标题中残留的旧版本号，显示为 v2.8.5。
+## v2.8.4
+
+- 左侧五个主分组均支持点击标题折叠/展开，使用 `▼` / `▶` 表示状态。
+- “页面列表”折叠时同步取消侧栏剩余高度权重，避免出现大片空白。
+- 分组展开状态保存到用户会话文件并在下次启动时恢复。
+## v2.8.3
+
+- 修复“指定页面范围”不接受常用连字符范围的问题。
+- 页面范围现在同时支持 `0008-0020`、`0008~0020`、`0008～0020`、`0008–0020`、`0008—0020`，并支持前导零和逗号混合范围。
+- 页面号仍按文件名末尾数字进行数值匹配，因此 `0008-0020` 可正确匹配 `0008.png` 至 `0020.png`。
+## v2.8.2
+- 修复中文单字词头普遍出现“双横线/双文本框”的问题。
+- CJK OCR 对齐键改为 Unicode-safe；不再把所有汉字压成空字符串参与 Paddle/Tesseract 对齐。
+- 图像大字投影通道现在通过 OCR 原始框与视觉 ink-run 的物理重叠确认“同一个字”，若 OCR 通道已接受则不再新增第二候选。
+- 最终融合增加单汉字物理去重安全网：仅合并同栏、单汉字且 OCR 框重叠/位置极近的重复候选；相邻的真实单字条目保持独立。
+- 重复候选合并时保留上方词条分隔线，并尽量合并另一候选的 OCR 引擎信息，供主界面 OCR 下拉继续选择。
+## v2.8.0
+
+- 恢复并固定主窗口底部信息栏：普通状态信息位于左侧，鼠标所指参数坐标 / 原图坐标 / 缩放比例 / 当前词条数位于右侧；状态栏先于主体区域布局，避免 Windows DPI 或窗口尺寸变化时被挤出可视区域。
+- 鼠标移动只更新右侧坐标区，不再覆盖左侧的保存、OCR、版面检测等操作信息。
+- 修复 PaddlePaddle 3.3.x / PaddleOCR CPU oneDNN-PIR 路径可能触发的 `ConvertPirAttribute2RuntimeAttribute` 错误：TextDetection 显式关闭 PIR 与 MKL-DNN。
+- 普通 PaddleOCR 词头识别也应用相同的 PIR/MKLDNN 兼容设置，减少同类 CPU 推理崩溃。
+- “检测版面”增加 OCR-free 图像版面回退：若 PaddleOCR detection-only 在本机仍不能执行，则自动从页面黑白像素分布估计分栏、页眉 Y、栏宽和栏间空；不恢复已删除的投影画线模式或投影参数。
+- 版面检测完成后状态栏明确显示使用 `PaddleOCR文本框` 或 `图像版面回退`。
+- 新增回退版面检测测试；总计 60 项自动测试通过，并通过无头 Tk 启动验证底部状态栏确实位于 900px 窗口底部。
+## v2.7.5
+
+- 主界面所有小型 OCR 下拉按钮统一显示为 `OCR ▾`，不再把候选词写在按钮文本中，避免按钮宽度随词长变化。
+- OCR 下拉中选择候选后，按钮标签保持 `OCR ▾`；实际词头只写入对应文本框。
+- 切换上一页、下一页或从页面列表跳转前，自动提交当前可见词条文本并同时保存当前页 `.pdic` 与 `.ppp`。
+- 即使已经处于首页/末页而继续点击上一页/下一页，也把该次导航点击作为显式保存点，先保存当前页。
+## v2.7.4
+
+- 主界面每个可匹配 OCR 缓存候选的词条文本框旁新增紧凑 `OCR:词头 ▾` 下拉按钮。
+- 下拉菜单列出 PaddleOCR、Tesseract、Google Lens 与融合结果；点击任一项会直接填入当前主界面文本框。
+- OCR 填入后立即刷新 wordslist 红框校验，并同步候选的人工覆盖信息与当前页 `.pdic`。
+- 主界面与词条校对共用同一候选匹配逻辑，避免同一词条在两个界面对应到不同 OCR 行。
+## v2.7.3
+
+- 主界面词条文本框按 `wordslist.txt` 成员关系显示外框：不存在于词表的词头使用红色粗外框；存在于词表的词头使用普通细灰外框，不再使用绿色粗外框。
+- 主界面词条编辑时在 KeyRelease 即时刷新外框状态，无需切换焦点或重新载入页面。
+## v2.7.2
+
+- 修复页面切换时继承上一页滚动位置的问题：切换任意新页面后保留当前缩放比例，但视图自动回到页面左上角（X=0, Y=0）。
+## v2.7.1
+
+- 修复词条校对切图偶尔包含两到三行正文的问题。根因不是 `line_box` 本身被改大，而是 v2.7.0 为保持主界面翻页缩放比例，引入了稳定的页面缩放参考；校对切图仍间接读取该参考，旧项目中的过小/陈旧 `parameter_display_width` 会把源图裁切高度放大。
+- 校对切图现在恢复旧版语义：始终按“页面适合主查看器宽度”的参考比例计算单行高度，与主界面当前放大倍数、末次会话缩放和陈旧参数解耦。校对面板自身的 20%/64%/100% 只改变显示尺寸，不改变实际裁取的行数。
+## v2.7.0
+
+- 修复词条校对保存后被主界面旧文本框再次覆盖的问题；校对保存后主界面立即重建并显示新内容。
+- 主界面缩放比例在翻页/页面列表切换时保持不变；会话状态额外记住主界面缩放比例。
+- 主界面与词条校对分别提供字体、字号、粗体、斜体设置，互不联动。
+- 页面列表精简为“页面 | 已画线”，不再读取或显示页面置信度列。
+- 更多参数中的“AI候选带宽度”改为与主界面一致的“候选带宽比例（1–100%）”。
+- 恢复明确的“绘制插图多边形”按钮；“显示插图多边形”仅负责可见性，绘制模式使用左键加点、右键闭合。
+## v2.6.0
+
+- 词头排序改为语言驱动：根据 OCR 语言动态提供对应语言预设，始终保留 Unicode 与自定义排序。
+- 新增可自定义排序单元，支持多字符字母/组合（如 ch、ll、dz）；旧西班牙语排序设置自动迁移。
+- 校对窗口重新布局：左右分栏从窗口顶部开始，右侧“词条显示 / 计数 / OCR结果 / wordslist”不再被左侧按钮区向下挤。
+- 校对缩放与主界面彻底解耦，并按项目记忆；默认 64%。
+- 主界面与校对界面的缩放均同步缩放词条文本框。
+- 更多参数新增主界面词框基础字号、宽度、横向位置，以及校对词框字号/默认缩放。
+- 更多参数按“版面与裁切、词条线与文本框显示、列跟踪、OCR基础、PaddleOCR、多OCR/Lens、词头正则、行为”等分区显示。
+- 打开“更多参数”前会先读取主界面尚未保存的 OCR 语言，因此排序菜单能即时跟随 spa/eng/fra/ita/por/deu 等变化。
+- 新增 3 项排序回归测试；总计 49 项自动测试通过。
+## v2.5.0
+
+- 启动时自动恢复上次项目、最后页码、项目参数以及页面范围。会话状态保存在用户配置目录，不写入词典项目。
+- 页面范围压缩为单行，并新增“页面大小：− / 百分比 / + / 适合宽度 / 适合高度”。
+- 词条校对窗口按钮重排为两行，数字转变音字母复选框回到第一行。
+- 词条显示缩放及“当前 / 余下 / 合计”移至右侧 OCR 结果上方；百分比改为真实源图比例，100% 为原图 1:1。
+- 特殊字符按钮固定排成两行。
+## v2.4.0
+
+- 主界面新增绿色“保存当前页”按钮，同时保存当前页 `.pdic` 与 `.ppp`；“运行OCR画线”改为橙色强调按钮。
+- 栏左垂线与词头横线各增加独立显示开关；“隐藏线框”改为“隐藏线框（插图除外）”，插图多边形不受该开关影响。
+- Lens 模式恢复为旧版四档完整文字，并改为单一下拉选择：关闭、仅诊断、冲突/低可信调用、全页三OCR融合。
+- 五个主区标题改为粗体；“显示切图示意框”按需求改名为“显示切图示意框宽度”。
+- 移除投影空白高度、投影阈值系数、自适应阈值块、自适应阈值C及 projection/hybrid 画线逻辑，仅保留普通左缘规则与 OCR 画线。
+- “更多参数”窗口高度改为屏幕约 75%；“词条校对”窗口高度改为屏幕约 60%并居中，新增词条切片/文本框缩放按钮。
+- 词条校对时右侧 wordslist 自动定位到当前词附近，目标词居中并灰底突出。
+- 词头顺序核对新增西班牙语现代/传统两种排序规则：ñ 不再折叠为 n；传统模式可把 ch、ll 作为独立排序单元。
+- 页面列表改为“页面｜已画线｜页面置信度”三列；项目打开时先显示页面名，再在空闲时间分批读取 PDIC/OCR 质量信息，不再同步计算彩色底色。
+- 回归测试 46/46 通过，并完成 Tk 主界面、参数窗口、校对窗口和排序规则的无头显示启动测试。
+## v2.3.0
+
+- 取消菜单栏与顶部工具栏，重排为五段式左侧控制栏，页面列表自适应剩余高度。
+- 新增 PaddleOCR detection-only 整页版面检测，自动回填分栏、页眉Y、栏宽、栏间空。
+- OCR 画线支持 PaddleOCR / Tesseract / Google Lens 独立勾选，默认前两者；新增候选带宽比例 1–100。
+- 页面范围统一支持当前页、当前页至末页及 `xx~yy,zz` 指定范围。
+- 校对窗口改为半屏宽/全屏高居中，可滚轮滚动，并按当前词显示可点击的多 OCR 结果。
+- 新增 `_WordsOfPages.txt` 导入、当前页/全项目词头顺序核对、插图切图与 PicDic 制作入口。
+## v2.2.1
+
+- 修复右侧候选复选框取消中间错误词头后，后续词头文本依次错位的问题。根因是保存 PDIC 时曾按控件列表位置与当前词条列表重新配对；删除中间词条后，两份列表的序号不再对应。
+- 文本编辑框现在从创建时起绑定到具体 `Entry` 对象，保存、取消候选、人工选择和删除词条时均按对象身份同步，不再依赖可变化的列表序号。
+- 新增“删除中间候选后保持后续 `alo / alocado / alocución` 文本对应关系”的回归测试；当前 47/47 项通过。
+## v2.2.0
+
+- 将 PaddleOCR 词头坐标定位设为新项目默认主模式，并默认开启 Paddle/Tesseract 对照与多 OCR 自动融合；旧的左缘规则、投影和混合模式仍保留在高级设置中。
+- 主界面新增紧凑的“OCR 画线（主模式）”区域：直接显示 OCR/Paddle 语言、候选置信度、最低候选分、候选带宽、左缘容差、Google Lens 模式，以及 Tesseract 对照、自动 PSM、多 OCR 融合和候选复选框开关。
+- 新增统一执行选择：`当前页/全部页面 × 复用缓存/强制重新识别`。点击“运行 OCR 画线”会先保存主界面参数，再识别并写入画线；全部页面强制模式会逐页忽略 OCR 缓存，但保留并重新应用人工候选选择。
+- “画线”菜单同步增加当前页/全部页面的普通与强制 OCR 入口；传统识别方式仍可从高级设置选择并执行。
+- 页面列表固定为约 10 行高度并保留滚动条，把主界面空间优先留给 OCR 参数。原常驻长提示改为“使用提示”按钮：鼠标悬浮显示浮层，点击显示固定提示对话框。
+- 主界面增加 OCR 引擎状态检查按钮，可直接检查 Tesseract 路径/语言和 Google Lens 可用性。
+- 新增 OCR 融合默认值回归测试；当前 46/46 项通过。
+## v2.1.0
+
+- 新增 `dictionary_profile.json` 与内置词典配置：将词性、地域/语域、学科、关系标签和符号语义分层；`pron.` 与 `Pron.`、`conj.` 与 `conjug.` 分开处理，`■/□/||/~/→` 明确作为词条内部结构，不能单独触发新 lemma。
+- 新增 Google Lens 可选第三 OCR：使用 `chrome-lens-py` detailed 层级读取行/词 geometry，按 Sequence+Y 接入现有候选；冲突模式只在本地 OCR 冲突、单侧接受或低可信时调用。Lens 不虚构粗体字段，统一从原图 bbox 计算视觉证据。
+- 三引擎 arbitration 支持 Lens 裁决 Paddle/Tesseract 拼写冲突，也保留本地双引擎共识优先和 `NEEDS_REVIEW`；复核窗口增加 Lens 列及“采用 Lens”。
+- Tesseract 会自动搜索显式路径、PATH 和 Windows 常见安装目录；设置窗口可检查版本、路径、`spa+eng` 语言包，并将失败明确写入 diagnostics。新增 PSM 4/6 自动比较。
+- 新增固定13列 `*_ocr_engines.tsv` 和12列 `*_fusion.tsv`；`*_issues.tsv` 扩展为16列并包含 Lens。项目质量汇总增加 Lens/三引擎指标。
+- 新增词典符号语义、Lens 坐标还原、Lens 裁决及 Tesseract 路径发现回归测试；当前 45/45 项通过。
+## v2.0.0
+
+- 将词头识别流程升级为可解释的双 OCR 管线：PaddleOCR/Tesseract -> 结构化 Grammar Parser -> 词头序列 + Y 双重对齐 -> OCR arbitration -> 字典序弱检查 -> 最终词条。Tesseract 不再只是可选“补漏”，默认的 v2 融合可在第二引擎可用时自动选择质量更高的结果；Tesseract 不可用时自动退回 Paddle。
+- Grammar Parser 改为分阶段解析 `lemma -> variants -> inflection/plural -> POS -> usage -> definition`，JSON/diagnostics 保存 `parser_stage`、`parser_trace`、variants、usage、definition preview 和修复类型；仍保留用户可编辑 headword/POS 正则作为词法入口。
+- 增加最多两条后续印刷行的 headword 状态机，并保留 `MULTILINE_POS` / `MULTILINE_STATE_JOIN` / `RIGHT_FRAGMENT_ABSORBED` 等逻辑修复记录。
+- Paddle/Tesseract 配对从单纯最近 Y 改为 `difflib.SequenceMatcher` 词头序列锚定 + Y/lemma 相似度约束；单侧漏一行不会再导致后续候选整体错配。
+- 新增 OCR arbitration：综合 accept/reject、parser score、confidence、结构证据、视觉证据和 repair penalty 选择最终引擎；相近但冲突的候选标记 `NEEDS_REVIEW`。双 OCR 对同一高置信度词头达成一致而 POS 恰好损坏时，可做保守视觉共识补救。
+- 新增页面级 Headword Agreement 评分；页面列表按阈值显示绿/黄/红底，项目级 `QT/PaddleOCR/_quality_summary.tsv` 持续汇总 exact/similar/conflict/Paddle-only/Tesseract-only/selected/issues/needs_review。
+- 新增标准化 `*_issues.tsv`，集中列出 `OCR_CONFLICT`、`PADDLE_ONLY`、`TESSERACT_ONLY`、`MULTILINE_POS`、`SPLIT_OCR_BOX`、`OCR_REPAIR`、`LOW_CONFIDENCE`、`ALPHABETICAL_WARNING`、`MISSING_STRUCTURE`、`LEMMA_PARSE_FAILED` 等需要复核的候选。
+- 新增“工具 -> OCR词头冲突复核”：并排查看 Paddle/Tesseract/final lemma、问题类型和决策原因；双击行直接滚动到原图相应 Y 并高亮；可一键采用 Paddle、Tesseract 或手工 lemma。
+- 主图每个 OCR 左缘候选行右侧新增复选框（可在参数中关闭）。自动漏掉的 lemma 行可直接勾选进入最终 PDIC；误选行可取消。选择状态写入 `*_manual_selection.json`，重新运行 OCR/parser 时仍优先应用人工决定。
+- 文本框 confidence 底色、字典序橙红边框、严格 12 列 diagnostics 和 27 列 comparison 继续保留。diagnostics 的 reason 现在额外写入 parser stage/trace/bug type；最终引擎和决策原因进入 JSON/`issues.tsv`。
+- 新增 v2 回归测试：结构化 grammar trace、序列对齐缺行稳定性、双 OCR arbitration、quality summary、issues TSV 列数；当前 41/41 自动测试通过。
+## v1.5.9
+
+- 统一复核用户提供的 0055–0070 共16页扫描图及对应 PaddleOCR diagnostics，针对跨页重复出现的结构性漏检改写词头尾部语法解析，而不是继续降低置信度或最低分。
+- 修复旧版/项目自定义 `AI词头提取正则` 吞掉语法逗号的问题：即使 OCR 已正确输出 `agrimensor, so.ra s.`、`agrónomo, ma adj./s.`、`agropecuario, ria adj.`，解析器也会把被误吞的逗号重新归还给语法尾部，再识别性别变体和 POS；未修改的 v1.5.8 默认正则会自动迁移到新版，更宽的用户自定义正则也增加解析器级保险。
+- 支持“词头结构换到下一印刷行”：当长词头/复数说明占满首行而 POS 出现在紧邻下一行开头（如 `agroalimentación (pl. ...)` 下一行为 `s.f.`）时，只把下一行的 POS 逻辑接回首行，画线 Y 仍使用首行。
+- 扩展 OCR 结构容错：支持 `a·guan·tarv.` 中 POS 与 lemma 粘连；支持 `ai·re ar v.` 这类最后音节被 OCR 拆成空格；支持被候选带截断但已出现 `(pl...)`、`(tb...)` 的词形提示。
+- POS 扩展 `s.amb.`、`pron.indef.` 及常见代词子类、`det.`；同时修复裸 `s.` 误吞后续定义首字母的问题，`alergólogo, ga s. Médico...` 只识别为 `s.`。
+- 描述型词条新增 `Contracción de`；并支持 `air mail || Correo aéreo`、`ajillo || al ~`、`ajoarriero || (al) ~`、`alaska malamute || -perro Alaska` 及 `||` 被 OCR 成 `ll/|l/l|` 的平行表达结构。
+- 收紧假阳性：`Pron. [érmeil]` / `Pron. [érbag]` 明确按“发音说明”而非 pronoun POS 处理；`aislante. s.m. 2...`、`hólica. adj./s. 2...` 等上一词条内部续义不会再被当作新词头。
+- 保留 v1.5.8 的严格12列 diagnostics、27列 Paddle/Tesseract Y 配对 comparison、字典序弱报警和 confidence 底色。个别 OCR 纯字符错误（如 `AI→Al`、`aislar→aisÍar`）不会被高风险自动纠正，仍通过双 OCR 对照/诊断暴露。
+- 将 0055–0070 的主要结构形态加入回归测试；当前 37/37 项自动测试全部通过。
+## v1.5.8
+
+- 修复 `*_ocr_diagnostics.txt` 不是严格矩形 TSV 的问题：去除节标题、重复表头、空白分隔行以及不同列数的 Y 对照区。现在该文件只有一行表头，随后每一物理行均严格为 12 列：`column\tbox\tconf\ttext\taccept/reject\tscore\tlemma\traw\tcorrected\tPOS\trepairs\treason`。
+- Paddle/Tesseract 来源不再靠不同节区分，而写入 `reason`：`engine=PADDLE/TESSERACT;record=raw/candidate/rescued/error`，因此仍可在同一 12 列表中筛选。
+- 将按 Y 配对的双 OCR 对照拆成独立 `*_ocr_comparison.txt`，固定 27 列；每一行列数完全一致，保留 Paddle/Tesseract 两侧 Y、box、confidence、accept/reject、score、lemma、raw/corrected、POS、repairs、完整 text、`delta_y`、`lemma_compare`、`status_compare` 和原因。
+- 新增严格列数回归测试：`*_ocr_diagnostics.txt` 所有行必须为 12 列，`*_ocr_comparison.txt` 所有行必须为 27 列；当前 33 项测试全部通过。
+## v1.5.7
+
+- `*_ocr_diagnostics.txt` 改为 TSV 导向格式。Paddle/Tesseract 的原始 OCR 与候选表均使用统一字段：`column\tbox\tconf\ttext\taccept/reject\tscore\tlemma\traw\tcorrected\tPOS\trepairs\treason`。
+- 新增 Paddle-Tesseract 按源图 Y 自动配对的对照表，直接给出两侧 Y、box、confidence、accept/reject、score、lemma、raw/corrected、POS、repairs、完整文本、`delta_y`、lemma/status 是否一致及冲突原因。
+- 新增字典序弱证据：对接受的词头按“左栏从上到下 → 右栏从上到下”检查近似西语字典序，仅写 `WARN:alphabetical_*` 异常提示，不改变接受/拒绝结果；可帮助暴露 `Ml`、`Al` 等 OCR 跳词。
+- 画面上的词头文本框底色按 OCR confidence 分级：≥0.95 深绿、≥0.90 浅绿、≥0.80 黄、≥0.65 橙、<0.65 红；手工词条/无 OCR 元数据为灰色。词表命中仍用绿色边框提示。
+- JSON 新增 `final_entries`（含 confidence、OCR 来源、alphabetical warning）、`alphabetical_warnings` 和每栏 `ocr_y_comparison`；重新打开页面时 GUI 会从 JSON 恢复 confidence，因此颜色不会因翻页消失。
+- 扩展 55–60 页发现的 OCR 容错：支持 `+`、`.-`、`+-` 等音节分隔误识别；支持尾部连字符构词词素（如 `agro-`）；增加 `Sufijo/Prefijo/Sigla de/Abreviatura de` 等 descriptor。
+- POS 前允许极短且受限的版式 OCR 噪声（如 `agua Es.f.`、`aguar li v.`、`agujeta Mls.f.`），并把忽略内容写入 `repairs`；支持 lemma 末尾 `0→o` 等仅在紧邻明确 POS 时的受控修复。
+- 对明显的方框/项目符号 OCR 假词头（如 `Ml adj./s.`）增加窄范围内置拒绝，避免把版式符号当 lemma。
+- 新增相应回归测试；当前 33 项自动测试全部通过，并用 55–60 页真实扫描图做了 Tesseract 通道实测。
+## v1.5.6
+
+- 修复第54页一类词头漏检：词性正则新增裸 `s.`，覆盖 `agregado, da s.`、`agricultor, to·ra s.`。
+- 性别/词形变体不再限制为短连续字母，支持 `so·ra`、`to·ra` 等自身带音节分隔符的形式，因此 `agresor, so·ra adj./s.` 可直接通过结构判定。
+- 增加栏左词头的“主动向右吸收”逻辑：当 PaddleOCR 把 lemma、性别变体、POS 拆成不同框且普通同行聚类未合并时，会继续吸收右侧同物理行片段；只有合并后形成 POS/变形/描述词结构才提交，减少误并。
+- 增加受控 OCR 字符修复：只在行首 lemma 内部修复 `0/6→o`、`1→i` 这类数字/字母混淆；定义编号不受影响，并在诊断中记录 `ocr_repairs`、原始词头和修复后词头。
+- 每次 PaddleOCR 词头检测都会额外生成 `QT/PaddleOCR/页名_ocr_diagnostics.txt`，完整记录每栏 Paddle 合并全文、所有原始 OCR 框、候选接受/拒绝结果及明确 `reject_reason`；JSON 同步保存 `paddle_full_text`、`paddle_merged_lines` 等字段。
+- 详细参数新增可选“双 OCR 对照”：`Paddle检测同时运行Tesseract对照`。启用后 Tesseract 在与 Paddle 完全相同的拉直候选带上识别，完整结果和候选判断写入同一 JSON/TXT 报告；Tesseract 缺失或失败不会影响 Paddle 主流程。
+- 新增 `Tesseract结果可补漏Paddle词头`：仅将具有 POS/变形/描述词或显式强制接受规则的 Tesseract 高结构证据候选补入，而且与已有 Paddle Y 位置去重；默认关闭，可先只做对照观察。
+- 新增 `Tesseract 对照 PSM`（默认6）；Tesseract 对照沿用已有 `OCR语言` 和 `Tesseract路径`。
+- 自动迁移 v1.5.5 未修改的默认 POS 正则到新版；用户自定义正则仍保持不变。
+- 新增第54页结构、数字误识别、拆框主动吸收和 OCR 诊断报告回归测试；当前 29 项测试全部通过。
+## v1.5.5
+
+- 新增项目级外置词头规则文件 `headword_filter_rules.txt`，与“参数设置 → 词头规则”分页双向同步。
+- 规则编辑器支持一行一条规则、注释、导入、导出、恢复默认模板，并在保存前校验正则语法。
+- 支持 `reject_lemma_exact/regex`、`reject_line_contains/regex`、`accept_*`、`pos_exclude_exact/regex`；兼容 `lemma_exact` 等拒绝规则简写。
+- 规则优先级为“显式拒绝 > 显式接受 > 内置结构/视觉判定”；强制接受仍要求 OCR 能提取词头且候选位于栏左缘正文区。
+- 修改过滤规则不会使 PaddleOCR 原始识别缓存失效，因此普通“PaddleOCR 词头识别”即可重新套用规则，无需强制重新 OCR。
+- `QT/PaddleOCR/*.json` 新增命中规则、强制接受/拒绝、POS 排除等诊断字段。
+## v1.5.4
+
+- 首个正文词头采用独立Y精修逻辑：不再使用“行间低墨迹谷”，而是在OCR粗定位附近自上而下寻找第一个持续存在的墨迹行，取其起始Y作为横线位置，避免首行横线停在顶部空白区。
+- 首行持续墨迹检测会过滤孤立噪点，并允许向下搜索到约半个行高，以兼容OCR框顶端略早于实际字形的情况。
+- 扩展西语词头结构解析：支持 `agnóstico, ca adj.`、`agorero, ra adj./s.`、`agraciado, da adj.` 等逗号后性别变体。
+- 支持以连字符开头的构词词素词头，例如 `-a·go·gia`、`-a·go·go`。
+- 新增 `Elemento compositivo`、`forma prefija`、`forma sufija` 作为合法词条结构提示；这类词条即使没有传统词性缩写也可被识别。
+- 词性提示扩展到 `superlat. irreg.`，以覆盖 `agradabilísimo, ma superlat. irreg.` 等条目。
+- 将未经用户修改的旧版默认值自动升级为更适合当前词典页的参数：候选带宽度 600、候选置信度 0.30、同行合并Y比 0.70、词性搜索字符数 140；用户自定义值保持不变。
+- 新增第53页典型结构回归测试；当前共23项测试全部通过。
+## v1.5.3
+
+- 修复首个正文词头的横线Y精修：如果词头是页/栏中页眉之后的第一条正文行，则保留 PaddleOCR 粗定位Y，不再把顶部大片空白区当成“行间低墨迹谷”而向上移动横线。
+- 横线Y精修增加“开放谷”保护：若最低墨迹谷向搜索区上边界开放，则视为无上界空白而保留粗定位；正常紧密行间谷即使延伸至搜索区下边界仍允许向下精修。
+- 修复 `Conjug.` 被词性正则中的 `conj.` 部分匹配的问题；词性提示现在必须在完整词边界结束，避免正文里的 `Conjug.` 被误当成词性。
+- 新增换行/断词续行识别：如 `sa. □ Conjug.`、`blación. □ Conjug.` 这类以句末标点紧跟候选词片段的行，会标记为 continuation fragment 并拒绝作为词头。
+- `QT/PaddleOCR/*.json` 新增 `looks_like_continuation`、`continuation_reason`、`has_prior_content_line` 及Y精修原因，方便定位误检。
+- 新增4组针对首行上移、`sa.`/`blación.` 误检及 `Conjug.` 部分匹配的回归测试；当前共22项测试通过。
+## v1.5.2
+
+- 新增“词头横线Y按栏内墨迹谷精修”：PaddleOCR 先定位词头行，再在粗略Y坐标附近做局部水平投影，寻找上下文字之间最安全的低墨迹谷。
+- 默认搜索范围为词头 OCR 行高的 `±0.30`，并对候选Y使用 `±2 px` 的垂直安全带平均，避免把字母内部的一像素空隙误认为行间空白。
+- 对连续低墨迹区域取中心，而不是简单取单个黑像素最少行；可明显减少上一行 `g/j/p/q/y` 等下伸部被红色横线穿过。
+- 详细参数新增：`横线Y精修搜索范围（行高比）`、`横线Y精修安全带半径（px）`、`横线Y精修栏边余量（px）`，并可单独关闭Y精修。
+- `QT/PaddleOCR/*.json` 诊断新增粗略Y、精修Y、位移量、搜索区间、低墨迹谷范围及阈值，便于逐页核对。
+- 增加横线Y精修回归测试。
+## v1.5.1
+
+- 修复“更多参数/详细参数”窗口在较小屏幕或 Windows HiDPI 缩放下底部按钮被内容挤出可视区域的问题。
+- 参数区改为可滚动，底部“保存参数”和“取消”按钮固定显示，不随参数列表滚动。
+- 支持鼠标滚轮浏览详细参数，并增加 `Ctrl+S` 保存、`Esc` 取消快捷键。
+## v1.5.0
+
+- 针对带音节分隔点的西语/意语等词典词头重写 PaddleOCR 候选解析：`a·ga·rrón`、`a.ga.rrón`、`a-ga-rrón` 等可标准化为 `agarrón`，同时尽量保留真正的词内连字符。
+- OCR 若把词头、复数说明和词性拆成多个框，会先按印刷行合并再判断；低置信度词头片段不再在合并前被直接丢弃。
+- 新增词性结构提示，支持 `s.m.`、`s.f.`、`adj.inv.`、`v.`、`v.prnl.` 等及常见 OCR 变体；词性只在词头后的结构位置生效，避免正文中后续缩写造成误判。
+- `(pl. ...)` 等变形说明可作为强词条证据；默认要求词性、变形说明或词条符号之一，显著减少缩进正文被识别成 lemma。
+- 新增 running header 横线自动检测，可忽略页眉词头和页码区域；参数可在“更多参数”中关闭或微调。
+- PaddleOCR 候选带默认加宽到 420 个显示像素；旧版项目若仍使用 v1.4 原始默认正则/180 像素带宽，会在读取设置时自动迁移到新默认值，用户自定义值不改动。
+- `QT/PaddleOCR/*.json` 诊断增加原始词头、标准化词头、词性/变形提示、同行成员和页眉截止位置，便于逐项排查漏检与误检。
+- 新增音节分隔、真实连字符、拆分 OCR 框、页眉横线和词性位置约束等回归测试。
+## v1.4.0
+
+- 恢复旧版参数坐标语义：栏宽、栏距、起始位置、字高等几何参数均以页面载入后的实际显示图像像素为准。
+- 显示参数在检测、OCR、PaddleOCR候选带和切图时统一换算为原图坐标；`.pdic` 仍保存原图坐标。
+- 参数区显示当前参数基准图宽，状态栏同时显示参数坐标和原图坐标。
+- 恢复旧版鼠标定位辅助线，在图片内显示蓝色横纵交叉虚线，滚动和缩放后仍跟随正确位置。
+- 新增显示参数到原图坐标以及双倍分辨率检测回归测试。
+## v1.3.0
+
+- 新增可选的 PaddleOCR 3.x 词头识别方式，同时返回词头文字和原图坐标并直接生成画线。
+- 每栏只识别左侧窄带；窄带会沿动态列路径逐行拉直，以适应倾斜、拉伸和局部弯曲。
+- 词头候选综合正则表达式、左缘位置、识别置信度、字号、墨迹密度、特殊符号和行前空白评分。
+- PaddleOCR 原始识别框和候选判定报告缓存在 `QT/PaddleOCR/*.json`，调参时无需反复推理；菜单可强制刷新。
+- PaddleOCR 也可独立选作已有画线的 OCR 引擎，Tesseract 仍保留为默认引擎。
+- 新增独立安装脚本和可选依赖，未安装 PaddleOCR 时原有规则、投影、切图和 Tesseract 流程不受影响。
+- 新增 PaddleOCR 结果解析、候选筛选、坐标映射、缓存和单行识别回归测试。
+## v1.2.0
+
+- 恢复旧版中随Y位置调整横向搜索范围的倾斜列处理思想。
+- 将旧版“上下定位＋单一斜率”升级为多高度锚点的分段列路径，可跟随局部拉伸和缓慢弯曲。
+- 检测只在各栏左侧的有限搜索走廊内进行，不分析整页正文。
+- 红色列参考线、左缘词头检测、单行OCR裁剪及整体词条裁剪共同使用动态列路径。
+- 在常用参数区加入“跟随词头列倾斜/变形”开关，在高级参数中加入搜索半径、分块高度和最大步移。
+- 新增斜栏回归测试。
+## v1.1.0
+
+- 将常用参数区固定到页面列表上方；完整参数仍可从“更多参数”打开。
+- 主图片区支持滚轮纵向浏览、Shift＋滚轮横向浏览、Ctrl＋滚轮缩放。
+- 校对窗口的图片列表支持滚轮浏览。
+- 保留原有左缘规则，新增水平投影和融合两种词条行识别方式。
+- 水平投影法借鉴 `dictionary_splitter.py` 的自适应二值化、水平投影和大空白带思路，并改为支持项目分栏参数。
+- 增加投影算法参数及自动化回归测试。
+- 补充 PaddleOCR 的后续接入方案；当前版本不强制安装其大型依赖。
