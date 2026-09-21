@@ -1,0 +1,9 @@
+{
+  "format": "picture-capture-dictionary-profile-v2",
+  "preset": "latin_structured_symbols",
+  "language": "spa",
+  "overrides": {
+    "settings": {},
+    "grammar": {}
+  }
+}

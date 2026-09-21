@@ -1,0 +1,8 @@
+# 复制到项目根目录并命名为 headword_filter_rules.txt，或在“参数设置 → 词头规则”中编辑。
+# 每行一条；# 开头为注释。
+
+# reject_lemma_exact: sa
+# reject_lemma_exact: blación
+# reject_line_contains: □ Conjug.
+# accept_lemma_exact: aglomeración
+# accept_line_contains: Elemento compositivo
