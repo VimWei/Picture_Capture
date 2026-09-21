@@ -3486,6 +3486,23 @@ def test_v2110_main_crop_preview_replaces_old_width_only_checkbox():
     assert 'def _draw_crop_plan_preview' in text
 
 
+def test_crop_preview_uses_export_filename_and_centered_entry_typography():
+    from picture_capture.processing import EntryCropPiecePlan, entry_crop_piece_filename
+
+    piece = EntryCropPiecePlan(7, 2, "词条", (10, 20, 110, 80), "(P2)")
+    assert entry_crop_piece_filename("0001", piece) == "0001_WW_007(P2).png"
+
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    start = text.index("    def _draw_crop_plan_preview")
+    end = text.index("    def redraw", start)
+    preview = text[start:end]
+    assert "self.settings.main_entry_font_family" in preview
+    assert "self.settings.main_entry_font_size" in preview
+    assert 'label = f"{piece.word}\\n{filename}"' in preview
+    assert 'anchor="n", justify="center"' in preview
+
+
 
 def test_v2111_entry_crop_width_uses_gutter_midlines_not_raw_column_edge():
     image = Image.new("RGB", (1800, 1200), "white")
@@ -4480,26 +4497,33 @@ def test_v21122_hotfix2_review_ui_exposes_shared_and_single_height_plus_main_ocr
     assert 'self.parent.settings.review_single_cjk_line_height = line_height' in review
 
 
-def test_v21122_hotfix2_main_canvas_ocr_aids_are_suppressed_only_during_review_by_default():
-    from types import SimpleNamespace
+def test_v21122_hotfix2_main_canvas_ocr_aids_follow_their_switches():
     from picture_capture.app import PictureCaptureApp
-
-    class Review:
-        def winfo_exists(self): return 1
 
     app = object.__new__(PictureCaptureApp)
     app.settings = AppSettings()
     app.review_window = None
-    assert app._main_ocr_review_option_enabled("review_main_show_ocr_choices") is True
-    assert app._main_ocr_review_option_enabled("review_main_show_ocr_background") is True
-
-    app.review_window = Review()
     assert app._main_ocr_review_option_enabled("review_main_show_ocr_choices") is False
     assert app._main_ocr_review_option_enabled("review_main_show_ocr_background") is False
     app.settings.review_main_show_ocr_choices = True
     app.settings.review_main_show_ocr_background = True
     assert app._main_ocr_review_option_enabled("review_main_show_ocr_choices") is True
     assert app._main_ocr_review_option_enabled("review_main_show_ocr_background") is True
+
+
+def test_main_ocr_visibility_controls_apply_immediately_and_candidate_boxes_are_source_agnostic():
+    from pathlib import Path
+    import inspect
+    import picture_capture.app as app_module
+
+    text = Path(inspect.getsourcefile(app_module)).read_text(encoding="utf-8")
+    assert 'command=lambda n=name, v=var: self._apply_overlay_visibility_toggle(n, v)' in text
+    assert '"paddle_show_candidate_checkboxes", candidate_var' in text
+    start = text.index("            show_candidates = (")
+    end = text.index("        show_shapes =", start)
+    candidate_block = text[start:end]
+    assert "if show_candidates:" in candidate_block
+    assert 'self.settings.detection_method == "paddleocr"' not in candidate_block
 
 
 def test_v21122_hotfix3_page_word_text_and_diff_classify_add_delete_modify():
