@@ -12,7 +12,7 @@ from .reference_index import contains_cjk
 from .cc_cedict import DOWNLOAD_PAGE_URL as CC_CEDICT_DOWNLOAD_PAGE_URL, lookup as lookup_cc_cedict
 
 
-USER_AGENT = "PictureCapture/2.13.1 dictionary-proofreading"
+USER_AGENT = "PictureCapture/2.13.2 dictionary-proofreading"
 
 
 @dataclass(frozen=True)

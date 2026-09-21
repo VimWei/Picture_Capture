@@ -4449,7 +4449,7 @@ class OldNewComparisonWindow(tk.Toplevel):
 class PictureCaptureApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Picture Capture v2.13.1 — OCR 词头定位")
+        self.title("Picture Capture v2.13.2 — OCR 词头定位")
         self.geometry("1440x900")
         self.minsize(1080, 680)
         self.project: ProjectState | None = None
@@ -5815,7 +5815,7 @@ class PictureCaptureApp(tk.Tk):
         elif paddle_available:
             lines = ["✓ PaddleOCR：已安装（版本未知）"]
         else:
-            return "✗ PaddleOCR：未安装\nPP-OCRv6：不可用（需要 PaddleOCR >= 3.7）"
+            return "✗ PaddleOCR：未安装\nPP-OCRv6：不可用（需要 PaddleOCR >= 3.7）\nWindows 推荐运行 install_ocr_windows.bat 安装 CPU/GPU OCR 套件。"
 
         if paddlex_version:
             lines.append(f"✓ PaddleX {paddlex_version}")
