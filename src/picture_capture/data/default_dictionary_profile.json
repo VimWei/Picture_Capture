@@ -1,0 +1,47 @@
+{
+  "format": "picture-capture-dictionary-profile-v1",
+  "name": "Diccionario escolar de español — abbreviations and symbols",
+  "source_note": "Transcribed from the dictionary's supplied abbreviation and symbol pages; project copies may be edited without changing program code.",
+  "abbreviations": {
+    "part_of_speech": [
+      "adj.", "adj.inv.", "adj./s.", "adv.", "art.", "conj.", "det.",
+      "interj.", "loc.", "num.", "prep.", "pron.", "pron.dem.",
+      "pron.exclam.", "pron.indef.", "pron.interr.", "pron.pers.",
+      "pron.poses.", "pron.rel.", "s.", "s.amb.", "s.com.", "s.f.",
+      "s.f.pl.", "s.m.", "s.m.pl.", "s.n.", "s.pl.", "superlat.",
+      "superlat.irreg.", "v.", "v.irreg.", "v.prnl."
+    ],
+    "usage_and_region": [
+      "Amér.", "arg.", "col.", "desus.", "esp.", "euf.", "fam.",
+      "fig.", "lit.", "pop.", "reg.", "rur.", "tb.", "vulg.",
+      "vulg.malson."
+    ],
+    "subject_domains": [
+      "ANAT.", "ARQ.", "ASTR.", "BIOL.", "BOT.", "DEP.", "DER.",
+      "ECON.", "FÍS.", "GEOG.", "GEOL.", "GRAM.", "HIST.", "INFORM.",
+      "LING.", "LIT.", "MAT.", "MED.", "MÚS.", "NÁUT.", "POL.",
+      "QUÍM.", "RELIG.", "TECNOL.", "ZOOL."
+    ],
+    "article_relations": [
+      "ANT.", "SIN.", "FAM.", "Pron.", "conjug."
+    ]
+  },
+  "symbols": {
+    "internal_not_new_entry": ["■", "□", "||", "~", "→"],
+    "entry_markers": ["•", "◆", "◇", "►", "▶", "*", "†", "‡", "§", "¶"],
+    "meanings": {
+      "■": "different grammatical category inside the same entry",
+      "||": "locution or fixed expression inside the same entry",
+      "~": "replacement for the current lemma",
+      "[ ]": "pronunciation",
+      "□": "grammar information inside the current entry",
+      "→": "cross-reference",
+      "ANT.": "antonym relation",
+      "SIN.": "synonym relation",
+      "FAM.": "word-family relation",
+      "Pron.": "pronunciation label, distinct from pron. (pronoun)",
+      "conjug.": "conjugation information, distinct from conj. (conjunction)"
+    }
+  }
+}
+

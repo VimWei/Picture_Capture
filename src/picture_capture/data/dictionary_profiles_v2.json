@@ -1,0 +1,264 @@
+{
+  "format": "picture-capture-profile-library-v2",
+  "default_profile": "latin_structured_symbols",
+  "profiles": {
+    "latin_phonetic_dense": {
+      "display_name": "拉丁字母 · 音标密集双栏",
+      "family": "latin_phonetic_dense",
+      "description": "适合英文词头粗体、紧接音标/词性、正文缩进明显的经典双栏词典。左缘、粗体和词性/音标结构共同判定；允许音节分隔词头。",
+      "examples": [
+        {"dictionary": "Far East English-Chinese Dictionary（远东英汉）", "image": "fareast.jpg", "note": "英文粗体词头 + 音标/POS，双栏密排"},
+        {"dictionary": "RHWCD 英汉词典样本", "image": "rhwcd.jpg", "note": "英文粗体词头 + 音标/POS，双栏密排"}
+      ],
+      "supported_languages": ["eng"],
+      "default_language": "eng",
+      "default_paddle_language": "en",
+      "parser_modes": ["latin"],
+      "settings": {
+        "columns": 2,
+        "paddle_band_width_ratio": 100,
+        "paddle_band_left_margin": 12,
+        "paddle_left_tolerance": 24,
+        "paddle_height_ratio": 1.05,
+        "paddle_boldness_ratio": 1.12,
+        "paddle_gap_ratio": 0.70,
+        "paddle_min_candidate_score": 1.0,
+        "paddle_require_visual_cue": true,
+        "paddle_require_pos_or_symbol": true,
+        "paddle_remove_syllable_separators": true,
+        "paddle_auto_header_rule": true,
+        "paddle_refine_separator_y": true,
+        "paddle_separator_search_ratio": 0.30,
+        "paddle_separator_band_radius": 2,
+        "paddle_separator_safety_px": 2,
+        "paddle_separator_roi_width_ratio": 60,
+        "paddle_separator_column_margin": 8,
+        "paddle_pos_search_chars": 160
+      },
+      "grammar": {
+        "part_of_speech": ["adj.", "adv.", "n.", "v.", "vt.", "vi.", "v.t.", "v.i.", "prep.", "pron.", "conj.", "interj.", "art.", "aux.", "num."],
+        "usage_and_region": ["Am.", "Br.", "Brit.", "US.", "fig.", "colloq.", "sl.", "vulg."],
+        "subject_domains": [],
+        "article_relations": ["Syn.", "Ant.", "cf.", "See"],
+        "internal_not_new_entry": ["■", "□", "||", "~", "→"],
+        "entry_markers": ["•", "◆", "◇", "►", "▶", "*", "†", "‡", "§", "¶"]
+      }
+    },
+    "latin_pos_classic": {
+      "display_name": "拉丁字母 · 紧邻词性经典双栏",
+      "family": "latin_pos_classic",
+      "description": "适合词头紧贴栏左缘、后接传统词性缩写的罗曼语双栏词典。左缘和词性是主证据，粗体为辅；行间空白主要用于横线 Y 精修。",
+      "examples": [
+        {"dictionary": "葡汉词典经典版式", "image": "pt_classic.jpg", "note": "葡萄牙语词头 + v.t./v.i./s.m./s.f."},
+        {"dictionary": "LVZHUAN 意汉词典", "image": "lvzhuan.jpg", "note": "意大利语词头 + v.tr./v.intr./s.m./s.f."}
+      ],
+      "supported_languages": ["por", "ita"],
+      "default_language": "por",
+      "default_paddle_language": "pt",
+      "paddle_language_by_language": {"por": "pt", "ita": "it"},
+      "parser_modes": ["latin"],
+      "settings": {
+        "columns": 2,
+        "paddle_band_width_ratio": 65,
+        "paddle_band_left_margin": 12,
+        "paddle_left_tolerance": 16,
+        "paddle_height_ratio": 1.04,
+        "paddle_boldness_ratio": 1.10,
+        "paddle_gap_ratio": 0.72,
+        "paddle_min_candidate_score": 1.0,
+        "paddle_require_visual_cue": true,
+        "paddle_require_pos_or_symbol": true,
+        "paddle_remove_syllable_separators": false,
+        "paddle_auto_header_rule": true,
+        "paddle_refine_separator_y": true,
+        "paddle_separator_search_ratio": 0.28,
+        "paddle_separator_band_radius": 2,
+        "paddle_separator_safety_px": 2,
+        "paddle_separator_roi_width_ratio": 55,
+        "paddle_separator_column_margin": 8,
+        "paddle_pos_search_chars": 150
+      },
+      "grammar_by_language": {
+        "por": {
+          "part_of_speech": ["s.m.", "s.f.", "s.2g.", "s.m.pl.", "s.f.pl.", "adj.", "adv.", "v.t.", "v.i.", "v.r.", "v.pr.", "prep.", "conj.", "pron.", "interj.", "art.", "num.", "loc."],
+          "usage_and_region": ["Bras.", "Port.", "fig.", "fam.", "pop.", "vulg."],
+          "subject_domains": [],
+          "article_relations": ["Sin.", "Ant.", "Cf."],
+          "internal_not_new_entry": ["■", "□", "||", "~", "→"],
+          "entry_markers": ["•", "◆", "◇", "►", "▶", "*", "†", "‡", "§", "¶"]
+        },
+        "ita": {
+          "part_of_speech": ["s.m.", "s.f.", "s.m.e f.", "agg.", "avv.", "v.tr.", "v.intr.", "v.rifl.", "prep.", "cong.", "pron.", "inter.", "art.", "num.", "loc."],
+          "usage_and_region": ["fig.", "fam.", "pop.", "lett.", "ant.", "reg."],
+          "subject_domains": [],
+          "article_relations": ["sin.", "contr.", "cfr."],
+          "internal_not_new_entry": ["■", "□", "||", "~", "→"],
+          "entry_markers": ["•", "◆", "◇", "►", "▶", "*", "†", "‡", "§", "¶"]
+        }
+      }
+    },
+    "latin_numbered_pos": {
+      "display_name": "拉丁字母 · 编号词性双栏",
+      "family": "latin_numbered_pos",
+      "description": "适合词头与词性之间可夹变位/索引编号的双栏词典。左缘和粗体强，解析器允许 lemma → 编号 → POS 的结构。",
+      "examples": [
+        {"dictionary": "XXH 西汉词典", "image": "xxh.jpg", "note": "西班牙语词头 + 可选变位编号 + tr./intr./prnl."}
+      ],
+      "supported_languages": ["spa"],
+      "default_language": "spa",
+      "default_paddle_language": "es",
+      "parser_modes": ["latin", "numbered_pos"],
+      "settings": {
+        "columns": 2,
+        "paddle_band_width_ratio": 70,
+        "paddle_band_left_margin": 12,
+        "paddle_left_tolerance": 18,
+        "paddle_height_ratio": 1.04,
+        "paddle_boldness_ratio": 1.12,
+        "paddle_gap_ratio": 0.72,
+        "paddle_min_candidate_score": 1.0,
+        "paddle_require_visual_cue": true,
+        "paddle_require_pos_or_symbol": true,
+        "paddle_remove_syllable_separators": false,
+        "paddle_auto_header_rule": true,
+        "paddle_refine_separator_y": true,
+        "paddle_separator_search_ratio": 0.25,
+        "paddle_separator_band_radius": 2,
+        "paddle_separator_safety_px": 2,
+        "paddle_separator_roi_width_ratio": 55,
+        "paddle_separator_column_margin": 8,
+        "paddle_pos_search_chars": 170
+      },
+      "grammar": {
+        "part_of_speech": ["tr.", "intr.", "prnl.", "adj.", "m.", "f.", "m.f.", "adv.", "prep.", "conj.", "pron.", "interj.", "art.", "num."],
+        "usage_and_region": ["Amér.", "Arg.", "Urug.", "Méx.", "fig.", "fam.", "vulg."],
+        "subject_domains": [],
+        "article_relations": ["Sin.", "Ant.", "Cf."],
+        "internal_not_new_entry": ["■", "□", "||", "~", "→"],
+        "entry_markers": ["•", "◆", "◇", "►", "▶", "*", "†", "‡", "§", "¶"]
+      }
+    },
+    "latin_structured_symbols": {
+      "display_name": "拉丁字母 · 结构符号词典型",
+      "family": "latin_structured_symbols",
+      "description": "适合词性、变形、方框/条内符号丰富的学校词典或学习词典。保留现有西班牙语学校词典的成熟解析规则，作为兼容和通用结构型预设。",
+      "examples": [],
+      "supported_languages": ["spa"],
+      "default_language": "spa",
+      "default_paddle_language": "es",
+      "parser_modes": ["latin"],
+      "settings": {
+        "columns": 2,
+        "paddle_band_width_ratio": 100,
+        "paddle_band_left_margin": 12,
+        "paddle_left_tolerance": 34,
+        "paddle_height_ratio": 1.08,
+        "paddle_boldness_ratio": 1.12,
+        "paddle_gap_ratio": 0.70,
+        "paddle_min_candidate_score": 1.0,
+        "paddle_require_visual_cue": true,
+        "paddle_require_pos_or_symbol": true,
+        "paddle_remove_syllable_separators": true,
+        "paddle_auto_header_rule": true,
+        "paddle_refine_separator_y": true,
+        "paddle_separator_search_ratio": 0.30,
+        "paddle_separator_band_radius": 2,
+        "paddle_separator_safety_px": 2,
+        "paddle_separator_roi_width_ratio": 60,
+        "paddle_separator_column_margin": 8,
+        "paddle_pos_search_chars": 140
+      },
+      "grammar": {
+        "part_of_speech": ["adj.", "adj.inv.", "adj./s.", "adv.", "art.", "conj.", "det.", "interj.", "loc.", "num.", "prep.", "pron.", "pron.dem.", "pron.exclam.", "pron.indef.", "pron.interr.", "pron.pers.", "pron.poses.", "pron.rel.", "s.", "s.amb.", "s.com.", "s.f.", "s.f.pl.", "s.m.", "s.m.pl.", "s.n.", "s.pl.", "superlat.", "superlat.irreg.", "v.", "v.irreg.", "v.prnl."],
+        "usage_and_region": ["Amér.", "arg.", "col.", "desus.", "esp.", "euf.", "fam.", "fig.", "lit.", "pop.", "reg.", "rur.", "tb.", "vulg.", "vulg.malson."],
+        "subject_domains": ["ANAT.", "ARQ.", "ASTR.", "BIOL.", "BOT.", "DEP.", "DER.", "ECON.", "FÍS.", "GEOG.", "GEOL.", "GRAM.", "HIST.", "INFORM.", "LING.", "LIT.", "MAT.", "MED.", "MÚS.", "NÁUT.", "POL.", "QUÍM.", "RELIG.", "TECNOL.", "ZOOL."],
+        "article_relations": ["ANT.", "SIN.", "FAM.", "Pron.", "conjug."],
+        "internal_not_new_entry": ["■", "□", "||", "~", "→"],
+        "entry_markers": ["•", "◆", "◇", "►", "▶", "*", "†", "‡", "§", "¶"]
+      }
+    },
+    "cjk_marker_pinyin": {
+      "display_name": "中文 · 圆点/拼音三栏",
+      "family": "cjk_marker_pinyin",
+      "description": "适合三栏中文词头，条目前有 ○/● 等强标记并伴随拼音/罗马字的双语词典。结构标记和栏左位置优先于粗体。",
+      "examples": [
+        {"dictionary": "CNIT 汉意词典", "image": "cnit.jpg", "note": "○/● + 中文词头 + 拼音，三栏"}
+      ],
+      "supported_languages": ["chi_sim"],
+      "default_language": "chi_sim",
+      "default_paddle_language": "ch",
+      "parser_modes": ["cjk_marker_pinyin"],
+      "settings": {
+        "columns": 3,
+        "paddle_band_width_ratio": 75,
+        "paddle_band_left_margin": 10,
+        "paddle_left_tolerance": 26,
+        "paddle_height_ratio": 1.10,
+        "paddle_boldness_ratio": 1.05,
+        "paddle_gap_ratio": 0.70,
+        "paddle_min_candidate_score": 1.0,
+        "paddle_require_visual_cue": false,
+        "paddle_require_pos_or_symbol": false,
+        "paddle_remove_syllable_separators": false,
+        "paddle_auto_header_rule": true,
+        "paddle_refine_separator_y": true,
+        "paddle_separator_search_ratio": 0.25,
+        "paddle_separator_band_radius": 2,
+        "paddle_separator_safety_px": 2,
+        "paddle_separator_roi_width_ratio": 50,
+        "paddle_separator_column_margin": 8,
+        "paddle_pos_search_chars": 100
+      },
+      "grammar": {
+        "part_of_speech": [],
+        "usage_and_region": [],
+        "subject_domains": [],
+        "article_relations": [],
+        "internal_not_new_entry": ["||", "~", "→"],
+        "entry_markers": ["○", "●", "◦", "•", "〓"]
+      }
+    },
+    "cjk_bracket_display": {
+      "display_name": "中文 · 括号词头/大字三栏",
+      "family": "cjk_bracket_display",
+      "description": "适合三栏中文字符词典：普通复合词使用【】/〔〕等括号，单字大词头依靠明显字号/视觉突出。无需传统 POS。",
+      "examples": [
+        {"dictionary": "三民中文词典样本", "image": "sanmin.jpg", "note": "【复合词】 + 大号单字词头，三栏"}
+      ],
+      "supported_languages": ["chi_tra", "chi_sim"],
+      "default_language": "chi_tra",
+      "default_paddle_language": "chinese_cht",
+      "paddle_language_by_language": {"chi_tra": "chinese_cht", "chi_sim": "ch"},
+      "parser_modes": ["cjk_bracketed", "cjk_single_visual"],
+      "settings": {
+        "columns": 3,
+        "paddle_band_width_ratio": 60,
+        "paddle_band_left_margin": 8,
+        "paddle_left_tolerance": 24,
+        "paddle_height_ratio": 1.12,
+        "paddle_boldness_ratio": 1.05,
+        "paddle_gap_ratio": 0.70,
+        "paddle_min_candidate_score": 1.0,
+        "paddle_require_visual_cue": false,
+        "paddle_require_pos_or_symbol": false,
+        "paddle_remove_syllable_separators": false,
+        "paddle_auto_header_rule": true,
+        "paddle_refine_separator_y": true,
+        "paddle_separator_search_ratio": 0.22,
+        "paddle_separator_band_radius": 2,
+        "paddle_separator_safety_px": 2,
+        "paddle_separator_roi_width_ratio": 45,
+        "paddle_separator_column_margin": 8,
+        "paddle_pos_search_chars": 80
+      },
+      "grammar": {
+        "part_of_speech": [],
+        "usage_and_region": [],
+        "subject_domains": [],
+        "article_relations": [],
+        "internal_not_new_entry": ["||", "~", "→"],
+        "entry_markers": ["【", "〔", "［", "["]
+      }
+    }
+  }
+}
