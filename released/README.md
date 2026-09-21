@@ -1,4 +1,0 @@
-请下载解压最新版本，使用上有问题请反馈。
-Python版本不要安装过新的版本，因为PaddlePaddleOCR有限制版本号的
-有Nvidia显卡的，可以去PaddlePaddle官网查询可以安装的CUDA版本号
-一般的安装问题请尽量自行查询AI
