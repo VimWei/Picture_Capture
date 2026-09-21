@@ -6151,11 +6151,19 @@ class PictureCaptureApp(tk.Tk):
         tokens = [item.strip() for item in re.split(r"[,，]", spec) if item.strip()]
         if not tokens:
             raise ValueError("请填写指定页面范围，例如 0008-0020,0025,0030~0035。")
-        number_to_indices: dict[int, list[int]] = {}
+        # A numeric range denotes actual numbered page filenames (0001.png,
+        # 0002.png, ...), not every filename whose final component happens to
+        # be numeric. This keeps auxiliary scans such as 0000_01.png out of
+        # ``1-100`` while retaining the historical ordinal fallback for
+        # projects that have no purely numeric filenames at all.
+        numeric_page_indices: dict[int, list[int]] = {}
+        trailing_number_indices: dict[int, list[int]] = {}
         for index, page in enumerate(self.project.images):
             number = self._page_number(page)
             if number is not None:
-                number_to_indices.setdefault(number, []).append(index)
+                trailing_number_indices.setdefault(number, []).append(index)
+            if page.stem.isdigit():
+                numeric_page_indices.setdefault(int(page.stem), []).append(index)
         selected: list[int] = []
         for token in tokens:
             # Accept the range notations users commonly type/paste on Windows:
@@ -6166,9 +6174,18 @@ class PictureCaptureApp(tk.Tk):
             if range_match:
                 lo, hi = sorted((int(range_match.group(1)), int(range_match.group(2))))
                 matched = [
-                    i for i, page in enumerate(self.project.images)
-                    if self._page_number(page) is not None and lo <= self._page_number(page) <= hi
+                    index
+                    for number, indices in numeric_page_indices.items()
+                    if lo <= number <= hi
+                    for index in indices
                 ]
+                if not matched and not numeric_page_indices:
+                    matched = [
+                        index
+                        for number, indices in trailing_number_indices.items()
+                        if lo <= number <= hi
+                        for index in indices
+                    ]
                 if matched:
                     selected.extend(matched)
                 elif 1 <= lo <= hi <= len(self.project.images):
@@ -6177,8 +6194,10 @@ class PictureCaptureApp(tk.Tk):
                     raise ValueError(f"页面范围超出项目：{token}")
             elif token.isdigit():
                 number = int(token)
-                if number in number_to_indices:
-                    selected.extend(number_to_indices[number])
+                if number in numeric_page_indices:
+                    selected.extend(numeric_page_indices[number])
+                elif not numeric_page_indices and number in trailing_number_indices:
+                    selected.extend(trailing_number_indices[number])
                 elif 1 <= number <= len(self.project.images):
                     selected.append(number - 1)
                 else:

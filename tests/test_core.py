@@ -136,6 +136,19 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(app._parse_page_spec("0008-0020"), list(range(7, 20)))
         self.assertEqual(app._parse_page_spec("0008–0010,0015,0020~0022"), [7, 8, 9, 14, 19, 20, 21])
 
+    def test_numeric_page_range_excludes_auxiliary_suffix_pages(self) -> None:
+        class FakeProject:
+            images = (
+                [Path(f"0000_{n:02d}.png") for n in range(1, 13)]
+                + [Path(f"{n:04d}.png") for n in range(1, 101)]
+            )
+
+        app = PictureCaptureApp.__new__(PictureCaptureApp)
+        app.project = FakeProject()
+
+        self.assertEqual(app._parse_page_spec("1-100"), list(range(12, 112)))
+        self.assertEqual(app._parse_page_spec("1"), [12])
+
 
     def test_v276_projection_layout_fallback_detects_two_columns(self) -> None:
         image = Image.new("RGB", (1200, 1600), "white")
