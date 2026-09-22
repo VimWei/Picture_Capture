@@ -12,7 +12,7 @@ import unicodedata
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
-from .models import AppSettings, Entry, PolygonRegion, read_noncomment_lines
+from .models import AppSettings, Entry, PolygonRegion, read_noncomment_lines, resolved_tesseract_language
 from .image_utils import normalize_page_rgb
 from .ocr_engines import find_tesseract
 from .formats import read_pdic, read_ppp, write_pdic, write_ppp
@@ -675,7 +675,7 @@ def ocr_entries(
             from .paddle_headwords import recognize_paddle_text
             raw = recognize_paddle_text(crop, settings, engine=paddle_engine)
         else:
-            raw = run_tesseract(crop, settings.ocr_language, settings.ocr_executable)
+            raw = run_tesseract(crop, resolved_tesseract_language(settings), settings.ocr_executable)
         results.append(process_ocr_text(raw, replace_rules, settings.lowercase_ocr) if settings.ocr_replace else raw.strip())
     return results
 

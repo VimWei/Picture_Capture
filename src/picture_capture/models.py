@@ -551,6 +551,11 @@ class ProjectState:
         return cls(root=root, images=images, settings=settings, words=words)
 
 
+def resolved_tesseract_language(settings: AppSettings) -> str:
+    """Use the engine-specific language pack, falling back for old projects."""
+    return str(settings.tesseract_language or settings.ocr_language or "eng").strip()
+
+
 def resolve_wordslist_path(root: Path, configured: str | Path | None) -> Path:
     """Resolve the configured auxiliary wordslist path for one project.
 

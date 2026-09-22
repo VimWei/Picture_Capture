@@ -28,7 +28,7 @@ from PIL import Image, ImageOps, ImageTk
 from .formats import pdic_path, read_pdic, read_ppp, write_pdic, write_ppp, read_picdic_index_records
 from .models import (
     AppSettings, Entry as WordEntry, PolygonRegion, ProjectState,
-    read_noncomment_lines, resolve_wordslist_path,
+    read_noncomment_lines, resolve_wordslist_path, resolved_tesseract_language,
 )
 from .paddle_headwords import (
     DEFAULT_HEADWORD_FILTER_RULES,
@@ -43,7 +43,7 @@ from .collation import (
 )
 from .dictionary_profile import (
     DEFAULT_PROFILE_ID, PROFILE_FILENAME, dictionary_profile_labels, dictionary_profile_preset,
-    managed_profile_setting_names, profile_effective_settings, profile_preview_path,
+    language_effective_settings, managed_profile_setting_names, profile_effective_settings, profile_preview_path,
     profile_layout_summary, project_profile_preset_id, write_project_profile,
 )
 from .picdic import build_picdic_package
@@ -139,6 +139,11 @@ def project_language_from_ocr(ocr_language: str) -> str:
     """Map the first configured OCR language to an ISO 639-1 code."""
     first = next((part.strip().lower() for part in str(ocr_language or "").split("+") if part.strip()), "")
     return OCR_TO_PROJECT_LANGUAGE.get(first, first if len(first) == 2 and first.isalpha() else "")
+
+
+def transformed_geometry_pending(settings: AppSettings) -> bool:
+    """Return whether destructive geometry actions need a later staged adapter."""
+    return str(getattr(settings, "layout_transform", "identity") or "identity") != "identity"
 
 OCR_SCOPE_LABELS = {"current": "当前页", "all": "全部页面"}
 OCR_SCOPE_VALUES = {label: value for value, label in OCR_SCOPE_LABELS.items()}
@@ -1198,7 +1203,7 @@ class SettingsDialog(tk.Toplevel):
         self._active_profile_key = selected_key
         self._profile_selection_changed = False
         self.profile_choice_var = tk.StringVar(value=selected.display_name)
-        ttk.Label(top, text="版面 Profile：").grid(row=0, column=0, sticky="e", padx=(0, 8), pady=4)
+        ttk.Label(top, text="词头类型：").grid(row=0, column=0, sticky="e", padx=(0, 8), pady=4)
         self.profile_combo = ttk.Combobox(
             top, textvariable=self.profile_choice_var,
             values=tuple(self._profile_label_to_key.keys()), state="readonly", width=44,
@@ -1246,6 +1251,23 @@ class SettingsDialog(tk.Toplevel):
                     widget.bind("<<ComboboxSelected>>", lambda _e: self._on_profile_language_changed())
                     widget.bind("<FocusOut>", lambda _e: self._on_profile_language_changed())
                     var.trace_add("write", lambda *_args: self.after_idle(self._refresh_sort_choices))
+                elif name == "layout_writing_mode":
+                    widget = ttk.Combobox(
+                        group, textvariable=var, values=("horizontal-tb", "vertical-rl", "vertical-lr"),
+                        state="readonly", width=24,
+                    )
+                    widget.bind("<<ComboboxSelected>>", lambda _e: self._sync_layout_semantics())
+                elif name == "layout_text_direction":
+                    widget = ttk.Combobox(group, textvariable=var, values=("ltr", "rtl"), state="readonly", width=24)
+                    widget.bind("<<ComboboxSelected>>", lambda _e: self._sync_layout_semantics())
+                elif name == "layout_columns_policy":
+                    widget = ttk.Combobox(group, textvariable=var, values=("detect", "fixed"), state="readonly", width=24)
+                elif name == "layout_column_separator_mode":
+                    widget = ttk.Combobox(group, textvariable=var, values=("auto", "present", "absent"), state="readonly", width=24)
+                elif name == "analysis_threshold_mode":
+                    widget = ttk.Combobox(group, textvariable=var, values=("auto", "otsu", "adaptive", "fixed"), state="readonly", width=24)
+                elif name == "layout_transform":
+                    widget = ttk.Entry(group, textvariable=var, width=24, state="readonly")
                 else:
                     widget = ttk.Entry(group, textvariable=var, width=24)
                 widget.grid(row=row, column=1, sticky="ew", pady=3)
@@ -1282,7 +1304,19 @@ class SettingsDialog(tk.Toplevel):
     def _refresh_profile_summary(self) -> None:
         profile = dictionary_profile_preset(self._current_profile_key())
         self.profile_description_var.set(profile.description)
-        self.profile_layout_summary_var.set(profile_layout_summary(profile))
+        try:
+            columns = max(1, int(self.vars.get("columns").get())) if self.vars.get("columns") else 1
+        except (TypeError, ValueError, tk.TclError):
+            columns = 1
+        layout = {
+            "writing_mode": str(self.vars.get("layout_writing_mode").get()) if self.vars.get("layout_writing_mode") else "horizontal-tb",
+            "text_direction": str(self.vars.get("layout_text_direction").get()) if self.vars.get("layout_text_direction") else "ltr",
+            "canonical_transform": str(self.vars.get("layout_transform").get()) if self.vars.get("layout_transform") else "identity",
+            "columns": columns,
+            "column_separator": str(self.vars.get("layout_column_separator_mode").get()) if self.vars.get("layout_column_separator_mode") else "auto",
+        }
+        language = str(self.vars.get("ocr_language").get()) if self.vars.get("ocr_language") else ""
+        self.profile_layout_summary_var.set(f"{language} · {profile.display_name} · {profile_layout_summary(profile, layout)}")
         if profile.examples:
             names = "；".join(example.dictionary for example in profile.examples)
             self.profile_examples_var.set(f"经典样例：{names}")
@@ -1348,8 +1382,20 @@ class SettingsDialog(tk.Toplevel):
             recommended = profile.paddle_language_by_language.get(base)
             if recommended:
                 self.vars["paddle_language"].set(recommended)
+        writing = str(self.vars.get("layout_writing_mode").get()) if self.vars.get("layout_writing_mode") else "horizontal-tb"
+        for name, value in language_effective_settings(language, writing).items():
+            if name in self.vars and (update_profile_paddle or name != "paddle_language"):
+                self.vars[name].set(value)
         self._refresh_sort_choices()
+        self._refresh_profile_summary()
         self._refresh_profile_status()
+
+    def _sync_layout_semantics(self) -> None:
+        writing = str(self.vars["layout_writing_mode"].get())
+        direction = str(self.vars["layout_text_direction"].get())
+        transform = "rotate_ccw90" if writing == "vertical-rl" else "rotate_cw90" if writing == "vertical-lr" else "mirror_x" if direction == "rtl" else "identity"
+        self.vars["layout_transform"].set(transform)
+        self._on_profile_language_changed()
 
     def preview_profile_examples(self) -> None:
         profile = dictionary_profile_preset(self._current_profile_key())
@@ -1375,6 +1421,11 @@ class SettingsDialog(tk.Toplevel):
             ttk.Label(pane, text=example.dictionary, font=("TkDefaultFont", 11, "bold")).pack(anchor="w")
             if example.note:
                 ttk.Label(pane, text=example.note).pack(anchor="w", pady=(2, 8))
+            if not example.image:
+                ttk.Label(pane, text="真实扫描仅用于本地集成回归，未打包进仓库。", foreground="#666666").pack(
+                    anchor="w", pady=12
+                )
+                continue
             path = profile_preview_path(example.image)
             try:
                 image = Image.open(path).convert("RGB")
@@ -1560,7 +1611,9 @@ class SettingsDialog(tk.Toplevel):
 
     def check_ocr_engines(self) -> None:
         executable = str(self.vars["ocr_executable"].get())
-        language = str(self.vars["ocr_language"].get())
+        language = str(self.vars.get("tesseract_language", self.vars["ocr_language"]).get()).strip()
+        if not language:
+            language = str(self.vars["ocr_language"].get())
         tess = tesseract_status(executable, language); lens = lens_status()
         if tess.get("available"):
             tess_text = f"✓ {tess.get('version') or 'Tesseract'}\n路径：{tess.get('resolved')}\n语言：{', '.join(tess.get('requested_languages', []))}"
@@ -6354,7 +6407,7 @@ class PictureCaptureApp(tk.Tk):
 
     def check_ocr_engines(self) -> None:
         paddle_text = self._paddle_environment_text()
-        tess = tesseract_status(self.settings.ocr_executable, self.settings.ocr_language)
+        tess = tesseract_status(self.settings.ocr_executable, resolved_tesseract_language(self.settings))
         lens = lens_status()
         if tess.get("available"):
             self.settings.ocr_executable = str(tess.get("resolved"))
@@ -8297,6 +8350,8 @@ class PictureCaptureApp(tk.Tk):
             self.new_polygon.append((x, y))
             self.redraw()
             return
+        if not self._guard_transformed_geometry("手动画线"):
+            return
         geometry = derive_geometry(self.image, self.settings)
         col = column_index_for_click(x, geometry)
         self.entries.append(WordEntry("", geometry.column_starts[col], y))
@@ -9130,11 +9185,23 @@ class PictureCaptureApp(tk.Tk):
                 pass
         return "break"
 
+    def _guard_transformed_geometry(self, action: str) -> bool:
+        if not transformed_geometry_pending(self.settings):
+            return True
+        message = (
+            f"{action}尚未启用 {self.settings.layout_transform} 的完整 source/canonical 坐标适配；"
+            "为避免写入错误 PDIC 或方向错误的切图，本次操作已取消。"
+        )
+        self.status_var.set(message)
+        return False
+
     def auto_detect_current(self, clicked_x: int | None = None, force_paddle_refresh: bool = False) -> None:
         if self._batch_active:
             self.status_var.set("后台画线任务运行中，暂不启动前台自动识别；可进行人工校对。")
             return
         if not self.guard(): return
+        if not self._guard_transformed_geometry("自动画线"):
+            return
         try:
             cache_path = None
             if self.settings.detection_method == "paddleocr":
@@ -9205,6 +9272,8 @@ class PictureCaptureApp(tk.Tk):
     def _detect_pages(self, indices: list[int], *, method: str, force_refresh: bool) -> None:
         if not self.project or not indices:
             self.status_var.set("没有需要处理的页面"); return
+        if not self._guard_transformed_geometry("批量画线"):
+            return
         label = "OCR画线" if method == "paddleocr" else "普通画线"
         if len(indices) > 1 and not messagebox.askyesno(
             label,
@@ -9395,6 +9464,8 @@ class PictureCaptureApp(tk.Tk):
             self.status_var.set("后台画线任务运行中，暂不启动前台 OCR；可进行人工文本校对。")
             return
         if not self.guard() or not self.entries: return
+        if not self._guard_transformed_geometry("OCR"):
+            return
         try:
             engine_name = OCR_ENGINE_LABELS.get(self.settings.ocr_engine, self.settings.ocr_engine)
             self.status_var.set(f"正在用 {engine_name} OCR 当前页…"); self.update_idletasks()
@@ -9423,6 +9494,8 @@ class PictureCaptureApp(tk.Tk):
 
     def split_lines_current(self) -> None:
         if not self.guard(): return
+        if not self._guard_transformed_geometry("单行切图"):
+            return
         try:
             records = split_single_lines(self.current_page, self.entries, self.settings, qt_root(self.project.root) / "PSW")
             append_crop_log(self.project.root, records); self.status_var.set(f"已导出 {len(records)} 张词条单行图")
@@ -9430,6 +9503,8 @@ class PictureCaptureApp(tk.Tk):
 
     def split_whole_current(self) -> None:
         if not self.guard(): return
+        if not self._guard_transformed_geometry("整体切图"):
+            return
         try:
             config = self._load_crop_settings(); special = config.get("special_pages", {}).get(self.current_page.stem, {})
             top_y = int(special.get("top_y", config.get("general_top_y", self.settings.start_y)))
@@ -9754,6 +9829,8 @@ class PictureCaptureApp(tk.Tk):
 
     def batch_ocr(self) -> None:
         if not self.project or self._batch_active: return
+        if not self._guard_transformed_geometry("批量 OCR"):
+            return
         indices = [i for i, page in enumerate(self.project.images) if read_pdic(pdic_path(page))]
         if not indices:
             self.status_var.set("没有含 PDIC 词条的页面可执行批量 OCR")
@@ -9795,6 +9872,8 @@ class PictureCaptureApp(tk.Tk):
 
     def batch_split_whole(self) -> None:
         if not self.project or self._batch_active: return
+        if not self._guard_transformed_geometry("批量整体切图"):
+            return
         project = self.project
         settings = replace(self.settings)
         indices = list(range(len(project.images)))
