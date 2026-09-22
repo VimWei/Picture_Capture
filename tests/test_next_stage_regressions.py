@@ -1,14 +1,16 @@
 from pathlib import Path
 from dataclasses import replace
+from types import SimpleNamespace
 
 from PIL import Image
 
 from picture_capture.app import (
-    binary_preview_image, effective_main_overlay_font_size,
-    vertical_entry_label_text, vertical_overlay_anchors,
+    PictureCaptureApp, binary_preview_image, effective_main_overlay_font_size,
+    transformed_entry_anchor, vertical_entry_label_text, vertical_index_anchor,
 )
 from picture_capture.dictionary_profile import effective_project_profile_id, load_dictionary_profile
-from picture_capture.models import AppSettings, ProjectState
+from picture_capture.models import AppSettings, Entry, ProjectState
+from picture_capture.layout_transform import LayoutTransform
 from picture_capture.paddle_headwords import (
     OCRLine, OCRRecord, _compile_patterns, _repair_multiline_headword_state_machine,
     parse_headword_text, prepare_ocr_band, run_paddle_band,
@@ -68,13 +70,27 @@ def test_binary_preview_and_font_scaling_are_display_only():
 
 
 def test_vertical_overlay_anchors_and_blank_entry_hit_target():
-    # A vertical source marker has constant X. Both label/editor and index stay
-    # attached to that same transformed marker rather than horizontal geometry.
-    editor, index = vertical_overlay_anchors((900, 120), (900, 640), .5)
-    assert editor == (452.5, 60)
-    assert index == (453, 63)
+    # x_ratio is applied in canonical space. Rotating that point produces the
+    # source-space vertical label anchor; the index follows its rendered box.
+    editor = transformed_entry_anchor(
+        LayoutTransform("rotate_ccw90"), 100, 200, 600, .5, (1400, 2200), .5,
+    )
+    assert editor == (599.5, 200)
+    assert vertical_index_anchor((590, 195, 625, 320)) == (628, 195)
     assert vertical_entry_label_text("漢字") == "漢\n字"
     assert vertical_entry_label_text("") == "□"
+
+
+def test_vertical_proxy_reuses_editor_membership_and_confidence_style():
+    fake = SimpleNamespace(
+        _project_words={"known"}, settings=AppSettings(main_entry_default_color="#ffffff"),
+        _main_ocr_review_option_enabled=lambda _name: True,
+        _confidence_bg=lambda confidence: "#c8e6c9" if confidence == .97 else "#ffcdd2",
+    )
+    known = PictureCaptureApp._entry_overlay_style(fake, Entry("known", 0, 0, confidence=.97))
+    missing = PictureCaptureApp._entry_overlay_style(fake, Entry("missing", 0, 0, confidence=.5))
+    assert known == ("#c8e6c9", "#b0b0b0", 1)
+    assert missing == ("#ffcdd2", "#d32f2f", 2)
 
 
 def test_latin_pronunciation_pos_and_cjk_rejection():
