@@ -15,13 +15,13 @@ from picture_capture.app import (
 )
 from picture_capture.models import AppSettings, Entry, PolygonRegion
 from picture_capture.processing import Geometry, ColumnPath, sort_entries_reading_order, sort_entries_column_y
-from picture_capture.layout_detection import _projection_layout_estimate, infer_layout_from_boxes
+from picture_capture.layout_detection import _projection_layout_estimate, detect_layout_parameters, infer_layout_from_boxes
 from picture_capture.layout_detection import LayoutEstimate, aggregate_layout_estimates
 from picture_capture.layout_transform import LayoutTransform
 from picture_capture.collation import available_profile_labels, collation_key, parse_custom_order
 from picture_capture.dictionary_profile import (
-    PROFILE_FORMAT_V2, available_dictionary_profiles, dictionary_profile_labels,
-    load_dictionary_profile, profile_effective_settings, profile_preview_path,
+    PROFILE_FORMAT_V2, PROFILE_FORMAT_V3, available_dictionary_profiles, dictionary_profile_labels,
+    dictionary_profile_preset, load_dictionary_profile, profile_effective_settings, profile_layout_summary, profile_preview_path,
     write_project_profile,
 )
 from picture_capture.ocr_engines import _lens_payload_records, find_tesseract
@@ -95,6 +95,11 @@ class FormatTests(unittest.TestCase):
         canonical = LayoutTransform("mirror_x").canonical_image_for_analysis(source)
         self.assertEqual(canonical.getpixel((0, 0)), (1, 2, 3))
         self.assertEqual(source.tobytes(), before)
+
+    def test_nonidentity_layout_detection_is_gated_until_downstream_adapter(self) -> None:
+        image = Image.new("RGB", (40, 60), "white")
+        with self.assertRaisesRegex(RuntimeError, "仅加载其配置"):
+            detect_layout_parameters(image, AppSettings(layout_transform="mirror_x"))
 
     def test_layout_aggregation_uses_mode_median_and_fixed_prior(self) -> None:
         rows = [
@@ -1290,7 +1295,7 @@ class DictionaryProfileV2Tests(unittest.TestCase):
         )
         self.assertIsNone(parsed)
 
-    def test_v210_project_profile_v2_records_preset_and_overrides(self) -> None:
+    def test_profile_v3_project_records_sections_and_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "dictionary_profile.json"
             settings = AppSettings(
@@ -1300,11 +1305,81 @@ class DictionaryProfileV2Tests(unittest.TestCase):
             write_project_profile(path, settings, settings.dictionary_profile_id, force=True)
             import json
             raw = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(raw["format"], PROFILE_FORMAT_V2)
+            self.assertEqual(raw["format"], PROFILE_FORMAT_V3)
+            self.assertEqual(raw["schema_version"], 3)
             self.assertEqual(raw["preset"], "latin_numbered_pos")
+            self.assertEqual(raw["layout"]["columns"], 2)
+            self.assertEqual(raw["ocr"]["semantic_language"], "spa")
+            self.assertEqual(raw["headword"]["parser_modes"], ["latin", "numbered_pos"])
             self.assertEqual(raw["overrides"]["settings"]["paddle_left_tolerance"], 19)
             resolved = load_dictionary_profile(path, language="spa")
             self.assertEqual(resolved.key, "latin_numbered_pos")
+
+    def test_profile_v2_project_is_loaded_without_implicit_rewrite(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "dictionary_profile.json"
+            original = {
+                "format": PROFILE_FORMAT_V2,
+                "preset": "latin_numbered_pos",
+                "language": "spa",
+                "overrides": {"settings": {"paddle_left_tolerance": 19}, "grammar": {}},
+            }
+            import json
+            payload = json.dumps(original, ensure_ascii=False, indent=2)
+            path.write_text(payload, encoding="utf-8")
+            resolved = load_dictionary_profile(path)
+            self.assertEqual(resolved.key, "latin_numbered_pos")
+            write_project_profile(path, AppSettings(dictionary_profile_id="latin_numbered_pos"))
+            self.assertEqual(path.read_text(encoding="utf-8"), payload)
+
+    def test_profile_v3_bundles_real_dictionary_layout_ground_truth(self) -> None:
+        expected = {
+            "newapproach_2col": (2, "absent", "identity", "horizontal-tb", "ltr"),
+            "lder_single": (1, "absent", "identity", "horizontal-tb", "ltr"),
+            "cjk_etymology_large_head_2col": (2, "present", "identity", "horizontal-tb", "ltr"),
+            "cjk_bracket_large_head_2col": (2, "present", "identity", "horizontal-tb", "ltr"),
+            "cjk_large_head_pinyin_2col": (2, "present", "identity", "horizontal-tb", "ltr"),
+            "jpn_numbered_headword_2col": (2, "absent", "identity", "horizontal-tb", "ltr"),
+            "arabic_rtl_bilingual_2col": (2, "present", "mirror_x", "horizontal-tb", "rtl"),
+            "jpn_vertical_kana_bracket_3band": (3, "absent", "rotate_ccw90", "vertical-rl", "rtl"),
+        }
+        keys = {profile.key for profile in available_dictionary_profiles()}
+        self.assertTrue(expected.keys() <= keys)
+        for key, values in expected.items():
+            layout = dictionary_profile_preset(key).layout
+            self.assertEqual(
+                (layout["columns"], layout["column_separator"], layout["canonical_transform"],
+                 layout["writing_mode"], layout["text_direction"]),
+                values,
+            )
+
+    def test_profile_v3_resolves_layout_ocr_and_headword_settings(self) -> None:
+        arabic = profile_effective_settings("arabic_rtl_bilingual_2col")
+        self.assertEqual(arabic["layout_transform"], "mirror_x")
+        self.assertEqual(arabic["layout_text_direction"], "rtl")
+        self.assertEqual(arabic["layout_columns_policy"], "fixed")
+        self.assertEqual(arabic["tesseract_language"], "ara")
+        self.assertEqual(arabic["paddle_language"], "ar")
+        vertical = profile_effective_settings("jpn_vertical_kana_bracket_3band")
+        self.assertEqual(vertical["layout_transform"], "rotate_ccw90")
+        self.assertEqual(vertical["tesseract_language"], "jpn_vert")
+        self.assertEqual(vertical["paddle_tesseract_psm"], 5)
+        self.assertTrue(vertical["paddle_use_textline_orientation"])
+        ruigo = dictionary_profile_preset("jpn_numbered_headword_2col")
+        self.assertEqual(ruigo.headword["prefix_regex"], r"^\s*\d{1,2}\s*")
+        self.assertTrue(ruigo.headword["prefix_required"])
+        hzy = load_dictionary_profile(preset="cjk_etymology_large_head_2col")
+        self.assertIn("【本义】", hzy.internal_leading_symbols)
+
+    def test_profile_v3_ui_summaries_are_compact_and_directional(self) -> None:
+        self.assertEqual(
+            profile_layout_summary(dictionary_profile_preset("arabic_rtl_bilingual_2col")),
+            "2栏 · RTL · 镜像 · 中央分隔线",
+        )
+        self.assertEqual(
+            profile_layout_summary(dictionary_profile_preset("jpn_vertical_kana_bracket_3band")),
+            "竖排 · CCW90 · 3 canonical columns",
+        )
 
 
 if __name__ == "__main__":

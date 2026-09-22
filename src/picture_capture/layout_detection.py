@@ -542,6 +542,15 @@ def detect_layout_parameters(image: Image.Image, settings: AppSettings) -> Layou
     """
     source = normalize_page_rgb(image)
     transform = LayoutTransform(settings.layout_transform)  # type: ignore[arg-type]
+    if transform.kind != "identity":
+        # Profile v3 may describe RTL/vertical dictionaries before the staged
+        # processing/OCR/crop adapter lands.  Persisting canonical measurements
+        # into source-space geometry would corrupt overlays and crops, so fail
+        # explicitly instead of exposing a partially working transform.
+        raise RuntimeError(
+            f"Profile 使用 {transform.kind} canonical 版面；当前阶段仅加载其配置，"
+            "自动检测需等待后续 OCR/切图坐标适配。"
+        )
     analysis = transform.canonical_image_for_analysis(source)
     paddle_error: Exception | None = None
     try:

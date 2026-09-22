@@ -44,7 +44,7 @@ from .collation import (
 from .dictionary_profile import (
     DEFAULT_PROFILE_ID, PROFILE_FILENAME, dictionary_profile_labels, dictionary_profile_preset,
     managed_profile_setting_names, profile_effective_settings, profile_preview_path,
-    project_profile_preset_id, write_project_profile,
+    profile_layout_summary, project_profile_preset_id, write_project_profile,
 )
 from .picdic import build_picdic_package
 from .image_utils import normalize_page_rgb
@@ -712,6 +712,13 @@ class SettingsDialog(tk.Toplevel):
         ("插图自动识别外扩（px）", "illustration_detect_padding", int),
         ("插图自动识别右侧外扩（px）", "illustration_detect_right_padding", int),
         ("OCR 语言", "ocr_language", str),
+        ("Tesseract 语言", "tesseract_language", str),
+        ("书写模式", "layout_writing_mode", str),
+        ("文字方向", "layout_text_direction", str),
+        ("Canonical 变换", "layout_transform", str),
+        ("栏数策略", "layout_columns_policy", str),
+        ("中央分隔线", "layout_column_separator_mode", str),
+        ("分析阈值", "analysis_threshold_mode", str),
         ("Tesseract 路径", "ocr_executable", str),
         ("列跟踪搜索半径", "column_track_radius", int),
         ("列跟踪分块高度", "column_track_block_height", int),
@@ -760,7 +767,11 @@ class SettingsDialog(tk.Toplevel):
     ]
 
     PROFILE_FIELD_GROUPS = [
-        ("OCR 与语言", ["ocr_language", "paddle_language"]),
+        ("Profile v3 版面", [
+            "layout_writing_mode", "layout_text_direction", "layout_transform",
+            "layout_columns_policy", "layout_column_separator_mode", "analysis_threshold_mode",
+        ]),
+        ("OCR 与语言", ["ocr_language", "paddle_language", "tesseract_language"]),
         ("版式证据", [
             "columns", "paddle_band_width_ratio", "paddle_band_left_margin", "paddle_left_tolerance",
             "paddle_height_ratio", "paddle_boldness_ratio", "paddle_gap_ratio",
@@ -774,6 +785,7 @@ class SettingsDialog(tk.Toplevel):
     ]
 
     PROFILE_CHECKS = [
+        ("PaddleOCR 启用文字行方向识别", "paddle_use_textline_orientation"),
         ("候选必须具有结构/视觉提示", "paddle_require_visual_cue"),
         ("候选必须有词性/变形/词条符号", "paddle_require_pos_or_symbol"),
         ("去除词头音节分隔点", "paddle_remove_syllable_separators"),
@@ -835,7 +847,7 @@ class SettingsDialog(tk.Toplevel):
         ]),
     ]
 
-    OCR_LANGUAGES = ("eng", "spa", "fra", "ita", "por", "deu", "chi_sim", "chi_tra")
+    OCR_LANGUAGES = ("eng", "spa", "fra", "ita", "por", "deu", "chi_sim", "chi_tra", "jpn", "ara")
 
     def __init__(self, parent: "PictureCaptureApp", initial_tab: str | None = None) -> None:
         super().__init__(parent)
@@ -1202,12 +1214,17 @@ class SettingsDialog(tk.Toplevel):
 
         self.profile_description_var = tk.StringVar(value="")
         self.profile_examples_var = tk.StringVar(value="")
+        self.profile_layout_summary_var = tk.StringVar(value="")
         ttk.Label(top, textvariable=self.profile_description_var, justify="left", wraplength=880).grid(
             row=1, column=0, columnspan=4, sticky="w", pady=(8, 2)
         )
         ttk.Label(top, textvariable=self.profile_examples_var, justify="left", wraplength=880).grid(
             row=2, column=0, columnspan=4, sticky="w", pady=(2, 0)
         )
+        ttk.Label(
+            top, textvariable=self.profile_layout_summary_var,
+            font=("TkDefaultFont", 10, "bold"), foreground="#245a86",
+        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(5, 0))
 
         body = ttk.Frame(tab, padding=(14, 0, 14, 10))
         body.grid(row=1, column=0, sticky="nsew")
@@ -1238,7 +1255,7 @@ class SettingsDialog(tk.Toplevel):
                     pass
 
         check_group = ttk.LabelFrame(body, text="识别行为", padding=(10, 7))
-        check_group.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(0, 8))
+        check_group.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(0, 8))
         for row, (label, name) in enumerate(self.PROFILE_CHECKS):
             if name not in self.vars:
                 self.vars[name] = tk.BooleanVar(value=bool(getattr(self.parent.settings, name)))
@@ -1265,6 +1282,7 @@ class SettingsDialog(tk.Toplevel):
     def _refresh_profile_summary(self) -> None:
         profile = dictionary_profile_preset(self._current_profile_key())
         self.profile_description_var.set(profile.description)
+        self.profile_layout_summary_var.set(profile_layout_summary(profile))
         if profile.examples:
             names = "；".join(example.dictionary for example in profile.examples)
             self.profile_examples_var.set(f"经典样例：{names}")
