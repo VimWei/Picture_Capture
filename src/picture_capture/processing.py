@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageOps
 from .models import AppSettings, Entry, PolygonRegion, read_noncomment_lines
 from .image_utils import normalize_page_rgb
 from .ocr_engines import find_tesseract
-from .formats import read_pdic, read_ppp, write_ppp
+from .formats import read_pdic, read_ppp, write_pdic, write_ppp
 from .project_storage import crop_log_path, ppp_read_path_for_image, ppp_write_path_for_image, qt_root, special_pages_path
 
 
@@ -510,6 +510,19 @@ def detect_entries(
             filter_rules_path=paddle_filter_rules_path,
         ), geometry
     return _detect_entries_left_edge(image, settings)
+
+
+def detect_entries_job(
+    image_path: str, settings: AppSettings, pages: tuple[str, str, str]
+) -> int:
+    """Spawn-safe ordinary-line detection job that commits one PDIC page."""
+    page = Path(image_path)
+    with Image.open(page) as opened:
+        image = normalize_page_rgb(opened)
+    settings.detection_method = "left_edge"
+    entries, _geometry = detect_entries(image, settings)
+    write_pdic(pdic_path_for_image(page), entries, image.width, pages)
+    return len(entries)
 
 
 def load_replace_rules(path: Path) -> list[tuple[str, str, str]]:

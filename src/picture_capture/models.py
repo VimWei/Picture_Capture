@@ -158,6 +158,9 @@ class AppSettings:
     # parameter-pixel convention as ``character_height``. 0 means automatic:
     # CJK index/profile defaults to 2.5× the shared single-line height.
     review_single_cjk_line_height: int = 0
+    # Review crop height for ordinary (non-single-CJK) entries. 0 keeps the
+    # automatic value: character_height + 0.5 * row_padding.
+    review_regular_crop_height: int = 0
     # While the proofreading window is open, keep the main canvas visually
     # quiet by default. These switches let users restore either OCR aid.
     review_main_show_ocr_choices: bool = False

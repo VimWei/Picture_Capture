@@ -4426,6 +4426,44 @@ def test_v21120_review_single_cjk_crop_expands_but_normal_word_does_not():
     assert single_box[3] - single_box[1] == 100 + 2 * settings.row_padding
 
 
+def test_review_regular_crop_height_defaults_to_line_plus_half_spacing_and_can_override():
+    from picture_capture.app import _effective_review_regular_crop_height, _review_line_box
+
+    settings = AppSettings(
+        parameter_display_width=600, columns=1, manual_x=20, column_width=500,
+        character_height=32, row_padding=10, review_regular_crop_height=0,
+    )
+    assert _effective_review_regular_crop_height(settings) == 37
+    image = Image.new("RGB", (600, 900), "white")
+    geometry = derive_geometry(image, settings)
+    box = _review_line_box(Entry("ordinary", 20, 100), geometry, image, settings)
+    assert box[3] - box[1] == 37
+    settings.review_regular_crop_height = 51
+    assert _effective_review_regular_crop_height(settings) == 51
+    box = _review_line_box(Entry("ordinary", 20, 100), geometry, image, settings)
+    assert box[3] - box[1] == 51
+
+
+def test_sidebar_scroll_review_height_controls_and_normal_process_worker_are_wired():
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    assert "self.sidebar_canvas = tk.Canvas(" in text
+    assert 'orient="vertical", command=self.sidebar_canvas.yview' in text
+    assert "def _sidebar_mousewheel(" in text
+    review_start = text.index("class ReviewWindow")
+    review_end = text.index("class OCRConflictReviewDialog", review_start)
+    review = text[review_start:review_end]
+    assert 'text="行间空："' in review
+    assert 'text="普通词条行切图高："' in review
+    assert "self.review_regular_crop_height_var" in review
+    detect_start = text.index("    def _detect_pages(")
+    detect_end = text.index("    def clear_entries", detect_start)
+    detect_block = text[detect_start:detect_end]
+    assert 'ProcessPoolExecutor(max_workers=1' in detect_block
+    assert 'if method == "left_edge" else None' in detect_block
+    assert "detect_entries_job" in detect_block
+
+
 def test_v21120_review_single_cjk_crop_no_longer_caps_at_next_marker():
     from picture_capture.app import _review_line_box
 
