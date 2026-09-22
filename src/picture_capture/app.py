@@ -8803,7 +8803,16 @@ class PictureCaptureApp(tk.Tk):
             return
         if geometry is None:
             geometry = self._get_cached_display_geometry()
-        left, top, right, bottom = line_box(entry, geometry, self.image, self.settings)
+        # Use exactly the same crop geometry as the proofreading row. Ordinary
+        # entries therefore start half a row-gap above the marker and use
+        # ``character_height + row_padding``; single-CJK entries retain the
+        # review window's independent single-character height.
+        review_settings = _review_crop_settings(
+            self.image, self.settings, self.canvas.winfo_width()
+        )
+        left, top, right, bottom = _review_line_box(
+            entry, geometry, self.image, review_settings
+        )
         # Tk Canvas rectangle fills have no real alpha channel; the previous
         # ``gray50`` stipple therefore looked grainy/frosted.  Use a tiny RGBA
         # PhotoImage instead so the marker is a genuinely translucent pale-yellow
