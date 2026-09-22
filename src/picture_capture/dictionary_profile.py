@@ -194,7 +194,7 @@ def available_dictionary_profiles() -> tuple[DictionaryProfilePreset, ...]:
         for key, value in languages.items() if isinstance(value, dict)
     }
     for key, item in (raw.get("headword_profiles") or {}).items():
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or item.get("user_visible") is False:
             continue
         examples = tuple(
             ProfileExample(dictionary=str(name), image="", note="已验证组合示例")
@@ -283,6 +283,9 @@ def _preset_for_configuration(
     headword["features"] = list(config.get("headword_features") or [])
     overrides = config.get("headword_overrides") or {}
     internal = list(overrides.get("internal_labels") or []) if isinstance(overrides, dict) else []
+    grammar_override = overrides.get("grammar") if isinstance(overrides, dict) else None
+    if isinstance(grammar_override, dict):
+        headword["grammar"] = dict(grammar_override)
     if internal:
         grammar = dict(headword.get("grammar") or {})
         grammar["internal_not_new_entry"] = internal + list(grammar.get("internal_not_new_entry") or [])
@@ -466,7 +469,8 @@ def load_dictionary_profile(
         if candidate.get("format") not in {PROFILE_FORMAT_V2, PROFILE_FORMAT_V3}:
             return _profile_from_legacy_dict(candidate)
 
-    selected = str((raw or {}).get("preset") or preset or DEFAULT_PROFILE_ID)
+    compatibility_default = "latin_structured_symbols" if raw is None and preset is None else DEFAULT_PROFILE_ID
+    selected = str((raw or {}).get("preset") or preset or compatibility_default)
     profile = dictionary_profile_preset(selected)
     selected_language = str(language or (raw or {}).get("language") or profile.default_language)
     abbreviations, symbols = _grammar_block_from_preset(profile, selected_language)

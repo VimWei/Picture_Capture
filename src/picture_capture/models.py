@@ -534,8 +534,7 @@ class ProjectState:
         # grammar/layout identity travels with the project even if settings are
         # partially copied between machines.
         try:
-            from .dictionary_profile import apply_project_profile_components, project_profile_preset_id
-            apply_project_profile_components(active_profile_path(root), settings)
+            from .dictionary_profile import project_profile_preset_id
             settings.dictionary_profile_id = project_profile_preset_id(
                 active_profile_path(root), getattr(settings, "dictionary_profile_id", "latin_structured_symbols")
             )
@@ -550,6 +549,11 @@ class ProjectState:
         (active_qt / "PIC").mkdir(parents=True, exist_ok=True)
         (active_qt / "PicDic").mkdir(parents=True, exist_ok=True)
         return cls(root=root, images=images, settings=settings, words=words)
+
+
+def resolved_tesseract_language(settings: AppSettings) -> str:
+    """Use the engine-specific language pack, falling back for old projects."""
+    return str(settings.tesseract_language or settings.ocr_language or "eng").strip()
 
 
 def resolve_wordslist_path(root: Path, configured: str | Path | None) -> Path:

@@ -14,7 +14,7 @@ from picture_capture.app import (
     _natural_text_key, _sorted_page_list_rows, project_language_from_ocr,
     transformed_geometry_pending,
 )
-from picture_capture.models import AppSettings, Entry, PolygonRegion
+from picture_capture.models import AppSettings, Entry, PolygonRegion, ProjectState
 from picture_capture.processing import Geometry, ColumnPath, sort_entries_reading_order, sort_entries_column_y
 from picture_capture.layout_detection import _projection_layout_estimate, detect_layout_parameters, infer_layout_from_boxes
 from picture_capture.layout_detection import LayoutEstimate, aggregate_layout_estimates
@@ -1230,13 +1230,13 @@ class DictionaryProfileV2Tests(unittest.TestCase):
     def test_v210_profile_names_describe_layout_types(self) -> None:
         labels = dictionary_profile_labels()
         self.assertEqual(set(labels.values()), {
-            "latin_regular", "numbered_prefix", "cjk_visual", "marker_prefixed", "custom",
+            "latin_regular", "numbered_prefix", "cjk_visual", "marker_prefixed", "edge_visual_regular", "custom",
         })
         self.assertIn("拉丁字母常规词头", labels)
         self.assertIn("编号前缀词头", labels)
         self.assertIn("CJK 大字/括号词头", labels)
         self.assertNotIn("FarEast", " ".join(labels))
-        self.assertEqual(len(labels), 5)
+        self.assertEqual(len(labels), 6)
 
     def test_v210_profile_preview_examples_exist(self) -> None:
         import json
@@ -1397,6 +1397,78 @@ class DictionaryProfileV2Tests(unittest.TestCase):
         self.assertFalse(horizontal["paddle_use_textline_orientation"])
         self.assertTrue(transformed_geometry_pending(AppSettings(layout_transform="mirror_x")))
         self.assertFalse(transformed_geometry_pending(AppSettings(layout_transform="identity")))
+
+    def test_v3_profile_file_does_not_override_authoritative_saved_settings(self) -> None:
+        import json
+        from picture_capture.project_storage import ensure_project_storage, profile_path, settings_path
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            Image.new("RGB", (20, 30), "white").save(root / "0001.png")
+            ensure_project_storage(root, "test")
+            AppSettings(columns=7, ocr_language="fra", layout_transform="identity").to_json(settings_path(root))
+            profile_path(root).write_text(json.dumps({
+                "format": PROFILE_FORMAT_V3, "preset": "latin_regular",
+                "layout": {"columns": 2, "writing_mode": "vertical-rl", "text_direction": "rtl"},
+                "ocr": {"semantic_language": "jpn", "tesseract_language": "jpn_vert"},
+            }), encoding="utf-8")
+            opened = ProjectState.open(root)
+            self.assertEqual(opened.settings.columns, 7)
+            self.assertEqual(opened.settings.ocr_language, "fra")
+            self.assertEqual(opened.settings.layout_transform, "identity")
+
+    def test_tesseract_uses_engine_specific_language_with_fallback(self) -> None:
+        from types import SimpleNamespace
+        import picture_capture.paddle_headwords as module
+        commands = []
+        def fake_run(command, **_kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout=b"level\tleft\ttop\twidth\theight\tconf\ttext\n", stderr=b"")
+        original = module.subprocess.run
+        original_find = module._tesseract_executable
+        module.subprocess.run = fake_run
+        module._tesseract_executable = lambda _path: "tesseract"
+        try:
+            module.run_tesseract_band_records(Image.new("RGB", (10, 10)), AppSettings(tesseract_language="jpn_vert"))
+            module.run_tesseract_band_records(Image.new("RGB", (10, 10)), AppSettings(ocr_language="ara", tesseract_language=""))
+        finally:
+            module.subprocess.run = original
+            module._tesseract_executable = original_find
+        self.assertEqual(commands[0][commands[0].index("-l") + 1], "jpn_vert")
+        self.assertEqual(commands[1][commands[1].index("-l") + 1], "ara")
+
+    def test_paddle_orientation_participates_in_cache_and_prediction(self) -> None:
+        import sys
+        from types import SimpleNamespace
+        import picture_capture.paddle_headwords as module
+        created = []
+        class FakePaddle:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs; self.predictions = []; created.append(self)
+            def predict(self, _image, **kwargs):
+                self.predictions.append(kwargs); return []
+        old = sys.modules.get("paddleocr")
+        sys.modules["paddleocr"] = SimpleNamespace(PaddleOCR=FakePaddle)
+        module.clear_paddle_engine_cache()
+        try:
+            off = AppSettings(paddle_use_textline_orientation=False)
+            on = AppSettings(paddle_use_textline_orientation=True)
+            first = module.get_paddle_engine(off)
+            second = module.get_paddle_engine(on)
+            self.assertIsNot(first, second)
+            self.assertFalse(first.kwargs["use_textline_orientation"])
+            self.assertTrue(second.kwargs["use_textline_orientation"])
+            module.run_paddle_band(Image.new("RGB", (10, 10)), on, engine=second)
+            self.assertTrue(second.predictions[-1]["use_textline_orientation"])
+        finally:
+            module.clear_paddle_engine_cache()
+            if old is None: sys.modules.pop("paddleocr", None)
+            else: sys.modules["paddleocr"] = old
+
+    def test_old_profile_ids_are_aliases_not_visible_profiles(self) -> None:
+        labels = set(dictionary_profile_labels().values())
+        self.assertNotIn("arabic_rtl_bilingual_2col", labels)
+        self.assertEqual(dictionary_profile_preset("arabic_rtl_bilingual_2col").family, "edge_visual_regular")
+        self.assertEqual(dictionary_profile_preset("cjk_large_head_pinyin_2col").family, "cjk_visual")
 
 
 if __name__ == "__main__":

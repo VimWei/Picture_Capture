@@ -17,7 +17,7 @@ from io import BytesIO
 import numpy as np
 from PIL import Image, ImageOps
 
-from .models import AppSettings, Entry
+from .models import AppSettings, Entry, resolved_tesseract_language
 from .image_utils import normalize_page_rgb
 from .dictionary_profile import (
     PROFILE_FILENAME,
@@ -102,7 +102,7 @@ class HeadwordParse:
     bug_types: tuple[str, ...] = ()
 
 
-_ENGINE_CACHE: dict[tuple[str, str, str], Any] = {}
+_ENGINE_CACHE: dict[tuple[str, str, str, bool], Any] = {}
 _ENGINE_CACHE_LOCK = threading.RLock()
 _SYLLABLE_SEPARATORS = "·•∙‧.:+"
 _RAW_OCR_THRESHOLD = 0.20
@@ -504,7 +504,7 @@ def _paddle_language(settings: AppSettings) -> str:
     return mapping.get(settings.ocr_language, settings.ocr_language)
 
 
-def clear_paddle_engine_cache(*, keep_key: tuple[str, str, str] | None = None) -> None:
+def clear_paddle_engine_cache(*, keep_key: tuple[str, str, str, bool] | None = None) -> None:
     """Drop cached Paddle engines that are no longer the active configuration.
 
     Local references held by an in-flight OCR call remain valid, so cache
@@ -523,7 +523,8 @@ def clear_paddle_engine_cache(*, keep_key: tuple[str, str, str] | None = None) -
 def get_paddle_engine(settings: AppSettings) -> Any:
     """Lazily create and reuse one active PaddleOCR 3.x general OCR pipeline."""
     language = _paddle_language(settings)
-    key = (language, settings.paddle_device, settings.paddle_ocr_version)
+    orientation = bool(settings.paddle_use_textline_orientation)
+    key = (language, settings.paddle_device, settings.paddle_ocr_version, orientation)
     with _ENGINE_CACHE_LOCK:
         cached = _ENGINE_CACHE.get(key)
     if cached is not None:
@@ -544,7 +545,7 @@ def get_paddle_engine(settings: AppSettings) -> Any:
             device=settings.paddle_device,
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
-            use_textline_orientation=False,
+            use_textline_orientation=orientation,
             enable_mkldnn=False,
         )
         try:
@@ -674,7 +675,7 @@ def run_paddle_band(band: Image.Image, settings: AppSettings, engine: Any | None
             np.asarray(normalize_page_rgb(band)),
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
-            use_textline_orientation=False,
+            use_textline_orientation=bool(settings.paddle_use_textline_orientation),
             # Keep low-confidence fragments in the raw cache. Syllabified bold
             # headwords are sometimes harder to recognize than the following
             # POS/definition; candidate confidence is evaluated after same-line
@@ -720,7 +721,7 @@ def run_tesseract_band_records(
     payload = BytesIO()
     normalize_page_rgb(band).save(payload, format="PNG")
     command = [
-        resolved, "stdin", "stdout", "-l", settings.ocr_language,
+        resolved, "stdin", "stdout", "-l", resolved_tesseract_language(settings),
         "--psm", str(max(3, int(psm_override if psm_override is not None else settings.paddle_tesseract_psm))), "tsv",
     ]
     proc = subprocess.run(
@@ -1305,7 +1306,7 @@ def _parallel_marker_extension(
 
 
 
-_BUNDLED_PROFILE = load_dictionary_profile()
+_BUNDLED_PROFILE = load_dictionary_profile(preset="latin_structured_symbols", language="spa")
 _USAGE_ABBREVIATIONS = {
     label.casefold().rstrip(".")
     for label in _BUNDLED_PROFILE.metadata_labels
@@ -4634,7 +4635,8 @@ def detect_paddle_headwords(
     # only among engines that the user explicitly enabled.
     use_paddle = bool(getattr(settings, "paddle_use_paddleocr", True))
     use_tesseract = bool(settings.paddle_compare_tesseract or settings.paddle_tesseract_rescue)
-    tess_availability = tesseract_status(settings.ocr_executable, settings.ocr_language) if use_tesseract else {}
+    tess_language = resolved_tesseract_language(settings)
+    tess_availability = tesseract_status(settings.ocr_executable, tess_language) if use_tesseract else {}
     lens_mode = str(settings.paddle_lens_mode or "off").strip().lower()
     if not bool(getattr(settings, "paddle_enable_lens", False)):
         lens_mode = "off"
@@ -4683,7 +4685,7 @@ def detect_paddle_headwords(
             "enabled": use_tesseract,
             "rescue_enabled": bool(settings.paddle_tesseract_rescue),
             "arbitration_enabled": bool(settings.paddle_dual_ocr_arbitration),
-            "language": settings.ocr_language,
+            "language": tess_language,
             "psm": settings.paddle_tesseract_psm,
             "auto_psm": bool(settings.paddle_tesseract_auto_psm),
             "availability": tess_availability,
@@ -4941,7 +4943,7 @@ def detect_paddle_headwords(
                 "tesseract_compare": use_tesseract,
                 "tesseract_rescue": bool(settings.paddle_tesseract_rescue),
                 "arbitration": bool(settings.paddle_dual_ocr_arbitration),
-                "tesseract_language": settings.ocr_language,
+                "tesseract_language": tess_language,
                 "tesseract_psm": settings.paddle_tesseract_psm,
                 "tesseract_auto_psm": bool(settings.paddle_tesseract_auto_psm),
                 "tesseract_status": tess_availability,

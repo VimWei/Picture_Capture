@@ -87,8 +87,7 @@
       "family": "latin_regular",
       "validated_examples": [
         "NewApproach",
-        "LDER",
-        "XAHDCD"
+        "LDER"
       ],
       "grammar_by_language": {
         "por": {
@@ -454,6 +453,80 @@
         "paddle_pos_search_chars": 140
       },
       "grammar": {
+        "part_of_speech": [],
+        "usage_and_region": [],
+        "subject_domains": [],
+        "article_relations": [],
+        "internal_not_new_entry": [],
+        "entry_markers": []
+      },
+      "display_name": "自定义结构",
+      "description": "保留高级参数和自定义规则，不绑定具体语言、方向或栏数。",
+      "family": "custom",
+      "validated_examples": []
+    },
+    "edge_visual_regular": {
+      "parser_modes": [],
+      "require_visual_cue": true,
+      "settings": {
+        "paddle_band_width_ratio": 100,
+        "paddle_band_left_margin": 12,
+        "paddle_left_tolerance": 24,
+        "paddle_height_ratio": 1.05,
+        "paddle_boldness_ratio": 1.12,
+        "paddle_gap_ratio": 0.7,
+        "paddle_min_candidate_score": 1.0,
+        "paddle_require_pos_or_symbol": true,
+        "paddle_remove_syllable_separators": true,
+        "paddle_auto_header_rule": true,
+        "paddle_refine_separator_y": true,
+        "paddle_separator_search_ratio": 0.3,
+        "paddle_separator_band_radius": 2,
+        "paddle_separator_safety_px": 2,
+        "paddle_separator_roi_width_ratio": 60,
+        "paddle_separator_column_margin": 8,
+        "paddle_pos_search_chars": 160
+      },
+      "grammar": {
+        "part_of_speech": [],
+        "usage_and_region": [],
+        "subject_domains": [],
+        "article_relations": [],
+        "internal_not_new_entry": [],
+        "entry_markers": []
+      },
+      "display_name": "常规边缘/视觉词头",
+      "description": "脚本中立的词条起始边、粗体、字号与空白结构策略；不假定拉丁词性语法。",
+      "family": "edge_visual_regular",
+      "validated_examples": [
+        "XAHDCD"
+      ]
+    },
+    "legacy_spanish_structured": {
+      "parser_modes": [
+        "latin"
+      ],
+      "require_visual_cue": true,
+      "settings": {
+        "paddle_band_width_ratio": 100,
+        "paddle_band_left_margin": 12,
+        "paddle_left_tolerance": 34,
+        "paddle_height_ratio": 1.08,
+        "paddle_boldness_ratio": 1.12,
+        "paddle_gap_ratio": 0.7,
+        "paddle_min_candidate_score": 1.0,
+        "paddle_require_pos_or_symbol": true,
+        "paddle_remove_syllable_separators": true,
+        "paddle_auto_header_rule": true,
+        "paddle_refine_separator_y": true,
+        "paddle_separator_search_ratio": 0.3,
+        "paddle_separator_band_radius": 2,
+        "paddle_separator_safety_px": 2,
+        "paddle_separator_roi_width_ratio": 60,
+        "paddle_separator_column_margin": 8,
+        "paddle_pos_search_chars": 140
+      },
+      "grammar": {
         "part_of_speech": [
           "adj.",
           "adj.inv.",
@@ -560,10 +633,11 @@
           "¶"
         ]
       },
-      "display_name": "自定义结构",
+      "display_name": "Legacy Spanish structured",
       "description": "保留高级参数和自定义规则，不绑定具体语言、方向或栏数。",
-      "family": "custom",
-      "validated_examples": []
+      "family": "legacy_spanish_structured",
+      "validated_examples": [],
+      "user_visible": false
     }
   },
   "languages": {
@@ -717,7 +791,7 @@
       }
     },
     "XAHDCD": {
-      "headword_profile": "latin_regular",
+      "headword_profile": "edge_visual_regular",
       "headword_features": [],
       "language": "ara",
       "layout": {
@@ -842,7 +916,7 @@
       }
     },
     "arabic_rtl_bilingual_2col": {
-      "headword_profile": "latin_regular",
+      "headword_profile": "edge_visual_regular",
       "headword_features": [],
       "language": "ara",
       "layout": {
@@ -927,6 +1001,115 @@
         "columns_policy": "fixed",
         "column_separator": "auto",
         "analysis_threshold_mode": "auto"
+      },
+      "headword_overrides": {
+        "grammar": {
+          "part_of_speech": [
+            "adj.",
+            "adj.inv.",
+            "adj./s.",
+            "adv.",
+            "art.",
+            "conj.",
+            "det.",
+            "interj.",
+            "loc.",
+            "num.",
+            "prep.",
+            "pron.",
+            "pron.dem.",
+            "pron.exclam.",
+            "pron.indef.",
+            "pron.interr.",
+            "pron.pers.",
+            "pron.poses.",
+            "pron.rel.",
+            "s.",
+            "s.amb.",
+            "s.com.",
+            "s.f.",
+            "s.f.pl.",
+            "s.m.",
+            "s.m.pl.",
+            "s.n.",
+            "s.pl.",
+            "superlat.",
+            "superlat.irreg.",
+            "v.",
+            "v.irreg.",
+            "v.prnl."
+          ],
+          "usage_and_region": [
+            "Amér.",
+            "arg.",
+            "col.",
+            "desus.",
+            "esp.",
+            "euf.",
+            "fam.",
+            "fig.",
+            "lit.",
+            "pop.",
+            "reg.",
+            "rur.",
+            "tb.",
+            "vulg.",
+            "vulg.malson."
+          ],
+          "subject_domains": [
+            "ANAT.",
+            "ARQ.",
+            "ASTR.",
+            "BIOL.",
+            "BOT.",
+            "DEP.",
+            "DER.",
+            "ECON.",
+            "FÍS.",
+            "GEOG.",
+            "GEOL.",
+            "GRAM.",
+            "HIST.",
+            "INFORM.",
+            "LING.",
+            "LIT.",
+            "MAT.",
+            "MED.",
+            "MÚS.",
+            "NÁUT.",
+            "POL.",
+            "QUÍM.",
+            "RELIG.",
+            "TECNOL.",
+            "ZOOL."
+          ],
+          "article_relations": [
+            "ANT.",
+            "SIN.",
+            "FAM.",
+            "Pron.",
+            "conjug."
+          ],
+          "internal_not_new_entry": [
+            "■",
+            "□",
+            "||",
+            "~",
+            "→"
+          ],
+          "entry_markers": [
+            "•",
+            "◆",
+            "◇",
+            "►",
+            "▶",
+            "*",
+            "†",
+            "‡",
+            "§",
+            "¶"
+          ]
+        }
       }
     },
     "cjk_marker_pinyin": {

@@ -28,7 +28,7 @@ from PIL import Image, ImageOps, ImageTk
 from .formats import pdic_path, read_pdic, read_ppp, write_pdic, write_ppp, read_picdic_index_records
 from .models import (
     AppSettings, Entry as WordEntry, PolygonRegion, ProjectState,
-    read_noncomment_lines, resolve_wordslist_path,
+    read_noncomment_lines, resolve_wordslist_path, resolved_tesseract_language,
 )
 from .paddle_headwords import (
     DEFAULT_HEADWORD_FILTER_RULES,
@@ -1611,7 +1611,9 @@ class SettingsDialog(tk.Toplevel):
 
     def check_ocr_engines(self) -> None:
         executable = str(self.vars["ocr_executable"].get())
-        language = str(self.vars["ocr_language"].get())
+        language = str(self.vars.get("tesseract_language", self.vars["ocr_language"]).get()).strip()
+        if not language:
+            language = str(self.vars["ocr_language"].get())
         tess = tesseract_status(executable, language); lens = lens_status()
         if tess.get("available"):
             tess_text = f"✓ {tess.get('version') or 'Tesseract'}\n路径：{tess.get('resolved')}\n语言：{', '.join(tess.get('requested_languages', []))}"
@@ -6405,7 +6407,7 @@ class PictureCaptureApp(tk.Tk):
 
     def check_ocr_engines(self) -> None:
         paddle_text = self._paddle_environment_text()
-        tess = tesseract_status(self.settings.ocr_executable, self.settings.ocr_language)
+        tess = tesseract_status(self.settings.ocr_executable, resolved_tesseract_language(self.settings))
         lens = lens_status()
         if tess.get("available"):
             self.settings.ocr_executable = str(tess.get("resolved"))
