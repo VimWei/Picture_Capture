@@ -178,7 +178,15 @@ def _sorted_page_list_rows(rows: list[tuple[str, tuple]], column: str, descendin
     ``rows`` contains ``(iid, values)`` pairs. Empty cells stay at the bottom in
     either direction, while visible values use natural text ordering.
     """
-    column_index = {"page": 0, "lined": 1, "fill_status": 2, "illustrations": 3}.get(column, 0)
+    # Accept legacy four-value rows in unit callers/session migrations while
+    # the live Treeview uses the new leading bookmark column.
+    has_bookmark = any(len(values) >= 5 for _iid, values in rows)
+    mapping = (
+        {"bookmark": 0, "page": 1, "lined": 2, "fill_status": 3, "illustrations": 4}
+        if has_bookmark else
+        {"page": 0, "lined": 1, "fill_status": 2, "illustrations": 3}
+    )
+    column_index = mapping.get(column, 1 if has_bookmark else 0)
     populated: list[tuple[str, tuple]] = []
     empty: list[tuple[str, tuple]] = []
     for row in rows:
@@ -4967,24 +4975,29 @@ class PictureCaptureApp(tk.Tk):
         ttk.Button(size_row, text="+", width=3, command=lambda: self.zoom(1.15)).pack(side="left")
         ttk.Button(size_row, text="↔", width=3, command=self.fit_page_width).pack(side="left", padx=(7, 3))
         ttk.Button(size_row, text="↕", width=3, command=self.fit_page_height).pack(side="left")
+        ttk.Button(size_row, text="⨇", width=3, command=lambda: self.jump_to_bookmark(-1)).pack(side="left", padx=(7, 2))
+        ttk.Button(size_row, text="⨈", width=3, command=lambda: self.jump_to_bookmark(1)).pack(side="left", padx=(0, 3))
         ttk.Button(size_row, text="上一页", command=lambda: self.change_page(-1)).pack(side="left", padx=(7, 3))
         ttk.Button(size_row, text="下一页", command=lambda: self.change_page(1)).pack(side="left")
 
         list_frame = ttk.Frame(page_panel)
         list_frame.grid(row=2, column=0, sticky="nsew")
         list_frame.columnconfigure(0, weight=1); list_frame.rowconfigure(0, weight=1)
-        columns = ("page", "lined", "fill_status", "illustrations")
+        columns = ("bookmark", "page", "lined", "fill_status", "illustrations")
         self.page_list = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="browse", height=12)
-        self._page_list_heading_labels = {"page": "页面", "lined": "画线", "fill_status": "填充状态", "illustrations": "插图"}
+        self._page_list_heading_labels = {"bookmark": "书签", "page": "页面", "lined": "画线", "fill_status": "填充状态", "illustrations": "插图"}
+        self.page_list.heading("bookmark", text="书签")
         self.page_list.heading("page", text="页面")
         self.page_list.heading("lined", text="画线")
         self.page_list.heading("fill_status", text="填充状态")
         self.page_list.heading("illustrations", text="插图")
+        self.page_list.heading("bookmark", command=lambda: self._sort_page_list("bookmark"))
         self.page_list.heading("page", command=lambda: self._sort_page_list("page"))
         self.page_list.heading("lined", command=lambda: self._sort_page_list("lined"))
         self.page_list.heading("fill_status", command=lambda: self._sort_page_list("fill_status"))
         self.page_list.heading("illustrations", command=lambda: self._sort_page_list("illustrations"))
-        self.page_list.column("page", width=220, anchor="w", stretch=True)
+        self.page_list.column("bookmark", width=44, anchor="center", stretch=False)
+        self.page_list.column("page", width=190, anchor="w", stretch=True)
         self.page_list.column("lined", width=68, anchor="center", stretch=False)
         self.page_list.column("fill_status", width=110, anchor="center", stretch=False)
         self.page_list.column("illustrations", width=58, anchor="center", stretch=False)
@@ -4993,6 +5006,7 @@ class PictureCaptureApp(tk.Tk):
         self.page_list.grid(row=0, column=0, sticky="nsew")
         self.page_scroll.grid(row=0, column=1, sticky="ns")
         self.page_list.bind("<<TreeviewSelect>>", self.on_page_select)
+        self.page_list.bind("<Button-1>", self._page_list_bookmark_click, add="+")
         self.page_list.bind("<MouseWheel>", self._list_mousewheel)
         self.page_list.bind("<Button-3>", self._page_list_right_click)
         self.page_list.bind("<Configure>", lambda _e: self._schedule_page_cell_overlay_refresh())
@@ -5037,7 +5051,7 @@ class PictureCaptureApp(tk.Tk):
         """Apply optional Treeview columns while keeping 页面 permanently visible."""
         if not hasattr(self, "page_list"):
             return
-        columns = ["page"]
+        columns = ["bookmark", "page"]
         if getattr(self, "_page_column_vars", {}).get("lined") is None or self._page_column_vars["lined"].get():
             columns.append("lined")
         if getattr(self, "_page_column_vars", {}).get("fill_status") is None or self._page_column_vars["fill_status"].get():
@@ -5118,7 +5132,7 @@ class PictureCaptureApp(tk.Tk):
         if not hasattr(self, "page_list"):
             return
         labels = getattr(self, "_page_list_heading_labels", {
-            "page": "页面", "lined": "画线", "fill_status": "填充状态", "illustrations": "插图",
+            "bookmark": "书签", "page": "页面", "lined": "画线", "fill_status": "填充状态", "illustrations": "插图",
         })
         active = self._page_list_sort_column
         arrow = " ▼" if self._page_list_sort_descending else " ▲"
@@ -5156,7 +5170,7 @@ class PictureCaptureApp(tk.Tk):
         self._page_list_sort_job = self.after(80, run)
 
     def _sort_page_list(self, column: str) -> None:
-        if column not in {"page", "lined", "fill_status", "illustrations"}:
+        if column not in {"bookmark", "page", "lined", "fill_status", "illustrations"}:
             return
         if self._page_list_sort_column == column:
             self._page_list_sort_descending = not self._page_list_sort_descending
@@ -5170,6 +5184,57 @@ class PictureCaptureApp(tk.Tk):
                 pass
             self._page_list_sort_job = None
         self._apply_page_list_sort(ensure_current_visible=True)
+
+    def _bookmark_stems(self) -> set[str]:
+        settings = self.__dict__.get("settings")
+        return {
+            str(stem) for stem in getattr(settings, "page_bookmarks", [])
+            if str(stem).strip()
+        }
+
+    def _page_list_bookmark_click(self, event: tk.Event) -> str | None:
+        """Toggle the bookmark cell without changing the active page."""
+        if self.page_list.identify_region(event.x, event.y) != "cell":
+            return None
+        if self.page_list.identify_column(event.x) != "#1":
+            return None
+        iid = self.page_list.identify_row(event.y)
+        if not iid or not self.project:
+            return "break"
+        try:
+            index = int(iid)
+            stem = self.project.images[index].stem
+        except (TypeError, ValueError, IndexError):
+            return "break"
+        bookmarks = self._bookmark_stems()
+        if stem in bookmarks:
+            bookmarks.remove(stem)
+        else:
+            bookmarks.add(stem)
+        self.settings.page_bookmarks = sorted(bookmarks, key=_natural_text_key)
+        self.project.settings.page_bookmarks = list(self.settings.page_bookmarks)
+        self.settings.to_json(settings_path(self.project.root))
+        self._update_page_row(index)
+        return "break"
+
+    def jump_to_bookmark(self, direction: int) -> None:
+        """Jump to the nearest bookmarked page before or after this page."""
+        if not self.project or self.current_index < 0:
+            return
+        bookmarks = self._bookmark_stems()
+        bookmarked = [
+            index for index, page in enumerate(self.project.images)
+            if page.stem in bookmarks
+        ]
+        candidates = (
+            [index for index in bookmarked if index < self.current_index]
+            if direction < 0 else
+            [index for index in bookmarked if index > self.current_index]
+        )
+        if not candidates:
+            self.status_var.set("当前页之前没有书签" if direction < 0 else "当前页之后没有书签")
+            return
+        self.load_page(max(candidates) if direction < 0 else min(candidates))
 
     def _set_page_list_selection(self, index: int, *, ensure_visible: bool = True) -> None:
         """Synchronize the Treeview to exactly one page iid.
@@ -5582,6 +5647,7 @@ class PictureCaptureApp(tk.Tk):
             "illustration_fill_color": tk.StringVar(value=self.settings.illustration_fill_color),
             "illustration_label_border_color": tk.StringVar(value=self.settings.illustration_label_border_color),
             "illustration_label_fill_color": tk.StringVar(value=self.settings.illustration_label_fill_color),
+            "main_entry_default_color": tk.StringVar(value=self.settings.main_entry_default_color),
         }
 
         def color_button(row: ttk.Frame, name: str) -> tk.Button:
@@ -5631,6 +5697,8 @@ class PictureCaptureApp(tk.Tk):
             ttk.Entry(entry_row, textvariable=var, width=width).pack(side="left")
         follow_var = tk.BooleanVar(value=bool(self.settings.main_entry_follow_zoom)); self.quick_bool_vars["main_entry_follow_zoom"] = follow_var
         ttk.Checkbutton(entry_row, text="跟随缩放", variable=follow_var).pack(side="left", padx=(8, 0))
+        ttk.Label(entry_row, text="默认").pack(side="left", padx=(8, 0))
+        color_button(entry_row, "main_entry_default_color")
 
         font_row = ttk.Frame(aux); font_row.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(2, 0))
         ttk.Label(font_row, text="词条字体").pack(side="left")
@@ -6884,6 +6952,18 @@ class PictureCaptureApp(tk.Tk):
         target_view_scale: float | None = None,
     ) -> None:
         self._flush_deferred_page_save()
+        # Commit/cancel the old project's debounced quick-panel edit before
+        # replacing ``self.settings``. Otherwise its delayed callback can run
+        # against the newly opened project and overwrite that project's layout.
+        pending_quick_job = getattr(self, "_quick_autosave_job", None)
+        if pending_quick_job is not None:
+            try:
+                self.after_cancel(pending_quick_job)
+            except tk.TclError:
+                pass
+            self._quick_autosave_job = None
+            if self.project is not None:
+                self.apply_quick_settings(show_status=False, persist=True, silent_errors=True)
         if self.project and self.current_page and self.image is not None:
             self.save_pdic(silent=True)
             write_ppp(self._ppp_write_path(self.current_page), self.polygons, self.current_page.stem)
@@ -6936,7 +7016,14 @@ class PictureCaptureApp(tk.Tk):
             self.polygon_draw_button.configure(
                 text="编辑插图", bg="#f0f0f0", activebackground="#e6e6e6", relief="raised"
             )
-        self.sync_quick_settings()
+        trace_was_ready = self._quick_trace_ready
+        self._quick_trace_ready = False
+        try:
+            self.sync_quick_settings()
+        finally:
+            self._quick_trace_ready = trace_was_ready
+        self._display_geometry_cache = None
+        self._display_geometry_cache_key = None
         self._page_meta_generation += 1
         generation = self._page_meta_generation
         if self._page_meta_job:
@@ -6968,7 +7055,10 @@ class PictureCaptureApp(tk.Tk):
             self.page_list.delete(item)
         for index, page in enumerate(project.images):
             self.page_list.insert(
-                "", "end", iid=str(index), values=(page.name, "", self._word_fill_status_text(index), "")
+                "", "end", iid=str(index), values=(
+                    "●" if page.stem in self._bookmark_stems() else "",
+                    page.name, "", self._word_fill_status_text(index), "",
+                )
             )
         # Preserve the user's active list sort across project reloads.
         if self._page_list_sort_column:
@@ -8129,7 +8219,7 @@ class PictureCaptureApp(tk.Tk):
         bg = (
             self._confidence_bg(entry.confidence)
             if self._main_ocr_review_option_enabled("review_main_show_ocr_background")
-            else "white"
+            else self.settings.main_entry_default_color
         )
         if in_wordlist:
             border = "#b0b0b0"
@@ -8647,13 +8737,22 @@ class PictureCaptureApp(tk.Tk):
         lined = self._page_metadata(index)
         fill_status = self._word_fill_status_text(index)
         illustrations = self._page_illustration_count_text(index)
-        new_values = (self.project.images[index].name, lined, fill_status, illustrations)
+        page = self.project.images[index]
+        page_stem = str(getattr(page, "stem", Path(str(page.name)).stem))
+        bookmark = "●" if page_stem in self._bookmark_stems() else ""
+        new_values = (bookmark, page.name, lined, fill_status, illustrations)
         self.page_list.item(iid, values=new_values)
         active_column = self._page_list_sort_column
         if active_column:
-            column_index = {"page": 0, "lined": 1, "fill_status": 2, "illustrations": 3}.get(active_column, 0)
-            old_value = old_values[column_index] if column_index < len(old_values) else ""
-            new_value = new_values[column_index]
+            new_index = {"bookmark": 0, "page": 1, "lined": 2, "fill_status": 3, "illustrations": 4}.get(active_column, 1)
+            old_mapping = (
+                {"bookmark": 0, "page": 1, "lined": 2, "fill_status": 3, "illustrations": 4}
+                if len(old_values) >= 5 else
+                {"page": 0, "lined": 1, "fill_status": 2, "illustrations": 3}
+            )
+            old_index = old_mapping.get(active_column, 0)
+            old_value = old_values[old_index] if old_index < len(old_values) else ""
+            new_value = new_values[new_index]
             if str(old_value) != str(new_value):
                 self._schedule_page_list_resort()
         self._schedule_page_cell_overlay_refresh()

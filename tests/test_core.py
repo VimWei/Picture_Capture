@@ -15,7 +15,7 @@ from picture_capture.app import (
 )
 from picture_capture.models import AppSettings, Entry, PolygonRegion
 from picture_capture.processing import Geometry, ColumnPath, sort_entries_reading_order, sort_entries_column_y
-from picture_capture.layout_detection import _projection_layout_estimate
+from picture_capture.layout_detection import _projection_layout_estimate, infer_layout_from_boxes
 from picture_capture.collation import available_profile_labels, collation_key, parse_custom_order
 from picture_capture.dictionary_profile import (
     PROFILE_FORMAT_V2, available_dictionary_profiles, dictionary_profile_labels,
@@ -2942,7 +2942,7 @@ def test_v299_load_project_restores_word_fill_status_before_page_list_refresh():
 def test_v2910_page_list_has_persistent_fill_status_column():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
-    assert 'columns = ("page", "lined", "fill_status", "illustrations")' in text
+    assert 'columns = ("bookmark", "page", "lined", "fill_status", "illustrations")' in text
     assert 'self.page_list.heading("fill_status", text="填充状态")' in text
     assert 'self._word_fill_status_text(index)' in text
 
@@ -3507,6 +3507,54 @@ def test_page_list_compact_labels_navigation_order_and_consistency_minimum():
     assert '"lined": "画线"' in text
     assert 'if len(indices) < 2:' in text
     assert '至少需要选择 2 页' in text
+
+
+def test_entry_default_color_and_bookmarks_persist(tmp_path):
+    settings = AppSettings(
+        main_entry_default_color="#fef3c7",
+        page_bookmarks=["0002", "0010"],
+    )
+    path = tmp_path / "settings.json"
+    settings.to_json(path)
+    reopened = AppSettings.from_json(path)
+    assert reopened.main_entry_default_color == "#fef3c7"
+    assert reopened.page_bookmarks == ["0002", "0010"]
+
+
+def test_layout_gutter_uses_persistent_pixel_whitespace_not_ragged_line_ends():
+    height, width = 800, 1000
+    ink = np.zeros((height, width), dtype=bool)
+    boxes = []
+    for row, y in enumerate(range(100, 700, 40)):
+        end = 250 if row % 3 else 450
+        ink[y:y + 12, 50:end] = True
+        ink[y:y + 12, 500:820] = True
+        boxes.extend([(50, y, min(end, 300), y + 12), (500, y, 760, y + 12)])
+    estimate = infer_layout_from_boxes(boxes, (width, height), ink_mask=ink)
+    assert estimate.columns == 2
+    assert 390 <= estimate.column_width <= 410
+    assert 45 <= estimate.gutter <= 55
+
+
+def test_bookmark_controls_and_project_switch_protect_project_settings():
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    assert 'text="⨇"' in text and 'text="⨈"' in text
+    assert 'columns = ("bookmark", "page", "lined", "fill_status", "illustrations")' in text
+    assert '"●" if page.stem in self._bookmark_stems() else ""' in text
+    load_start = text.index("    def _load_project(")
+    load_end = text.index("    def on_page_select", load_start)
+    load_block = text[load_start:load_end]
+    assert "self.after_cancel(pending_quick_job)" in load_block
+    assert "self._quick_trace_ready = False" in load_block
+    assert "self._display_geometry_cache = None" in load_block
+
+    processing = (source.parent / "processing.py").read_text(encoding="utf-8")
+    normal_start = processing.index("def _detect_entries_left_edge")
+    normal_end = processing.index("\ndef detect_entries", normal_start)
+    normal_block = processing[normal_start:normal_end]
+    assert "from .paddle_headwords import refine_separator_y" in normal_block
+    assert "y_source, _refinement = refine_separator_y(" in normal_block
 
 
 def test_crop_preview_uses_export_filename_and_centered_entry_typography():

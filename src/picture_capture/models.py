@@ -89,6 +89,7 @@ class AppSettings:
     page_list_show_lined: bool = True
     page_list_show_fill_status: bool = True
     page_list_show_illustrations: bool = True
+    page_bookmarks: list[str] = field(default_factory=list)
     darkness_threshold: int = 300
     dark_area_percent: int = 90
     batch_interval: float = 3.0
@@ -126,6 +127,7 @@ class AppSettings:
     main_entry_width_chars: int = 18
     main_entry_x_ratio: float = 0.66
     main_entry_follow_zoom: bool = True
+    main_entry_default_color: str = "#ffffff"
     # Review zoom and typography are independent from the main page viewer and
     # are persisted per project. 64% is a practical default for large scans.
     review_zoom_percent: int = 64
