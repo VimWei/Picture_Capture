@@ -183,10 +183,21 @@ def _natural_text_key(value: object) -> tuple:
 def effective_main_overlay_font_size(
     image_width: int, view_scale: float, settings: AppSettings,
 ) -> int:
-    """Scale main-canvas typography with source page width and optional zoom."""
-    page_scale = min(4.0, max(0.75, max(1, image_width) / 1400.0))
-    scale = page_scale * (view_scale if settings.main_entry_follow_zoom else 1.0)
-    return min(72, max(5, round(settings.main_entry_font_size * scale)))
+    """Return the main overlay font size.
+
+    1400 px displayed page width corresponds to the configured base font size.
+    """
+
+    base_size = max(5, int(settings.main_entry_font_size))
+
+    if settings.main_entry_follow_zoom:
+        displayed_page_width = max(1.0, image_width * view_scale)
+        scale = displayed_page_width / 1600.0
+        font_size = round(base_size * scale)
+    else:
+        font_size = base_size
+
+    return max(5, min(72, font_size))
 
 
 def binary_preview_image(source: Image.Image) -> Image.Image:
