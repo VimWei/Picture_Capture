@@ -16,6 +16,8 @@ from picture_capture.app import (
 from picture_capture.models import AppSettings, Entry, PolygonRegion
 from picture_capture.processing import Geometry, ColumnPath, sort_entries_reading_order, sort_entries_column_y
 from picture_capture.layout_detection import _projection_layout_estimate, infer_layout_from_boxes
+from picture_capture.layout_detection import LayoutEstimate, aggregate_layout_estimates
+from picture_capture.layout_transform import LayoutTransform
 from picture_capture.collation import available_profile_labels, collation_key, parse_custom_order
 from picture_capture.dictionary_profile import (
     PROFILE_FORMAT_V2, available_dictionary_profiles, dictionary_profile_labels,
@@ -62,6 +64,49 @@ from picture_capture.processing import (
 
 
 class FormatTests(unittest.TestCase):
+
+    def test_layout_transform_points_boxes_images_and_markers_round_trip(self) -> None:
+        source_size = (7, 5)
+        image = Image.new("RGB", source_size, "white")
+        image.putpixel((6, 1), (12, 34, 56))
+        for kind in ("identity", "mirror_x", "rotate_ccw90", "rotate_cw90"):
+            transform = LayoutTransform(kind)
+            for point in ((0, 0), (6, 4), (3, 2), (6, 1)):
+                canonical = transform.source_to_canonical_point(*point, source_size)
+                self.assertEqual(transform.canonical_to_source_point(*canonical, source_size), point)
+            box = (1, 1, 6, 4)
+            self.assertEqual(
+                transform.canonical_box_to_source(transform.source_box_to_canonical(box, source_size), source_size),
+                box,
+            )
+            self.assertEqual(transform.canonical_image_for_analysis(image).size, transform.canonical_size(source_size))
+
+        mirror = LayoutTransform("mirror_x")
+        self.assertEqual(mirror.source_to_canonical_point(6, 1, source_size), (0, 1))
+        ccw = LayoutTransform("rotate_ccw90")
+        self.assertEqual(ccw.source_to_canonical_point(6, 1, source_size), (1, 0))
+        marker = ccw.canonical_marker_to_source((1, 2), (4, 2), source_size)
+        self.assertEqual(marker, ((4, 1), (4, 4)))
+
+    def test_layout_analysis_transform_does_not_mutate_source_pixels(self) -> None:
+        source = Image.new("RGB", (4, 3), "white")
+        source.putpixel((3, 0), (1, 2, 3))
+        before = source.tobytes()
+        canonical = LayoutTransform("mirror_x").canonical_image_for_analysis(source)
+        self.assertEqual(canonical.getpixel((0, 0)), (1, 2, 3))
+        self.assertEqual(source.tobytes(), before)
+
+    def test_layout_aggregation_uses_mode_median_and_fixed_prior(self) -> None:
+        rows = [
+            LayoutEstimate(column, y, 400, 40, 20, 900, 20, 2, 10)
+            for column, y in zip((2, 2, 2, 2, 1), (100, 101, 99, 102, 900))
+        ]
+        detected, confidence = aggregate_layout_estimates(rows)
+        self.assertEqual(detected["columns"], 2)
+        self.assertEqual(detected["start_y"], 100)
+        self.assertEqual(confidence, "2栏: 4/5 pages")
+        fixed, _ = aggregate_layout_estimates(rows, columns_policy="fixed", fixed_columns=3)
+        self.assertEqual(fixed["columns"], 3)
 
     def test_v21111_picdic_index_uses_saved_percentages_and_page(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

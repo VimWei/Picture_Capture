@@ -6422,13 +6422,17 @@ class PictureCaptureApp(tk.Tk):
         def done(_completed, _total, stopped, results, error) -> None:
             if error or not results:
                 return
-            fields = ("columns", "start_y", "bottom_y", "manual_x", "column_width", "gutter", "character_height", "row_padding")
-            for name in fields:
-                setattr(self.settings, name, round(statistics.fmean(float(getattr(item, name)) for item in results)))
-            self.settings.row_padding = max(1, self.settings.row_padding)
+            from .layout_detection import aggregate_layout_estimates
+            values, consistency = aggregate_layout_estimates(
+                results,
+                columns_policy=self.settings.layout_columns_policy,
+                fixed_columns=self.settings.columns,
+            )
+            for name, value in values.items():
+                setattr(self.settings, name, value)
             self.sync_quick_settings(); self.save_settings(); self.redraw()
             suffix = "（任务提前停止，按已完成页面计算）" if stopped else ""
-            self.status_var.set(f"版面参数检测完成：已取 {len(results)} 页均值并自动填充{suffix}")
+            self.status_var.set(f"版面参数检测完成：{consistency}；其余参数使用稳健中位数{suffix}")
 
         self._start_batch_task("检测版面参数", indices, worker, done, item_label=lambda i: pages[i].name)
 
