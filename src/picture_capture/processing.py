@@ -463,6 +463,24 @@ def _detect_entries_left_edge(image: Image.Image, settings: AppSettings) -> tupl
                 top + run_start - max(1, round(settings.row_padding * parameter_to_analysis)),
             )
             y_source = round(y_analysis / scale)
+            if settings.paddle_refine_separator_y:
+                # Reuse the OCR mode's horizontal-valley refinement for the
+                # coarse Y produced by left-edge projection. Restrict analysis
+                # to this column so neighbouring columns cannot influence it.
+                from .paddle_headwords import refine_separator_y
+                display_per_source = parameter_scale(source, settings)
+                source_per_display = 1.0 / max(1e-9, display_per_source)
+                column_x = max(0, round(geometry.x_at(col, y_source)))
+                column_right = min(gray.shape[1], column_x + max(10, geometry.column_widths[col]))
+                if column_right > column_x:
+                    y_source, _refinement = refine_separator_y(
+                        gray[:, column_x:column_right],
+                        y_source,
+                        max(2, round(settings.character_height * source_per_display)),
+                        settings,
+                        source_per_display_pixel=source_per_display,
+                        lower_bound=max(0, geometry.top),
+                    )
             if y_source - last_y < round(min_gap / scale):
                 continue
             entries.append(Entry(word="", x=source_x, y=y_source))

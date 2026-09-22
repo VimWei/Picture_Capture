@@ -173,6 +173,54 @@ def _longest_low_density_run(
     return best
 
 
+def _persistent_vertical_whitespace(ink: np.ndarray) -> np.ndarray:
+    """Mark columns that stay nearly ink-free throughout most body blocks.
+
+    A short dictionary definition can make a large *aggregate* empty area, but
+    it does not make the same X coordinate empty in most vertical body blocks.
+    This persistence test is therefore much less likely to mistake ragged line
+    endings for an inter-column gutter.
+    """
+    if ink.ndim != 2 or ink.shape[0] < 2:
+        return np.zeros(ink.shape[-1] if ink.ndim else 0, dtype=bool)
+    overall = ink.mean(axis=0)
+    positive = overall[overall > 0]
+    overall_limit = max(0.0015, float(np.percentile(positive, 12)) * 0.28) if positive.size else 0.0015
+    blocks = [block for block in np.array_split(ink, min(16, max(4, ink.shape[0] // 80)), axis=0) if block.size]
+    block_density = np.vstack([block.mean(axis=0) for block in blocks])
+    block_limit = max(0.003, overall_limit * 1.8)
+    persistent = (overall <= overall_limit) & ((block_density <= block_limit).mean(axis=0) >= 0.75)
+
+    # Bridge scanner specks or a one-pixel vertical blemish inside an otherwise
+    # continuous gutter, without expanding genuinely nonblank regions.
+    bridge = max(1, round(ink.shape[1] * 0.0015))
+    for start, end in _runs(~persistent):
+        if start > 0 and end < len(persistent) and end - start <= bridge:
+            persistent[start:end] = True
+    return persistent
+
+
+def _gutter_before_next_start(
+    ink: np.ndarray, left: int, right: int, body_top: int, body_bottom: int
+) -> tuple[int, int] | None:
+    """Find the rightmost persistent whitespace band before the next column."""
+    pitch = right - left
+    if pitch <= 10:
+        return None
+    top = max(0, min(ink.shape[0] - 1, int(body_top)))
+    bottom = max(top + 1, min(ink.shape[0], int(body_bottom)))
+    stable_blank = _persistent_vertical_whitespace(ink[top:bottom, :])
+    search_left = max(left + round(pitch * 0.38), 0)
+    search_right = min(right, len(stable_blank))
+    minimum = max(5, round(ink.shape[1] * 0.005))
+    candidates = [
+        (search_left + start, search_left + end)
+        for start, end in _runs(stable_blank[search_left:search_right])
+        if end - start >= minimum
+    ]
+    return max(candidates, key=lambda run: (run[1], run[0])) if candidates else None
+
+
 def _estimate_start_y(boxes: list[tuple[int, int, int, int]], height: int) -> int:
     if not boxes:
         return 0
@@ -203,6 +251,7 @@ def infer_layout_from_boxes(
     boxes: Iterable[tuple[int, int, int, int]],
     image_size: tuple[int, int],
     display_scale: float = 1.0,
+    ink_mask: np.ndarray | None = None,
 ) -> LayoutEstimate:
     width, height = image_size
     raw = [
@@ -231,11 +280,18 @@ def infer_layout_from_boxes(
 
     gap_widths: list[int] = []
     col_widths: list[int] = []
+    body_top = _estimate_start_y(filtered, height)
+    body_bottom = int(np.percentile([box[3] for box in filtered], 99))
     for left, right in zip(starts, starts[1:]):
         pitch = right - left
-        search_left = left + max(6, int(round(pitch * 0.42)))
-        search_right = right - max(4, int(round(pitch * 0.035)))
-        run = _longest_low_density_run(density, search_left, search_right)
+        run = (
+            _gutter_before_next_start(ink_mask, left, right, body_top, body_bottom)
+            if ink_mask is not None else None
+        )
+        if run is None:
+            search_left = left + max(6, int(round(pitch * 0.42)))
+            search_right = right - max(4, int(round(pitch * 0.035)))
+            run = _longest_low_density_run(density, search_left, search_right)
         if run and run[1] - run[0] >= max(6, int(round(width * 0.006))):
             gap_start, gap_end = run
             gap_widths.append(gap_end - gap_start)
@@ -254,8 +310,8 @@ def infer_layout_from_boxes(
         col_widths.append(int(round(float(np.median(col_widths)))))
         gutter_source = int(round(float(np.median(gap_widths)))) if gap_widths else 0
 
-    start_y_source = _estimate_start_y(filtered, height)
-    bottom_y_source = int(np.percentile([box[3] for box in filtered], 99))
+    start_y_source = body_top
+    bottom_y_source = body_bottom
     character_height_source = max(1, round(float(np.median([box[3] - box[1] for box in filtered]))))
     ordered_tops = sorted({box[1] for box in filtered})
     top_steps = [b - a for a, b in zip(ordered_tops, ordered_tops[1:]) if b - a > character_height_source * 0.5]
@@ -363,7 +419,7 @@ def _projection_layout_estimate(source: Image.Image, settings: AppSettings) -> L
     if positive.size == 0:
         raise RuntimeError("图像回退检测未发现可用正文像素。")
     blank_threshold = max(0.001, float(np.percentile(positive, 18)) * 0.38)
-    blank_cols = x_density <= blank_threshold
+    blank_cols = _persistent_vertical_whitespace(body)
 
     min_gap = max(6, round(w * 0.008))
     gap_candidates = [
@@ -462,10 +518,12 @@ def detect_layout_parameters(image: Image.Image, settings: AppSettings) -> Layou
         if results:
             boxes = _boxes_from_detection(results[0], source.width, source.height)
             if boxes:
+                source_gray = np.asarray(ImageOps.grayscale(source), dtype=np.uint8)
                 return infer_layout_from_boxes(
                     boxes,
                     source.size,
                     display_scale=parameter_scale(source, settings),
+                    ink_mask=source_gray < _otsu_threshold(source_gray),
                 )
             paddle_error = RuntimeError("PaddleOCR 整页版面检测没有返回文本框。")
         else:
