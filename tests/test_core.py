@@ -4419,25 +4419,26 @@ def test_v21120_review_single_cjk_crop_expands_but_normal_word_does_not():
     single_box = _review_line_box(single, geometry, image, settings)
     normal_box = _review_line_box(normal, geometry, image, settings)
 
-    assert single_box[1] == normal_box[1]
+    assert normal_box[1] == normal.y - round(0.5 * settings.row_padding)
     assert single_box[3] > normal_box[3]
     assert single_box[0] == normal_box[0]
     assert single_box[2] == normal_box[2]
     assert single_box[3] - single_box[1] == 100 + 2 * settings.row_padding
 
 
-def test_review_regular_crop_height_defaults_to_line_plus_half_spacing_and_can_override():
+def test_review_regular_crop_uses_half_spacing_top_and_full_spacing_height():
     from picture_capture.app import _effective_review_regular_crop_height, _review_line_box
 
     settings = AppSettings(
         parameter_display_width=600, columns=1, manual_x=20, column_width=500,
         character_height=32, row_padding=10, review_regular_crop_height=0,
     )
-    assert _effective_review_regular_crop_height(settings) == 37
+    assert _effective_review_regular_crop_height(settings) == 42
     image = Image.new("RGB", (600, 900), "white")
     geometry = derive_geometry(image, settings)
     box = _review_line_box(Entry("ordinary", 20, 100), geometry, image, settings)
-    assert box[3] - box[1] == 37
+    assert box[1] == 95
+    assert box[3] - box[1] == 42
     settings.review_regular_crop_height = 51
     assert _effective_review_regular_crop_height(settings) == 51
     box = _review_line_box(Entry("ordinary", 20, 100), geometry, image, settings)
@@ -4450,6 +4451,7 @@ def test_sidebar_scroll_review_height_controls_and_normal_process_worker_are_wir
     assert "self.sidebar_canvas = tk.Canvas(" in text
     assert 'orient="vertical", command=self.sidebar_canvas.yview' in text
     assert "def _sidebar_mousewheel(" in text
+    assert "height=max(viewport_height, requested_height)" in text
     review_start = text.index("class ReviewWindow")
     review_end = text.index("class OCRConflictReviewDialog", review_start)
     review = text[review_start:review_end]

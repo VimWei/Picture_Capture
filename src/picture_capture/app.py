@@ -299,7 +299,7 @@ def _effective_review_regular_crop_height(settings: AppSettings) -> int:
         return max(1, explicit)
     line_height = max(1, int(getattr(settings, "character_height", 1) or 1))
     row_padding = max(0, int(getattr(settings, "row_padding", 0) or 0))
-    return max(1, round(line_height + 0.5 * row_padding))
+    return max(1, line_height + row_padding)
 
 
 def _review_line_box(
@@ -318,7 +318,10 @@ def _review_line_box(
     display character even after increasing its requested row height.
     """
     if not _is_single_cjk_review_headword(entry.word):
-        left, top, right, _bottom = line_box(entry, geometry, image, settings)
+        left, _old_top, right, _bottom = line_box(entry, geometry, image, settings)
+        scale = parameter_scale(image, settings)
+        half_spacing = round(0.5 * max(0, int(settings.row_padding)) / scale)
+        top = max(geometry.top, int(entry.y) - half_spacing)
         height = round(_effective_review_regular_crop_height(settings) / parameter_scale(image, settings))
         return left, top, right, min(image.height, top + max(1, height))
 
@@ -5049,14 +5052,8 @@ class PictureCaptureApp(tk.Tk):
         self.sidebar_canvas.pack(side="left", fill="both", expand=True)
         sidebar = ttk.Frame(self.sidebar_canvas, padding=(6, 6, 5, 4))
         self._sidebar_window = self.sidebar_canvas.create_window((0, 0), window=sidebar, anchor="nw")
-        sidebar.bind(
-            "<Configure>",
-            lambda _event: self.sidebar_canvas.configure(scrollregion=self.sidebar_canvas.bbox("all")),
-        )
-        self.sidebar_canvas.bind(
-            "<Configure>",
-            lambda event: self.sidebar_canvas.itemconfigure(self._sidebar_window, width=event.width),
-        )
+        sidebar.bind("<Configure>", self._resize_sidebar_content)
+        self.sidebar_canvas.bind("<Configure>", self._resize_sidebar_content)
         self.bind_all("<MouseWheel>", self._sidebar_mousewheel, add="+")
         self.bind_all("<Button-4>", lambda event: self._sidebar_linux_mousewheel(event, -1), add="+")
         self.bind_all("<Button-5>", lambda event: self._sidebar_linux_mousewheel(event, 1), add="+")
@@ -5183,6 +5180,26 @@ class PictureCaptureApp(tk.Tk):
             return 0 <= x < canvas.winfo_width() and 0 <= y < canvas.winfo_height()
         except tk.TclError:
             return False
+
+    def _resize_sidebar_content(self, event: tk.Event | None = None) -> None:
+        """Fill unused sidebar height while retaining scrolling when necessary."""
+        canvas = self.__dict__.get("sidebar_canvas")
+        sidebar = self.__dict__.get("sidebar")
+        window = self.__dict__.get("_sidebar_window")
+        if canvas is None or sidebar is None or window is None:
+            return
+        try:
+            viewport_width = max(1, canvas.winfo_width())
+            viewport_height = max(1, canvas.winfo_height())
+            requested_height = max(1, sidebar.winfo_reqheight())
+            canvas.itemconfigure(
+                window,
+                width=viewport_width,
+                height=max(viewport_height, requested_height),
+            )
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        except tk.TclError:
+            return
 
     def _sidebar_mousewheel(self, event: tk.Event) -> str | None:
         if not self._pointer_over_sidebar():
