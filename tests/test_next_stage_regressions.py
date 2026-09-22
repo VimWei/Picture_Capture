@@ -6,7 +6,8 @@ from PIL import Image
 
 from picture_capture.app import (
     PictureCaptureApp, binary_preview_image, effective_main_overlay_font_size,
-    transformed_entry_anchor, vertical_entry_label_text, vertical_index_anchor,
+    horizontal_rtl_entry_anchor, transformed_entry_anchor,
+    vertical_entry_label_text, vertical_index_anchor,
 )
 from picture_capture.dictionary_profile import effective_project_profile_id, load_dictionary_profile
 from picture_capture.models import AppSettings, Entry, ProjectState
@@ -91,6 +92,37 @@ def test_vertical_proxy_reuses_editor_membership_and_confidence_style():
     missing = PictureCaptureApp._entry_overlay_style(fake, Entry("missing", 0, 0, confidence=.5))
     assert known == ("#c8e6c9", "#b0b0b0", 1)
     assert missing == ("#ffcdd2", "#d32f2f", 2)
+
+
+def test_horizontal_rtl_ratio_moves_in_reading_direction_below_marker():
+    transform = LayoutTransform("mirror_x")
+    common = dict(
+        transform=transform, canonical_x=100, canonical_y=300, column_width=600,
+        source_size=(1400, 2200), view_scale=.5,
+        marker_start=(1299, 300), marker_end=(730, 300),
+        marker_height=2, overlay_scale=1,
+    )
+    low = horizontal_rtl_entry_anchor(x_ratio=.2, **common)
+    high = horizontal_rtl_entry_anchor(x_ratio=.8, **common)
+    assert low[0] != high[0]
+    assert high[0] < low[0]  # increasing canonical/read-order ratio moves source-left
+    assert low[1] == high[1] == 152  # marker display Y is 150; editor begins below it
+    # Generic canonical transform behavior used by vertical overlays is stable,
+    # and identity/LTR continues moving increasing ratios source-right.
+    ltr_low = transformed_entry_anchor(LayoutTransform("identity"), 100, 300, 600, .2, (1400, 2200), .5)
+    ltr_high = transformed_entry_anchor(LayoutTransform("identity"), 100, 300, 600, .8, (1400, 2200), .5)
+    assert ltr_high[0] > ltr_low[0]
+
+
+def test_horizontal_rtl_ui_anchor_does_not_use_crop_box():
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    start = text.index("            # Horizontal RTL uses the same canonical/read-order offset as LTR.")
+    end = text.index("        if self.settings.layout_text_direction == \"rtl\":", start)
+    rtl_branch = text[start:end]
+    assert "horizontal_rtl_entry_anchor(" in rtl_branch
+    assert "line_box(" not in rtl_branch
+    assert 'editor.configure(justify="right")' in text[end:end + 140]
 
 
 def test_latin_pronunciation_pos_and_cjk_rejection():
