@@ -28,7 +28,7 @@ from PIL import Image, ImageOps, ImageTk
 from .formats import pdic_path, read_pdic, read_ppp, write_pdic, write_ppp, read_picdic_index_records
 from .models import (
     AppSettings, Entry as WordEntry, PolygonRegion, ProjectState,
-    read_noncomment_lines, resolve_wordslist_path, resolved_tesseract_language,
+    natural_text_key, read_noncomment_lines, resolve_wordslist_path, resolved_tesseract_language,
 )
 from .paddle_headwords import (
     DEFAULT_HEADWORD_FILTER_RULES,
@@ -43,8 +43,9 @@ from .collation import (
 )
 from .dictionary_profile import (
     DEFAULT_PROFILE_ID, PROFILE_FILENAME, dictionary_profile_labels, dictionary_profile_preset,
+    effective_project_profile_id,
     language_effective_settings, managed_profile_setting_names, profile_effective_settings, profile_preview_path,
-    profile_layout_summary, project_profile_preset_id, write_project_profile,
+    profile_layout_summary, write_project_profile,
 )
 from .picdic import build_picdic_package
 from .image_utils import normalize_page_rgb
@@ -69,6 +70,7 @@ from .project_storage import (
     profile_path as project_profile_path, qt_root, replace_rules_path, settings_path,
     training_exports_root, word_fill_status_path, words_of_pages_default_path,
 )
+from .recent_projects import load_recent_projects, remove_recent_project, touch_recent_project
 from .processing import (
     append_crop_log,
     append_illustration_crop_log,
@@ -175,9 +177,60 @@ def _natural_text_key(value: object) -> tuple:
     Numeric runs are compared as integers so e.g. page2 sorts before page10.
     The tagged tuple parts keep text and integer components mutually comparable.
     """
-    text = str(value or "").casefold()
-    parts = re.split(r"(\d+)", text)
-    return tuple((0, int(part)) if part.isdigit() else (1, part) for part in parts if part != "")
+    return natural_text_key(value)
+
+
+def effective_main_overlay_font_size(
+    image_width: int, view_scale: float, settings: AppSettings,
+) -> int:
+    """Scale main-canvas typography with source page width and optional zoom."""
+    page_scale = min(4.0, max(0.75, max(1, image_width) / 1400.0))
+    scale = page_scale * (view_scale if settings.main_entry_follow_zoom else 1.0)
+    return min(72, max(5, round(settings.main_entry_font_size * scale)))
+
+
+def binary_preview_image(source: Image.Image) -> Image.Image:
+    """Create a display-only Otsu black/white preview without mutating source."""
+    gray = ImageOps.grayscale(source)
+    histogram = gray.histogram()
+    total = sum(histogram)
+    weighted = sum(i * count for i, count in enumerate(histogram))
+    background = 0
+    weight_background = 0
+    best_variance = -1.0
+    threshold = 127
+    for value, count in enumerate(histogram):
+        weight_background += count
+        if not weight_background:
+            continue
+        weight_foreground = total - weight_background
+        if not weight_foreground:
+            break
+        background += value * count
+        mean_background = background / weight_background
+        mean_foreground = (weighted - background) / weight_foreground
+        variance = weight_background * weight_foreground * (mean_background - mean_foreground) ** 2
+        if variance > best_variance:
+            best_variance = variance
+            threshold = value
+    return gray.point(lambda pixel: 255 if pixel > threshold else 0, mode="1").convert("RGB")
+
+
+def vertical_entry_label_text(word: str) -> str:
+    """Return a top-to-bottom label with a clickable blank-entry placeholder."""
+    return "\n".join(word) or "□"
+
+
+def vertical_overlay_anchors(
+    marker_start: tuple[int, int], marker_end: tuple[int, int], view_scale: float,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Anchor vertical editor/label and index to one transformed source marker."""
+    editor = (
+        (min(marker_start[0], marker_end[0]) + 5) * view_scale,
+        min(marker_start[1], marker_end[1]) * view_scale,
+    )
+    index = (marker_start[0] * view_scale + 3, marker_start[1] * view_scale + 3)
+    return editor, index
 
 
 def _sorted_page_list_rows(rows: list[tuple[str, tuple]], column: str, descending: bool = False) -> list[tuple[str, tuple]]:
@@ -1196,11 +1249,10 @@ class SettingsDialog(tk.Toplevel):
         top.columnconfigure(1, weight=1)
 
         self._profile_label_to_key = dictionary_profile_labels()
-        selected_key = getattr(self.parent.settings, "dictionary_profile_id", DEFAULT_PROFILE_ID)
-        if self.parent.project:
-            selected_key = project_profile_preset_id(
-                project_profile_path(self.parent.project.root), selected_key
-            )
+        selected_key = effective_project_profile_id(
+            self.parent.settings,
+            project_profile_path(self.parent.project.root) if self.parent.project else None,
+        )
         try:
             selected = dictionary_profile_preset(selected_key)
         except Exception:
@@ -1572,7 +1624,7 @@ class SettingsDialog(tk.Toplevel):
                     self.parent.settings.headword_custom_fold_accents = bool(value)
                 else:
                     setattr(self.parent.settings, name, bool(value))
-            self.parent.settings.main_entry_font_family = str(self.parent.settings.main_entry_font_family).strip() or "Microsoft YaHei"
+            self.parent.settings.main_entry_font_family = str(self.parent.settings.main_entry_font_family).strip() or "DengXian"
             self.parent.settings.main_entry_font_size = max(5, int(self.parent.settings.main_entry_font_size))
             self.parent.settings.main_entry_width_chars = max(4, int(self.parent.settings.main_entry_width_chars))
             self.parent.settings.main_entry_x_ratio = min(1.25, max(0.0, float(self.parent.settings.main_entry_x_ratio)))
@@ -4791,6 +4843,7 @@ class PictureCaptureApp(tk.Tk):
         self.polygon_var = tk.BooleanVar(value=False)
         self.polygon_draw_var = tk.BooleanVar(value=False)
         self.crop_preview_var = tk.BooleanVar(value=False)
+        self.binary_preview_var = tk.BooleanVar(value=False)
         self.polygon_draw_button: tk.Button | None = None
         # PPP label editors and vertex-drag state are rebuilt with each canvas redraw.
         self.polygon_label_bindings: list[tuple[tk.Entry, PolygonRegion]] = []
@@ -5166,6 +5219,10 @@ class PictureCaptureApp(tk.Tk):
 
         size_row = ttk.Frame(page_panel)
         size_row.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        ttk.Checkbutton(
+            size_row, text="◧", width=3, variable=self.binary_preview_var,
+            command=self._toggle_binary_preview,
+        ).pack(side="left", padx=(0, 3))
         ttk.Label(size_row, text="页面大小：").pack(side="left")
         ttk.Button(size_row, text="−", width=3, command=lambda: self.zoom(0.87)).pack(side="left")
         view_zoom_entry = ttk.Entry(size_row, textvariable=self.view_zoom_var, width=6, justify="center")
@@ -5219,7 +5276,8 @@ class PictureCaptureApp(tk.Tk):
 
         bottom_row = ttk.Frame(page_panel)
         bottom_row.grid(row=4, column=0, sticky="ew", pady=(5, 0))
-        ttk.Button(bottom_row, text="打开项目目录", command=self.open_project).pack(side="left", fill="x", expand=True)
+        ttk.Button(bottom_row, text="新建项目", command=self.open_project).pack(side="left", fill="x", expand=True)
+        ttk.Button(bottom_row, text="打开既往项目", command=self.open_recent_project).pack(side="left", fill="x", expand=True, padx=(4, 0))
         ttk.Label(bottom_row, text="图片后缀：").pack(side="left", padx=(8, 2))
         self.image_suffix_var = tk.StringVar(value=self.settings.image_suffix)
         ttk.Entry(bottom_row, textvariable=self.image_suffix_var, width=7).pack(side="left")
@@ -7186,11 +7244,78 @@ class PictureCaptureApp(tk.Tk):
             self.redraw()
         return path, len(words)
 
+    def open_recent_project(self) -> None:
+        """Show the user-level project history; removal never touches files."""
+        dialog = tk.Toplevel(self)
+        dialog.title("打开既往项目")
+        dialog.transient(self)
+        dialog.geometry("760x360")
+        host = ttk.Frame(dialog, padding=10)
+        host.pack(fill="both", expand=True)
+
+        def open_selected(root: Path) -> None:
+            if not root.is_dir():
+                messagebox.showerror("无法打开项目", f"项目路径不存在：\n{root}", parent=dialog)
+                return
+            try:
+                self._load_project(root)
+            except Exception as exc:
+                messagebox.showerror("无法打开项目", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+
+        def rebuild() -> None:
+            for child in host.winfo_children():
+                child.destroy()
+            rows = load_recent_projects()
+            if not rows:
+                ttk.Label(host, text="尚无最近项目").grid(row=0, column=0, sticky="w")
+                return
+            host.columnconfigure(1, weight=1)
+            for index, row in enumerate(rows):
+                root = Path(str(row["path"]))
+                status = "" if root.is_dir() else "（路径不存在）"
+                ttk.Label(host, text=str(row.get("name") or root.name), width=18).grid(row=index, column=0, sticky="w")
+                ttk.Label(host, text=f"{root} {status}").grid(row=index, column=1, sticky="ew", padx=6)
+                ttk.Button(host, text="打开", command=lambda p=root: open_selected(p)).grid(row=index, column=2)
+                remove = ttk.Button(host, text="× 删除", command=lambda p=root: (remove_recent_project(p), rebuild()))
+                remove.grid(row=index, column=3, padx=(4, 0))
+                self._attach_tooltip(remove, "仅从列表清除，不删除项目文件。")
+
+        rebuild()
+
+    @staticmethod
+    def _attach_tooltip(widget: tk.Widget, message: str) -> None:
+        """Attach a lightweight native Tk tooltip without external dependencies."""
+        popup: list[tk.Toplevel | None] = [None]
+
+        def show(_event=None) -> None:
+            if popup[0] is not None:
+                return
+            tip = tk.Toplevel(widget)
+            tip.wm_overrideredirect(True)
+            tip.wm_geometry(f"+{widget.winfo_rootx() + 12}+{widget.winfo_rooty() + widget.winfo_height() + 4}")
+            ttk.Label(tip, text=message, padding=(6, 3), relief="solid").pack()
+            popup[0] = tip
+
+        def hide(_event=None) -> None:
+            if popup[0] is not None:
+                popup[0].destroy()
+                popup[0] = None
+
+        widget.bind("<Enter>", show, add="+")
+        widget.bind("<Leave>", hide, add="+")
+        widget.bind("<Destroy>", hide, add="+")
+
     def open_project(self) -> None:
         chosen = filedialog.askdirectory(title="选择词典扫描项目目录")
         if not chosen:
             return
         try:
+            if is_managed_project(Path(chosen)) and not messagebox.askyesno(
+                "既有项目", "此目录已经包含 Picture Capture 项目资料。是否作为既有项目打开？", parent=self,
+            ):
+                return
             requested_suffix = self._normalize_suffix(self.image_suffix_var.get()) if hasattr(self, "image_suffix_var") else None
             self._load_project(Path(chosen), requested_suffix=requested_suffix)
         except Exception as exc:
@@ -7202,6 +7327,17 @@ class PictureCaptureApp(tk.Tk):
         target_view_scale: float | None = None,
     ) -> None:
         self._flush_deferred_page_save()
+        # These callbacks close over page/project-specific state.  Cancel them
+        # before loading settings so an old project can never update the new UI.
+        for job_name in ("_page_meta_job", "_page_list_sort_job"):
+            job = getattr(self, job_name, None)
+            if job is not None:
+                try:
+                    self.after_cancel(job)
+                except tk.TclError:
+                    pass
+                setattr(self, job_name, None)
+        self._page_meta_generation = int(getattr(self, "_page_meta_generation", 0)) + 1
         # Commit/cancel the old project's debounced quick-panel edit before
         # replacing ``self.settings``. Otherwise its delayed callback can run
         # against the newly opened project and overwrite that project's layout.
@@ -7254,7 +7390,18 @@ class PictureCaptureApp(tk.Tk):
             project.settings.image_suffix = project.images[0].suffix.lower()
 
         self.current_page = None; self.image = None; self.entries = []; self.polygons = []; self.current_index = -1
+        self.ocr_review_candidates = []
+        self.candidate_check_vars = {}
+        self._display_photo_cache_key = None
+        self._display_geometry_cache = None
+        self._display_geometry_cache_key = None
         self.project = project; self._project_words = set(project.words); self.settings = project.settings
+        try:
+            touch_recent_project(project.root)
+        except (OSError, ValueError, TypeError) as exc:
+            # Recent history is application convenience data. A read-only/full
+            # profile directory must never prevent a valid project transition.
+            self._recent_projects_warning = str(exc)
         if hasattr(self, "_page_column_vars"):
             self._page_column_vars["lined"].set(bool(getattr(self.settings, "page_list_show_lined", True)))
             self._page_column_vars["fill_status"].set(bool(getattr(self.settings, "page_list_show_fill_status", True)))
@@ -7470,12 +7617,23 @@ class PictureCaptureApp(tk.Tk):
         """
         if self.image is None:
             raise RuntimeError("没有可显示的页面图像")
+        binary = bool(self.binary_preview_var.get())
         key = (id(self.image), int(size[0]), int(size[1]))
+        key = key + (binary,)
         if self.photo is None or self._display_photo_cache_key != key:
-            display = self.image.resize(size, Image.Resampling.LANCZOS)
+            display = (
+                binary_preview_image(self.image).resize(size, Image.Resampling.LANCZOS)
+                if binary else self.image.resize(size, Image.Resampling.LANCZOS)
+            )
             self.photo = ImageTk.PhotoImage(display)
             self._display_photo_cache_key = key
         return self.photo
+
+    def _toggle_binary_preview(self) -> None:
+        """Invalidate only the canvas bitmap; source/OCR geometry stays intact."""
+        self.photo = None
+        self._display_photo_cache_key = None
+        self.redraw()
 
     def _display_geometry_key(self) -> tuple:
         if self.image is None:
@@ -7518,6 +7676,11 @@ class PictureCaptureApp(tk.Tk):
         canonical_x = geometry.x_at(col, entry_v)
         width = geometry.column_widths[col] * self.view_scale
         record = {"widgets": [], "canvas_items": [], "index_item": None}
+        marker_start, marker_end = geometry.transform.canonical_marker_to_source(
+            (canonical_x, entry_v),
+            (canonical_x + round(geometry.column_widths[col] * 0.95), entry_v),
+            geometry.source_size,
+        )
 
         show_markers = (
             self.quick_bool_vars.get("show_headword_markers").get()
@@ -7525,11 +7688,6 @@ class PictureCaptureApp(tk.Tk):
             else self.settings.show_headword_markers
         )
         if show_markers:
-            marker_start, marker_end = geometry.transform.canonical_marker_to_source(
-                (canonical_x, entry_v),
-                (canonical_x + round(geometry.column_widths[col] * 0.95), entry_v),
-                geometry.source_size,
-            )
             item = self.canvas.create_line(
                 marker_start[0] * self.view_scale,
                 marker_start[1] * self.view_scale,
@@ -7540,8 +7698,9 @@ class PictureCaptureApp(tk.Tk):
             )
             record["canvas_items"].append(item)
 
-        font_scale = self.view_scale if self.settings.main_entry_follow_zoom else 1.0
-        editor_font_size = max(5, round(self.settings.main_entry_font_size * font_scale))
+        editor_font_size = effective_main_overlay_font_size(
+            self.image.width, self.view_scale, self.settings,
+        )
         editor = tk.Entry(
             self.canvas,
             width=max(4, int(self.settings.main_entry_width_chars)),
@@ -7583,8 +7742,14 @@ class PictureCaptureApp(tk.Tk):
                 + geometry.column_widths[col] * float(self.settings.main_entry_x_ratio)
             ) * self.view_scale
             editor_y = entry_v * self.view_scale
+        elif self.settings.layout_writing_mode != "horizontal-tb":
+            # Anchor every vertical overlay to the same transformed marker used
+            # above rather than projecting a second horizontal coordinate path.
+            (editor_x, editor_y), _vertical_index = vertical_overlay_anchors(
+                marker_start, marker_end, self.view_scale,
+            )
         else:
-            # RTL / vertical 暂时继续使用 canonical geometry 路径。
+            # Horizontal RTL remains transform-aware.
             source_box = line_box(entry, geometry, self.image, self.settings)
             editor_x = source_box[0] * self.view_scale
             editor_y = source_box[1] * self.view_scale
@@ -7592,12 +7757,50 @@ class PictureCaptureApp(tk.Tk):
         if self.settings.layout_text_direction == "rtl":
             editor.configure(justify="right")
         
-        item = self.canvas.create_window(
-            editor_x, editor_y,
-            window=editor,
-            anchor="nw",
-        )
-        record["canvas_items"].append(item)
+        vertical = self.settings.layout_writing_mode != "horizontal-tb"
+        if vertical:
+            # Tk Entry cannot render vertical text.  Keep it detached until the
+            # user clicks the source-oriented canvas label, then show a short-
+            # lived horizontal editor at that exact marker anchor.
+            vertical_label_text = vertical_entry_label_text(entry.word)
+            label_item = self.canvas.create_text(
+                editor_x, editor_y, text=vertical_label_text, anchor="nw",
+                justify="center", fill="#111111",
+                font=_entry_font_spec(
+                    self.settings.main_entry_font_family, editor_font_size,
+                    self.settings.main_entry_font_bold, self.settings.main_entry_font_italic,
+                ),
+            )
+            record["canvas_items"].append(label_item)
+            popup_item: list[int | None] = [None]
+
+            def close_vertical_editor(_event=None, *, e=entry, w=editor) -> None:
+                self.update_entry(e, w)
+                self.canvas.itemconfigure(label_item, text=vertical_entry_label_text(e.word), state="normal")
+                if popup_item[0] is not None:
+                    self.canvas.delete(popup_item[0])
+                    popup_item[0] = None
+
+            def open_vertical_editor(_event=None) -> None:
+                if processing_readonly or popup_item[0] is not None:
+                    return
+                self.canvas.itemconfigure(label_item, state="hidden")
+                popup_item[0] = self.canvas.create_window(
+                    editor_x, editor_y, window=editor, anchor="nw",
+                )
+                editor.focus_set()
+                editor.selection_range(0, "end")
+
+            editor.bind("<FocusOut>", close_vertical_editor)
+            editor.bind("<Return>", lambda _event: (close_vertical_editor(), "break")[-1])
+            self.canvas.tag_bind(label_item, "<Button-1>", open_vertical_editor)
+        else:
+            item = self.canvas.create_window(
+                editor_x, editor_y,
+                window=editor,
+                anchor="nw",
+            )
+            record["canvas_items"].append(item)
 
         candidate = self._candidate_for_entry(entry)
         ocr_menu = (
@@ -7616,7 +7819,7 @@ class PictureCaptureApp(tk.Tk):
             editor_req_width = max(1, editor.winfo_reqwidth())
             menu_req_width = max(1, ocr_menu.winfo_reqwidth())
 
-            ocr_x = editor_x + editor_req_width + 3
+            ocr_x = editor_x + (editor_font_size + 8 if vertical else editor_req_width + 3)
 
             if ocr_x + menu_req_width > size[0] - 2:
                 ocr_x = max(0, size[0] - menu_req_width - 2)
@@ -7640,8 +7843,12 @@ class PictureCaptureApp(tk.Tk):
             ) * self.view_scale + 3
             index_y = entry_v * self.view_scale
 
+        elif self.settings.layout_writing_mode != "horizontal-tb":
+            _vertical_editor, (index_x, index_y) = vertical_overlay_anchors(
+                marker_start, marker_end, self.view_scale,
+            )
         else:
-            # RTL / vertical 暂时沿用 transform-aware editor 位置。
+            # RTL follows its transform-aware editor position.
             index_x = editor_x + 3
             index_y = editor_y - 10
 
@@ -7786,10 +7993,10 @@ class PictureCaptureApp(tk.Tk):
         # Entry pieces: cyan = ordinary crop; green = entry carrying a linked
         # illustration. Orange is used when the rectangle is unioned with a PPP.
         illustrated_entries = {p.entry_ref_index for p in plan.entry_pieces if p.source_mode == "linked_original" and p.entry_ref_index is not None}
-        preview_font_scale = scale if self.settings.main_entry_follow_zoom else 1.0
         preview_font = _entry_font_spec(
             self.settings.main_entry_font_family,
-            max(5, round(self.settings.main_entry_font_size * preview_font_scale)),
+            effective_main_overlay_font_size(self.image.width, scale, self.settings),
+            # helper reads self.settings.main_entry_font_size consistently with editors
             self.settings.main_entry_font_bold,
             self.settings.main_entry_font_italic,
         )

@@ -310,7 +310,7 @@
       "parser_modes": [
         "numbered_headword_prefix"
       ],
-      "require_visual_cue": true,
+      "require_visual_cue": false,
       "prefix_regex": "^\\s*\\d{1,2}\\s*",
       "prefix_required": true,
       "display_name": "编号前缀词头",
@@ -1127,7 +1127,10 @@
     },
     "cjk_bracket_display": {
       "headword_profile": "cjk_visual",
-      "headword_features": [],
+      "headword_features": [
+        "large_single_character",
+        "bracketed_compound"
+      ],
       "language": "chi_tra",
       "layout": {
         "writing_mode": "horizontal-tb",
