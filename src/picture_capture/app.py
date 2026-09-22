@@ -78,6 +78,7 @@ from .processing import (
     sort_entries_reading_order, sort_entries_column_y,
     derive_geometry, derive_nominal_geometry,
     detect_entries,
+    detect_entries_job,
     export_ocred,
     import_ocred,
     line_box,
@@ -288,6 +289,19 @@ def _effective_review_single_cjk_line_height(settings: AppSettings) -> int:
     return max(base, round(base * multiplier))
 
 
+def _effective_review_regular_crop_height(settings: AppSettings) -> int:
+    """Resolve ordinary proofreading crop height in parameter pixels."""
+    try:
+        explicit = int(getattr(settings, "review_regular_crop_height", 0) or 0)
+    except (TypeError, ValueError):
+        explicit = 0
+    if explicit > 0:
+        return max(1, explicit)
+    line_height = max(1, int(getattr(settings, "character_height", 1) or 1))
+    row_padding = max(0, int(getattr(settings, "row_padding", 0) or 0))
+    return max(1, round(line_height + 0.5 * row_padding))
+
+
 def _review_line_box(
     entry: WordEntry,
     geometry,
@@ -304,7 +318,9 @@ def _review_line_box(
     display character even after increasing its requested row height.
     """
     if not _is_single_cjk_review_headword(entry.word):
-        return line_box(entry, geometry, image, settings)
+        left, top, right, _bottom = line_box(entry, geometry, image, settings)
+        height = round(_effective_review_regular_crop_height(settings) / parameter_scale(image, settings))
+        return left, top, right, min(image.height, top + max(1, height))
 
     single_settings = replace(settings)
     single_settings.character_height = _effective_review_single_cjk_line_height(settings)
@@ -1610,6 +1626,10 @@ class ReviewWindow(tk.Toplevel):
             value=str(max(0, min(30, int(parent.settings.review_entry_vertical_padding))))
         )
         self.review_line_height_var = tk.StringVar(value=str(max(1, int(parent.settings.character_height))))
+        self.review_row_padding_var = tk.StringVar(value=str(max(0, int(parent.settings.row_padding))))
+        self.review_regular_crop_height_var = tk.StringVar(
+            value=str(_effective_review_regular_crop_height(parent.settings))
+        )
         self.review_single_cjk_line_height_var = tk.StringVar(
             value=str(_effective_review_single_cjk_line_height(parent.settings))
         )
@@ -1651,6 +1671,8 @@ class ReviewWindow(tk.Toplevel):
         self._review_padding_apply_job: str | None = None
         self._review_vertical_padding_apply_job: str | None = None
         self._review_line_height_apply_job: str | None = None
+        self._review_row_padding_apply_job: str | None = None
+        self._review_regular_crop_height_apply_job: str | None = None
         self._review_single_cjk_height_apply_job: str | None = None
         self._syncing_review_height_vars = False
         self.word_highlight_index: int | None = None
@@ -1716,6 +1738,10 @@ class ReviewWindow(tk.Toplevel):
         self.review_left_padding_var.trace_add("write", lambda *_args: self._schedule_review_padding_apply())
         self.review_vertical_padding_var.trace_add("write", lambda *_args: self._schedule_review_vertical_padding_apply())
         self.review_line_height_var.trace_add("write", lambda *_args: self._schedule_review_line_height_apply())
+        self.review_row_padding_var.trace_add("write", lambda *_args: self._schedule_review_row_padding_apply())
+        self.review_regular_crop_height_var.trace_add(
+            "write", lambda *_args: self._schedule_review_regular_crop_height_apply()
+        )
         self.review_single_cjk_line_height_var.trace_add("write", lambda *_args: self._schedule_review_single_cjk_height_apply())
         for _var in self.digit_map_vars:
             _var.trace_add("write", lambda *_args: self._save_digit_map())
@@ -1854,6 +1880,18 @@ class ReviewWindow(tk.Toplevel):
             height_row, from_=1, to=500, increment=1, width=5, textvariable=self.review_line_height_var
         )
         self.review_line_height_spin.pack(side="left")
+        ttk.Label(height_row, text="px").pack(side="left", padx=(2, 7))
+        ttk.Label(height_row, text="行间空：").pack(side="left")
+        ttk.Spinbox(
+            height_row, from_=0, to=200, increment=1, width=4,
+            textvariable=self.review_row_padding_var,
+        ).pack(side="left")
+        ttk.Label(height_row, text="px").pack(side="left", padx=(2, 7))
+        ttk.Label(height_row, text="普通词条行切图高：").pack(side="left")
+        ttk.Spinbox(
+            height_row, from_=1, to=500, increment=1, width=5,
+            textvariable=self.review_regular_crop_height_var,
+        ).pack(side="left")
         ttk.Label(height_row, text="px").pack(side="left", padx=(2, 9))
         ttk.Label(height_row, text="单字行高：").pack(side="left")
         self.review_single_cjk_line_height_spin = ttk.Spinbox(
@@ -2928,6 +2966,14 @@ class ReviewWindow(tk.Toplevel):
                 )
             finally:
                 self._syncing_review_height_vars = False
+        if int(getattr(self.parent.settings, "review_regular_crop_height", 0) or 0) <= 0:
+            self._syncing_review_height_vars = True
+            try:
+                self.review_regular_crop_height_var.set(
+                    str(_effective_review_regular_crop_height(self.parent.settings))
+                )
+            finally:
+                self._syncing_review_height_vars = False
         self.parent.sync_quick_settings()
         self.parent.save_settings()
         self._commit_edits()
@@ -2936,6 +2982,66 @@ class ReviewWindow(tk.Toplevel):
         if self.editors:
             self.focus_index(min(active, len(self.editors) - 1))
         self.parent.redraw()
+
+    def _schedule_review_row_padding_apply(self) -> None:
+        if self._syncing_review_height_vars:
+            return
+        if self._review_row_padding_apply_job is not None:
+            try:
+                self.after_cancel(self._review_row_padding_apply_job)
+            except tk.TclError:
+                pass
+        self._review_row_padding_apply_job = self.after(160, self._apply_review_row_padding_setting)
+
+    def _apply_review_row_padding_setting(self) -> None:
+        self._review_row_padding_apply_job = None
+        try:
+            padding = max(0, min(200, int(float(self.review_row_padding_var.get().strip()))))
+        except (TypeError, ValueError):
+            return
+        if self.review_row_padding_var.get() != str(padding):
+            self.review_row_padding_var.set(str(padding))
+            return
+        self.parent.settings.row_padding = padding
+        if int(getattr(self.parent.settings, "review_regular_crop_height", 0) or 0) <= 0:
+            self._syncing_review_height_vars = True
+            try:
+                self.review_regular_crop_height_var.set(
+                    str(_effective_review_regular_crop_height(self.parent.settings))
+                )
+            finally:
+                self._syncing_review_height_vars = False
+        self.parent.sync_quick_settings()
+        self.parent.save_settings()
+        self._commit_edits()
+        self.render_rows()
+        self.parent.redraw()
+
+    def _schedule_review_regular_crop_height_apply(self) -> None:
+        if self._syncing_review_height_vars:
+            return
+        if self._review_regular_crop_height_apply_job is not None:
+            try:
+                self.after_cancel(self._review_regular_crop_height_apply_job)
+            except tk.TclError:
+                pass
+        self._review_regular_crop_height_apply_job = self.after(
+            160, self._apply_review_regular_crop_height_setting
+        )
+
+    def _apply_review_regular_crop_height_setting(self) -> None:
+        self._review_regular_crop_height_apply_job = None
+        try:
+            height = max(1, min(500, int(float(self.review_regular_crop_height_var.get().strip()))))
+        except (TypeError, ValueError):
+            return
+        if self.review_regular_crop_height_var.get() != str(height):
+            self.review_regular_crop_height_var.set(str(height))
+            return
+        self.parent.settings.review_regular_crop_height = height
+        self.parent.save_settings()
+        self._commit_edits()
+        self.render_rows()
 
     def _schedule_review_single_cjk_height_apply(self) -> None:
         if self._syncing_review_height_vars:
@@ -4933,10 +5039,30 @@ class PictureCaptureApp(tk.Tk):
         # v2.3 intentionally has no menu bar or separate top toolbar.
         body = ttk.Panedwindow(self, orient="horizontal")
         body.pack(fill="both", expand=True)
-        sidebar = ttk.Frame(body, padding=(6, 6, 5, 4))
+        sidebar_host = ttk.Frame(body)
+        self.sidebar_canvas = tk.Canvas(sidebar_host, highlightthickness=0, borderwidth=0)
+        self.sidebar_scrollbar = ttk.Scrollbar(
+            sidebar_host, orient="vertical", command=self.sidebar_canvas.yview
+        )
+        self.sidebar_canvas.configure(yscrollcommand=self.sidebar_scrollbar.set)
+        self.sidebar_scrollbar.pack(side="right", fill="y")
+        self.sidebar_canvas.pack(side="left", fill="both", expand=True)
+        sidebar = ttk.Frame(self.sidebar_canvas, padding=(6, 6, 5, 4))
+        self._sidebar_window = self.sidebar_canvas.create_window((0, 0), window=sidebar, anchor="nw")
+        sidebar.bind(
+            "<Configure>",
+            lambda _event: self.sidebar_canvas.configure(scrollregion=self.sidebar_canvas.bbox("all")),
+        )
+        self.sidebar_canvas.bind(
+            "<Configure>",
+            lambda event: self.sidebar_canvas.itemconfigure(self._sidebar_window, width=event.width),
+        )
+        self.bind_all("<MouseWheel>", self._sidebar_mousewheel, add="+")
+        self.bind_all("<Button-4>", lambda event: self._sidebar_linux_mousewheel(event, -1), add="+")
+        self.bind_all("<Button-5>", lambda event: self._sidebar_linux_mousewheel(event, 1), add="+")
         self.sidebar = sidebar
         viewer = ttk.Frame(body)
-        body.add(sidebar, weight=0)
+        body.add(sidebar_host, weight=0)
         body.add(viewer, weight=1)
         sidebar.columnconfigure(0, weight=1)
         sidebar.rowconfigure(1, weight=1)
@@ -5046,6 +5172,32 @@ class PictureCaptureApp(tk.Tk):
 
         # Apply persisted collapse states only after all section children exist.
         self._apply_initial_section_states()
+
+    def _pointer_over_sidebar(self) -> bool:
+        canvas = self.__dict__.get("sidebar_canvas")
+        if canvas is None:
+            return False
+        try:
+            x = canvas.winfo_pointerx() - canvas.winfo_rootx()
+            y = canvas.winfo_pointery() - canvas.winfo_rooty()
+            return 0 <= x < canvas.winfo_width() and 0 <= y < canvas.winfo_height()
+        except tk.TclError:
+            return False
+
+    def _sidebar_mousewheel(self, event: tk.Event) -> str | None:
+        if not self._pointer_over_sidebar():
+            return None
+        delta = int(getattr(event, "delta", 0) or 0)
+        if delta:
+            self.sidebar_canvas.yview_scroll((-1 if delta > 0 else 1) * 3, "units")
+            return "break"
+        return None
+
+    def _sidebar_linux_mousewheel(self, _event: tk.Event, direction: int) -> str | None:
+        if not self._pointer_over_sidebar():
+            return None
+        self.sidebar_canvas.yview_scroll(direction * 3, "units")
+        return "break"
 
     def _apply_page_list_display_columns(self, *, save: bool = True) -> None:
         """Apply optional Treeview columns while keeping 页面 permanently visible."""
@@ -9019,9 +9171,17 @@ class PictureCaptureApp(tk.Tk):
         project = self.project
         pages_info = {i: self.pages_tuple(i) for i in indices}
         filter_path = headword_filter_rules_path(project.root, HEADWORD_FILTER_RULES_FILENAME)
+        normal_executor = (
+            ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
+            if method == "left_edge" else None
+        )
 
         def worker(index: int, _position: int, _total: int):
             page = project.images[index]
+            if normal_executor is not None:
+                return normal_executor.submit(
+                    detect_entries_job, str(page), settings, pages_info[index]
+                ).result()
             with Image.open(page) as opened:
                 image = normalize_page_rgb(opened)
             cache_path = ocr_cache_root(project.root) / f"{page.stem}.json" if method == "paddleocr" else None
@@ -9034,6 +9194,8 @@ class PictureCaptureApp(tk.Tk):
             return len(entries)
 
         def done(completed, total, stopped, _results, error):
+            if normal_executor is not None:
+                normal_executor.shutdown(wait=False, cancel_futures=True)
             if error is not None:
                 return
             self.load_page(self.current_index)
@@ -9047,11 +9209,13 @@ class PictureCaptureApp(tk.Tk):
             else:
                 self.status_var.set(f"{label}{suffix}完成：{completed}/{total}{skip_text}")
 
-        self._start_batch_task(
+        started = self._start_batch_task(
             label, indices, worker, done,
             item_label=lambda index: project.images[index].name,
             foreground_page_edit=True, page_indexer=lambda index: int(index),
         )
+        if not started and normal_executor is not None:
+            normal_executor.shutdown(wait=False, cancel_futures=True)
 
     def clear_entries(self) -> None:
         if self.guard() and messagebox.askyesno("清除画线", "清除当前页全部词条标记？", parent=self):
