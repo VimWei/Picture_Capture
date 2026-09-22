@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
-import json
-import re
-
 
 PROFILE_FILENAME = "dictionary_profile.json"
 PROFILE_FORMAT_V2 = "picture-capture-dictionary-profile-v2"
 PROFILE_LIBRARY_FORMAT_V2 = "picture-capture-profile-library-v2"
+PROFILE_FORMAT_V3 = "picture-capture-dictionary-profile-v3"
+PROFILE_LIBRARY_FORMAT_V3 = "picture-capture-profile-library-v3"
 DEFAULT_PROFILE_ID = "latin_structured_symbols"
 
 
@@ -33,6 +34,9 @@ class DictionaryProfilePreset:
     paddle_language_by_language: dict[str, str]
     parser_modes: tuple[str, ...]
     settings: dict[str, Any]
+    layout: dict[str, Any]
+    ocr: dict[str, Any]
+    headword: dict[str, Any]
     raw: dict[str, Any]
 
 
@@ -149,7 +153,7 @@ def bundled_profile_path() -> Path:
 
 
 def profile_library_path() -> Path:
-    return Path(__file__).resolve().parent / "data" / "dictionary_profiles_v2.json"
+    return Path(__file__).resolve().parent / "data" / "dictionary_profiles_v3.json"
 
 
 def profile_preview_dir() -> Path:
@@ -166,7 +170,7 @@ def _load_profile_library_raw() -> dict[str, Any]:
         raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError, TypeError) as exc:
         raise ValueError(f"内置 Profile 库无法读取：{path}（{exc}）") from exc
-    if not isinstance(raw, dict) or raw.get("format") != PROFILE_LIBRARY_FORMAT_V2:
+    if not isinstance(raw, dict) or raw.get("format") != PROFILE_LIBRARY_FORMAT_V3:
         raise ValueError(f"内置 Profile 库格式无效：{path}")
     return raw
 
@@ -186,6 +190,28 @@ def available_dictionary_profiles() -> tuple[DictionaryProfilePreset, ...]:
             for example in (item.get("examples") or [])
             if isinstance(example, dict)
         )
+        layout = dict(item.get("layout") or {})
+        ocr = dict(item.get("ocr") or {})
+        headword = dict(item.get("headword") or {})
+        # v3 section names deliberately describe the domain rather than the
+        # historical widget names.  This adapter is the only place that maps
+        # bundled schema values onto AppSettings.
+        settings = dict(headword.get("settings") or {})
+        settings.update({
+            "layout_writing_mode": str(layout.get("writing_mode") or "horizontal-tb"),
+            "layout_text_direction": str(layout.get("text_direction") or "ltr"),
+            "layout_transform": str(layout.get("canonical_transform") or "identity"),
+            "columns": max(1, int(layout.get("columns") or 1)),
+            "layout_columns_policy": str(layout.get("columns_policy") or "detect"),
+            "layout_column_separator_mode": str(layout.get("column_separator") or "auto"),
+            "analysis_threshold_mode": str(layout.get("analysis_threshold_mode") or "auto"),
+            "tesseract_language": str(ocr.get("tesseract_language") or ocr.get("semantic_language") or ""),
+            "paddle_use_textline_orientation": bool(ocr.get("use_textline_orientation", False)),
+        })
+        if "tesseract_psm" in ocr:
+            settings["paddle_tesseract_psm"] = int(ocr["tesseract_psm"])
+        if "require_visual_cue" in headword:
+            settings["paddle_require_visual_cue"] = bool(headword["require_visual_cue"])
         result.append(
             DictionaryProfilePreset(
                 key=str(key),
@@ -193,14 +219,17 @@ def available_dictionary_profiles() -> tuple[DictionaryProfilePreset, ...]:
                 family=str(item.get("family") or key),
                 description=str(item.get("description") or ""),
                 examples=examples,
-                supported_languages=tuple(str(x) for x in item.get("supported_languages", []) if str(x)),
-                default_language=str(item.get("default_language") or ""),
-                default_paddle_language=str(item.get("default_paddle_language") or ""),
+                supported_languages=tuple(str(x) for x in ocr.get("supported_languages", []) if str(x)),
+                default_language=str(ocr.get("semantic_language") or ""),
+                default_paddle_language=str(ocr.get("paddle_language") or ""),
                 paddle_language_by_language={
-                    str(k): str(v) for k, v in (item.get("paddle_language_by_language") or {}).items()
+                    str(k): str(v) for k, v in (ocr.get("paddle_language_by_language") or {}).items()
                 },
-                parser_modes=tuple(str(x) for x in item.get("parser_modes", ["latin"]) if str(x)),
-                settings=dict(item.get("settings") or {}),
+                parser_modes=tuple(str(x) for x in headword.get("parser_modes", ["latin"]) if str(x)),
+                settings=settings,
+                layout=layout,
+                ocr=ocr,
+                headword=headword,
                 raw=item,
             )
         )
@@ -224,6 +253,29 @@ def dictionary_profile_preset(key: str | None) -> DictionaryProfilePreset:
 def dictionary_profile_labels() -> dict[str, str]:
     """Return UI label -> stable preset key mapping in library order."""
     return {profile.display_name: profile.key for profile in available_dictionary_profiles()}
+
+
+def profile_layout_summary(profile: DictionaryProfilePreset) -> str:
+    """Return a compact, user-facing summary of v3 layout semantics."""
+    layout = profile.layout
+    columns = max(1, int(layout.get("columns") or 1))
+    writing = str(layout.get("writing_mode") or "horizontal-tb")
+    direction = str(layout.get("text_direction") or "ltr").lower()
+    transform = str(layout.get("canonical_transform") or "identity")
+    separator = str(layout.get("column_separator") or "auto")
+    if writing.startswith("vertical"):
+        rotation = {"rotate_ccw90": "CCW90", "rotate_cw90": "CW90"}.get(transform, transform)
+        return f"竖排 · {rotation} · {columns} canonical columns"
+    transform_label = {
+        "identity": "原向",
+        "mirror_x": "镜像",
+        "rotate_ccw90": "CCW90",
+        "rotate_cw90": "CW90",
+    }.get(transform, transform)
+    separator_label = {"present": "中央分隔线", "absent": "无中央分隔线", "auto": "分隔线自动"}.get(
+        separator, separator
+    )
+    return f"{columns}栏 · {direction.upper()} · {transform_label} · {separator_label}"
 
 
 def managed_profile_setting_names() -> tuple[str, ...]:
@@ -257,7 +309,7 @@ def profile_effective_settings(key: str | None, current_language: str | None = N
 
 
 def _grammar_block_from_preset(profile: DictionaryProfilePreset, language: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
-    item = profile.raw
+    item = profile.headword
     base_language = _base_language(language)
     grammar = item.get("grammar") or {}
     by_language = item.get("grammar_by_language") or {}
@@ -309,7 +361,7 @@ def load_dictionary_profile(
     preset: str | None = None,
     language: str | None = None,
 ) -> DictionaryProfile:
-    """Load a v2 preset/project override or a legacy v1 grammar file.
+    """Load a v3/v2 preset project or a legacy v1 grammar file.
 
     ``preset`` normally comes from ``AppSettings.dictionary_profile_id``.  A v2
     project file can override that selection; a v1 project file remains fully
@@ -324,7 +376,7 @@ def load_dictionary_profile(
         if not isinstance(candidate, dict):
             raise ValueError(f"词典配置顶层必须是 JSON 对象：{path}")
         raw = candidate
-        if candidate.get("format") != PROFILE_FORMAT_V2:
+        if candidate.get("format") not in {PROFILE_FORMAT_V2, PROFILE_FORMAT_V3}:
             return _profile_from_legacy_dict(candidate)
 
     selected = str((raw or {}).get("preset") or preset or DEFAULT_PROFILE_ID)
@@ -352,7 +404,7 @@ def project_profile_preset_id(path: Path | None, fallback: str = DEFAULT_PROFILE
         raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError, TypeError):
         return fallback
-    if not isinstance(raw, dict) or raw.get("format") != PROFILE_FORMAT_V2:
+    if not isinstance(raw, dict) or raw.get("format") not in {PROFILE_FORMAT_V2, PROFILE_FORMAT_V3}:
         return fallback
     key = str(raw.get("preset") or fallback)
     return dictionary_profile_preset(key).key
@@ -380,15 +432,19 @@ def write_project_profile(
             existing = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             existing = None
-        # Opening/saving an old project must not silently destroy a hand-edited
-        # v1 grammar profile. It remains authoritative until the user explicitly
-        # chooses one of the v2 layout Profiles in the UI.
-        if isinstance(existing, dict) and existing.get("format") != PROFILE_FORMAT_V2:
+        # Old v1 and v2 profiles are read-only compatibility inputs. Merely
+        # opening/saving a project must not silently migrate or rewrite them;
+        # an explicit Profile selection (force=True) creates v3 instead.
+        if isinstance(existing, dict) and existing.get("format") != PROFILE_FORMAT_V3:
             return
     payload = {
-        "format": PROFILE_FORMAT_V2,
+        "format": PROFILE_FORMAT_V3,
+        "schema_version": 3,
         "preset": selected,
         "language": str(getattr(settings, "ocr_language", "") or ""),
+        "layout": dictionary_profile_preset(selected).layout,
+        "ocr": dictionary_profile_preset(selected).ocr,
+        "headword": dictionary_profile_preset(selected).headword,
         "overrides": {
             "settings": profile_settings_overrides(settings, selected),
             "grammar": {},
