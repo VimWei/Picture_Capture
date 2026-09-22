@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import gc
 import statistics
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -83,6 +84,13 @@ def aggregate_layout_estimates(
 
 
 _TEXT_DETECTION_CACHE: dict[str, Any] = {}
+
+
+def clear_text_detection_cache() -> None:
+    """Release cached layout-only detectors before full OCR is constructed."""
+    if _TEXT_DETECTION_CACHE:
+        _TEXT_DETECTION_CACHE.clear()
+        gc.collect()
 
 
 def _result_payload(result: Any) -> dict[str, Any]:

@@ -3,9 +3,16 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import json
+import re
 
 
 IMAGE_EXTENSIONS = {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp"}
+
+
+def natural_text_key(value: object) -> tuple:
+    """Return the application's single natural, case-insensitive sort key."""
+    parts = re.split(r"(\d+)", str(value or "").casefold())
+    return tuple((0, int(part)) if part.isdigit() else (1, part) for part in parts if part)
 
 
 @dataclass(slots=True)
@@ -129,7 +136,7 @@ class AppSettings:
     image_suffix: str = ".png"
     # Overlay editor presentation at 100% page scale. The page zoom multiplies
     # the base font, so text boxes zoom together with the scanned page.
-    main_entry_font_family: str = "Microsoft YaHei"
+    main_entry_font_family: str = "DengXian"
     main_entry_font_size: int = 32
     main_entry_font_bold: bool = False
     main_entry_font_italic: bool = False
@@ -227,6 +234,9 @@ class AppSettings:
     # Main-window simplification: percentage of the historical candidate band.
     # 100 means the original configured ``paddle_band_width``; values are capped at 100.
     paddle_band_width_ratio: int = 100
+    # OCR-only guard/preprocessing; source pixels and canvas rendering are never replaced.
+    paddle_max_input_side: int = 2800
+    paddle_preprocessing: str = "original"
     paddle_band_left_margin: int = 12
     paddle_left_tolerance: int = 34
     paddle_rec_score_threshold: float = 0.20
@@ -300,16 +310,16 @@ class AppSettings:
         # accepted as syllable separators only when directly adjacent to the
         # next letters, so ``mail. Pron.`` is not swallowed as one fake lemma.
         # Mixed runs such as '.-' / '+-' remain supported.
-        r"(-?[^\W\d_]+(?:\s*[·•∙‧]\s*[^\W\d_]+|"
-        r"[.:+]{1,3}[^\W\d_]+|[·•∙‧.:+]*-+[·•∙‧.:+]*[^\W\d_]+|"
-        r"['’][^\W\d_]+)*-?)"
+        r"(-?[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+(?:\s*[·•∙‧]\s*[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+|"
+        r"[.:+]{1,3}[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+|[·•∙‧.:+]*-+[·•∙‧.:+]*[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+|"
+        r"['’][A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+)*-?)"
     )
     paddle_pos_regex: str = (
         # Dictionary POS labels observed across pp.55-70. Longer forms must
         # precede bare ``s.`` / ``pron.`` so the boundary check can distinguish
         # ``s.amb.`` and ``pron.indef.`` from truncated matches.
-        r"(?:s\.?\s*(?:m|f|com|n|amb)\.(?:\s*pl\.)?|s\.\s*pl\.|s\.|"
-        r"adj\.?\s*(?:inv\.?)?|adv\.?|[vy]\.(?:\s*prnl\.?)?|"
+        r"(?:n\.?|s\.?\s*(?:m|f|com|n|amb)\.(?:\s*pl\.)?|s\.\s*pl\.|s\.|"
+        r"adj\.?\s*(?:inv\.?)?|adv\.?|v\.(?:t\.|i\.|tr\.|intr\.|\s*prnl\.?)?|y\.(?:\s*prnl\.?)?|"
         r"prep\.?|conj\.?|pron\.?(?:\s*(?:indef|dem|pers|rel|interr|exclam|poses)\.?)?|"
         r"det\.?|interj\.?|art\.?|num\.?|loc\.?|"
         r"superlat\.?(?:\s*irreg\.?)?)"
@@ -504,7 +514,7 @@ class ProjectState:
 
         images = sorted(
             (path for path in root.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS),
-            key=lambda p: p.name.casefold(),
+            key=lambda p: natural_text_key(p.name),
         )
 
         # Storage v2: a clean/new scan folder gets exactly one software-owned
@@ -530,16 +540,17 @@ class ProjectState:
             settings = AppSettings.from_legacy(legacy_settings)
         else:
             settings = AppSettings()
-        # v2.10 profile selection is also recorded in dictionary_profile.json so
-        # grammar/layout identity travels with the project even if settings are
-        # partially copied between machines.
-        try:
-            from .dictionary_profile import project_profile_preset_id
-            settings.dictionary_profile_id = project_profile_preset_id(
-                active_profile_path(root), getattr(settings, "dictionary_profile_id", "latin_structured_symbols")
-            )
-        except Exception:
-            pass
+        # settings.json is authoritative for mutable project state.  The profile
+        # sidecar is only a compatibility fallback for projects that do not yet
+        # have settings.json; it must never overwrite a user's newer selection.
+        if not json_settings.exists():
+            try:
+                from .dictionary_profile import project_profile_preset_id
+                settings.dictionary_profile_id = project_profile_preset_id(
+                    active_profile_path(root), getattr(settings, "dictionary_profile_id", "latin_structured_symbols")
+                )
+            except Exception:
+                pass
         words_path = resolve_wordslist_path(root, settings.wordslist_path)
         words = read_noncomment_lines(words_path) if words_path.exists() else []
         active_qt = qt_root(root)

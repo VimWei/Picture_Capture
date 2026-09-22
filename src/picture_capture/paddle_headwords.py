@@ -301,28 +301,37 @@ def _parse_cjk_marker_pinyin_headword(
     raw = match.group("lemma")
     normalized = unicodedata.normalize("NFKC", raw).strip()
     return HeadwordParse(
-        raw=raw,
-        normalized=normalized,
-        has_pos=False,
-        pos_text="",
-        has_inflection=False,
-        inflection_text="",
-        has_descriptor=True,
-        descriptor_text="cjk_marker_pinyin",
-        match_end=max(1, match.end("lemma")),
-        looks_like_continuation=False,
-        continuation_reason="",
-        corrected_raw=raw,
-        parse_text=parse_text,
-        ocr_repairs=tuple(repairs),
-        variants=(),
-        plural_text="",
-        usage_text="",
-        definition_text=parse_text[match.end("lemma"):].strip(),
+        raw=raw, normalized=normalized, has_pos=False, pos_text="",
+        has_inflection=False, inflection_text="", has_descriptor=True,
+        descriptor_text="cjk_marker_pinyin", match_end=max(1, match.end("lemma")),
+        looks_like_continuation=False, continuation_reason="", corrected_raw=raw,
+        parse_text=parse_text, ocr_repairs=tuple(repairs), variants=(), plural_text="",
+        usage_text="", definition_text=parse_text[match.end("lemma"):].strip(),
         parser_stage="cjk_marker_pinyin",
         parser_trace=(f"entry_marker:{match.group('marker')}", "cjk_marker_pinyin"),
         bug_types=(),
     )
+
+
+def _parse_cjk_single_with_pinyin(text: str, settings: AppSettings) -> HeadwordParse | None:
+    """Recognize a single CJK head followed by optional star and pinyin."""
+    if not _is_chinese_ocr(settings):
+        return None
+    parse_text, repairs = _repair_headword_ocr(text)
+    match = re.match(
+        r"^\s*(?P<head>[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])\s*[＊*]?\s*"
+        r"(?P<pinyin>[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+(?:[ '\-]?[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+)*)\b",
+        parse_text, flags=re.UNICODE,
+    )
+    if not match:
+        return None
+    result = _make_chinese_visual_headword(
+        match.group("head"), parse_text, tuple(repairs), stage="cjk_single_with_pinyin",
+    )
+    result.descriptor_text = "cjk_single_with_pinyin"
+    result.definition_text = parse_text[match.end():].strip()
+    result.parser_trace = ("feature:pinyin_after_headword", f"pinyin:{match.group('pinyin')}")
+    return result
 
 
 def _parse_chinese_bracketed_headword(
@@ -529,6 +538,11 @@ def get_paddle_engine(settings: AppSettings) -> Any:
         cached = _ENGINE_CACHE.get(key)
     if cached is not None:
         return cached
+    # Layout analysis and full OCR use separate Paddle pipelines. Once formal
+    # OCR starts, the detection-only model is no longer needed and may otherwise
+    # pin a second large CPU/GPU allocation for the rest of the session.
+    from .layout_detection import clear_text_detection_cache
+    clear_text_detection_cache()
     # Avoid the PaddlePaddle 3.3.x CPU PIR/oneDNN incompatibility also for
     # ordinary OCR, not only the separate layout detector.
     os.environ["FLAGS_enable_pir_api"] = "0"
@@ -678,9 +692,14 @@ def extract_ocr_records(result: Any) -> list[OCRRecord]:
 
 def run_paddle_band(band: Image.Image, settings: AppSettings, engine: Any | None = None) -> list[OCRRecord]:
     engine = engine or get_paddle_engine(settings)
+    prepared, input_scale = prepare_ocr_band(
+        band,
+        max_long_side=getattr(settings, "paddle_max_input_side", 2800),
+        mode=getattr(settings, "paddle_preprocessing", "original"),
+    )
     try:
         results = list(engine.predict(
-            np.asarray(normalize_page_rgb(band)),
+            np.asarray(prepared),
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=bool(settings.paddle_use_textline_orientation),
@@ -694,7 +713,39 @@ def run_paddle_band(band: Image.Image, settings: AppSettings, engine: Any | None
         raise RuntimeError(f"PaddleOCR 推理失败：{exc}") from exc
     if not results:
         return []
-    return extract_ocr_records(results[0])
+    records = extract_ocr_records(results[0])
+    if input_scale == 1.0:
+        return records
+    inverse = 1.0 / input_scale
+    return [
+        OCRRecord(row.text, row.confidence, tuple(round(value * inverse) for value in row.box))
+        for row in records
+    ]
+
+
+def prepare_ocr_band(
+    band: Image.Image, *, max_long_side: int = 2800, mode: str = "original",
+) -> tuple[Image.Image, float]:
+    """Return a temporary OCR image and source-to-input coordinate scale."""
+    source = normalize_page_rgb(band)
+    mode = str(mode or "original").strip().lower()
+    if mode in {"grayscale", "gray", "auto_contrast", "binary"}:
+        gray = ImageOps.grayscale(source)
+        if mode in {"auto_contrast", "binary"}:
+            gray = ImageOps.autocontrast(gray)
+        if mode == "binary":
+            array = np.asarray(gray)
+            threshold = _otsu_threshold(array)
+            gray = Image.fromarray(np.where(array > threshold, 255, 0).astype(np.uint8), mode="L")
+        source = gray.convert("RGB")
+    limit = max(256, int(max_long_side or 2800))
+    scale = min(1.0, limit / max(source.size))
+    if scale < 1.0:
+        source = source.resize(
+            (max(1, round(source.width * scale)), max(1, round(source.height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    return source, scale
 
 
 def _records_to_canonical_band(
@@ -1070,10 +1121,15 @@ def _repair_multiline_headword_state_machine(
         # Only trigger for a plausible incomplete dictionary head: morphology
         # note, grammatical comma, cropped opening parenthesis, or a long bold
         # display form that consumed most of the OCR band.
+        unmatched_slash = line.text.count("/") % 2 == 1
+        open_pronunciation = bool(
+            ("[" in line.text and "]" not in line.text) or unmatched_slash
+        )
         incomplete_shape = bool(
             parsed.has_inflection
             or re.search(r",\s*[^,;:]{0,24}$", line.text, flags=re.UNICODE)
             or ("(" in line.text and ")" not in line.text)
+            or open_pronunciation
             or len(parsed.normalized.strip("-")) >= 11
         )
         if not incomplete_shape:
@@ -1093,15 +1149,24 @@ def _repair_multiline_headword_state_machine(
             gap = nxt.box[1] - prev.box[3]
             if gap > 0.95 * median_h or nxt.box[0] > left_limit + 1.75 * median_h:
                 break
+            pronunciation_still_open = bool(
+                ("[" in synthetic and "]" not in synthetic)
+                or synthetic.count("/") % 2 == 1
+            )
             # Do not absorb a clearly new headword row.
             nxt_parsed = parse_headword_text(nxt.text, settings, patterns)
-            if nxt.box[0] <= left_limit and nxt_parsed and (nxt_parsed.has_pos or nxt_parsed.has_descriptor):
+            if (
+                not pronunciation_still_open and nxt.box[0] <= left_limit
+                and nxt_parsed and (nxt_parsed.has_pos or nxt_parsed.has_descriptor)
+            ):
                 break
             # The continuation should begin with POS/grammar material or be a
             # short continuation of an open morphology note.
             pm, noise = _find_pos_cue(nxt.text, pos_pattern, min(64, settings.paddle_pos_search_chars))
             starts_grammar = bool(pm is not None and (pm.start() <= 3 or noise))
-            if not starts_grammar and not ("(" in synthetic and ")" not in synthetic):
+            if not starts_grammar and not (
+                ("(" in synthetic and ")" not in synthetic) or pronunciation_still_open
+            ):
                 break
             synthetic = synthetic + " " + nxt.text.strip()
             joined_records.extend(nxt.records)
@@ -1355,7 +1420,7 @@ def _parse_structured_tail(
     """Parse the grammar tail as an ordered state machine.
 
     Stages are intentionally narrow and deterministic:
-    variants -> morphology/inflection -> POS -> usage labels -> definition.
+    variants -> morphology/inflection -> pronunciation -> POS -> usage -> definition.
     This turns the parser into an inspectable grammar pipeline while retaining
     small regexes only for individual token classes.
     """
@@ -1408,10 +1473,25 @@ def _parse_structured_tail(
             continue
         break
 
-    # Consume typography/section markers that may separate morphology and POS.
+    # Pronunciation is grammar metadata, not definition prose.  Consume common
+    # bracket/slash IPA forms before looking for POS; tolerate a missing closing
+    # delimiter at a cropped OCR-band edge.
+    cursor = _consume_leading_space(tail, cursor)
+    pos_ahead = r"(?=\s+(?:n|v|adj|adv|prep|conj|pron|interj|art|num)\.)"
+    pronunciation_re = re.compile(
+        rf"(?:\[[^\]]{{1,180}}(?:\]|{pos_ahead})|/[^/]{{1,180}}(?:/|{pos_ahead}))",
+        flags=re.UNICODE | re.IGNORECASE,
+    )
+    pronunciation_match = pronunciation_re.match(tail[cursor:])
+    if pronunciation_match:
+        pronunciation = pronunciation_match.group(0).strip()
+        cursor += pronunciation_match.end()
+        trace.append(f"pronunciation:{pronunciation}")
+
+    # Consume typography/section markers that may separate pronunciation and POS.
     cursor = _consume_leading_space(tail, cursor)
     marker_match = re.match(
-        r"[|/\[\]{}<>«»“”‘’\".,;:·•∙‧◆◇■□►▶*†‡§¶_+\-\s]*(?:I{1,4}|IV|V)?\s*",
+        r"[|{}<>«»“”‘’\".,;:·•∙‧◆◇■□►▶*†‡§¶_+\-\s]*(?:I{1,4}|IV|V)?\s*",
         tail[cursor:], flags=re.UNICODE,
     )
     if marker_match and marker_match.end() > 0:
@@ -1531,7 +1611,7 @@ def parse_headword_text(
     """
     active_profile = profile or _BUNDLED_PROFILE
     if active_profile.uses_parser("numbered_headword_prefix"):
-        prefix_pattern = active_profile.prefix_regex or r"^\s*\d{1,2}\s*"
+        prefix_pattern = active_profile.prefix_regex or r"^\s*\d{1,4}\s*[.．]\s*"
         try:
             prefix = re.match(prefix_pattern, text, flags=re.UNICODE)
         except re.error:
@@ -1541,6 +1621,9 @@ def parse_headword_text(
                 return None
         else:
             text = text[prefix.end():]
+            # Legacy profiles matched only the digits. Treat the customary dot
+            # as part of the numbered prefix rather than as lemma punctuation.
+            text = re.sub(r"^\s*[.．]\s*", "", text, count=1)
             bracketed = _parse_chinese_bracketed_headword(text, settings, enforce_chinese_language=False)
             if bracketed is not None:
                 return bracketed
@@ -1549,19 +1632,35 @@ def parse_headword_text(
     # structural parsers so a Latin dictionary with Chinese definitions does
     # not accidentally promote bracketed definition text to headwords.
     legacy_language_driven_cjk = profile is None and _is_chinese_ocr(settings)
+    features = set(active_profile.headword_features)
+    if "pinyin_after_headword" in features:
+        cjk_pinyin = _parse_cjk_single_with_pinyin(text, settings)
+        if cjk_pinyin is not None:
+            return cjk_pinyin
     if active_profile.uses_parser("cjk_marker_pinyin"):
         cjk_marker = _parse_cjk_marker_pinyin_headword(text, settings, active_profile)
         if cjk_marker is not None:
             return cjk_marker
-    if legacy_language_driven_cjk or active_profile.uses_parser("cjk_bracketed"):
+    if legacy_language_driven_cjk or (
+        active_profile.uses_parser("cjk_bracketed") and "bracketed_compound" in features
+    ):
         chinese = _parse_chinese_bracketed_headword(text, settings)
         if chinese is not None:
             return chinese
-    if legacy_language_driven_cjk or active_profile.uses_parser("cjk_single_visual"):
+    if legacy_language_driven_cjk or (
+        active_profile.uses_parser("cjk_single_visual") and "large_single_character" in features
+    ):
         chinese_single = _parse_chinese_single_character_headword(text, settings)
         if chinese_single is not None:
             return chinese_single
     headword_pattern, _special_pattern, pos_pattern = patterns or _compile_patterns(settings, active_profile)
+    if legacy_language_driven_cjk and patterns is None:
+        # Preserve the legacy CJK diagnostic parse path for section labels; the
+        # Latin profiles themselves remain script-restricted.
+        legacy_regex = settings.paddle_headword_regex.replace(
+            r"[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]", r"[^\W\d_]"
+        )
+        headword_pattern = re.compile(legacy_regex, re.UNICODE | re.IGNORECASE)
     parse_text, repairs = _repair_headword_ocr(text)
     match = headword_pattern.search(parse_text)
     if not match:
