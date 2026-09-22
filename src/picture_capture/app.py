@@ -7571,12 +7571,32 @@ class PictureCaptureApp(tk.Tk):
         self.overlay_widgets.append(editor)
         record["widgets"].append(editor)
         self.entry_editor_bindings.append((editor, entry))
-        source_box = line_box(entry, geometry, self.image, self.settings)
-        editor_x = source_box[0] * self.view_scale
-        editor_y = source_box[1] * self.view_scale
+        
+        # LTR 横排保持原来的文本框位置：
+        # 从栏左起点向右移动 main_entry_x_ratio × 栏宽。
+        if (
+            self.settings.layout_writing_mode == "horizontal-tb"
+            and self.settings.layout_text_direction == "ltr"
+        ):
+            editor_x = (
+                canonical_x
+                + geometry.column_widths[col] * float(self.settings.main_entry_x_ratio)
+            ) * self.view_scale
+            editor_y = entry_v * self.view_scale
+        else:
+            # RTL / vertical 暂时继续使用 canonical geometry 路径。
+            source_box = line_box(entry, geometry, self.image, self.settings)
+            editor_x = source_box[0] * self.view_scale
+            editor_y = source_box[1] * self.view_scale
+        
         if self.settings.layout_text_direction == "rtl":
             editor.configure(justify="right")
-        item = self.canvas.create_window(editor_x, editor_y, window=editor, anchor="nw")
+        
+        item = self.canvas.create_window(
+            editor_x, editor_y,
+            window=editor,
+            anchor="nw",
+        )
         record["canvas_items"].append(item)
 
         candidate = self._candidate_for_entry(entry)
@@ -7598,9 +7618,28 @@ class PictureCaptureApp(tk.Tk):
             item = self.canvas.create_window(ocr_x, editor_y, window=ocr_menu, anchor="nw")
             record["canvas_items"].append(item)
 
-        index_item = self.canvas.create_text(
-            editor_x + 3, editor_y - 10, text=str(index), fill="#222", anchor="nw", font=("Arial", 8),
-        )
+            if (
+                self.settings.layout_writing_mode == "horizontal-tb"
+                and self.settings.layout_text_direction == "ltr"
+            ):
+                # 恢复旧版：编号位于词条横线的右端。
+                index_x = (
+                    canonical_x + geometry.column_widths[col]
+                ) * self.view_scale + 3
+                index_y = entry_v * self.view_scale
+            else:
+                # RTL / vertical 后续再按对应 reading-edge 做完整调整。
+                index_x = editor_x + 3
+                index_y = editor_y - 10
+            
+            index_item = self.canvas.create_text(
+                index_x,
+                index_y,
+                text=str(index),
+                fill="#222",
+                anchor="nw",
+                font=("Arial", 8),
+            )
         record["canvas_items"].append(index_item)
         record["index_item"] = index_item
 
