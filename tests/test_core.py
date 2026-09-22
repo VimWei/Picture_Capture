@@ -5551,6 +5551,16 @@ def test_v21212_review_highlight_uses_rgba_alpha_not_stipple():
     assert 'stipple=' not in body
 
 
+def test_review_highlight_uses_the_same_geometry_as_review_crop():
+    import inspect
+    import picture_capture.app as app_module
+
+    body = inspect.getsource(app_module.PictureCaptureApp._draw_review_entry_highlight)
+    assert "review_settings = _review_crop_settings(" in body
+    assert "left, top, right, bottom = _review_line_box(" in body
+    assert "line_box(entry, geometry, self.image, self.settings)" not in body
+
+
 def test_v2132_declares_cpu_and_gpu_ocr_profiles():
     import tomllib
     from pathlib import Path
