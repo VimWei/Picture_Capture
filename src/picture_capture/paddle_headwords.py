@@ -325,7 +325,9 @@ def _parse_cjk_marker_pinyin_headword(
     )
 
 
-def _parse_chinese_bracketed_headword(text: str, settings: AppSettings) -> HeadwordParse | None:
+def _parse_chinese_bracketed_headword(
+    text: str, settings: AppSettings, *, enforce_chinese_language: bool = True
+) -> HeadwordParse | None:
     """Parse complete or line-wrapped Chinese bracket headwords.
 
     Supported examples include ``【一刀】``, ``〔一刀〕``, ``[一刀]`` and the
@@ -339,7 +341,7 @@ def _parse_chinese_bracketed_headword(text: str, settings: AppSettings) -> Headw
     (left-aligned, below the header, not an internal relation label), which is
     the main protection against ordinary brackets inside definitions.
     """
-    if not _is_chinese_ocr(settings):
+    if enforce_chinese_language and not _is_chinese_ocr(settings):
         return None
     parse_text, repairs = _repair_headword_ocr(text)
 
@@ -1506,6 +1508,20 @@ def parse_headword_text(
     what recovers the large family of `lemma, da adj.` misses seen on pp.55-70.
     """
     active_profile = profile or _BUNDLED_PROFILE
+    if active_profile.uses_parser("numbered_headword_prefix"):
+        prefix_pattern = active_profile.prefix_regex or r"^\s*\d{1,2}\s*"
+        try:
+            prefix = re.match(prefix_pattern, text, flags=re.UNICODE)
+        except re.error:
+            prefix = None
+        if prefix is None:
+            if active_profile.prefix_required:
+                return None
+        else:
+            text = text[prefix.end():]
+            bracketed = _parse_chinese_bracketed_headword(text, settings, enforce_chinese_language=False)
+            if bracketed is not None:
+                return bracketed
     # Direct parser calls made by older code/tests remain language-driven. The
     # full OCR pipeline now passes an explicit v2 profile, which gates CJK
     # structural parsers so a Latin dictionary with Chinese definitions does

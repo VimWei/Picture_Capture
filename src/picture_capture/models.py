@@ -534,7 +534,8 @@ class ProjectState:
         # grammar/layout identity travels with the project even if settings are
         # partially copied between machines.
         try:
-            from .dictionary_profile import project_profile_preset_id
+            from .dictionary_profile import apply_project_profile_components, project_profile_preset_id
+            apply_project_profile_components(active_profile_path(root), settings)
             settings.dictionary_profile_id = project_profile_preset_id(
                 active_profile_path(root), getattr(settings, "dictionary_profile_id", "latin_structured_symbols")
             )

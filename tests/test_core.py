@@ -12,6 +12,7 @@ from picture_capture.app import (
     PictureCaptureApp, _candidate_choice_rows, _parse_words_of_pages_text, _fill_page_entries,
     _build_words_page_lookup, _resolve_words_page_token, _parse_merged_pdic_text, _write_pdic_atomic,
     _natural_text_key, _sorted_page_list_rows, project_language_from_ocr,
+    transformed_geometry_pending,
 )
 from picture_capture.models import AppSettings, Entry, PolygonRegion
 from picture_capture.processing import Geometry, ColumnPath, sort_entries_reading_order, sort_entries_column_y
@@ -1228,22 +1229,22 @@ class DictionaryProfileV2Tests(unittest.TestCase):
 
     def test_v210_profile_names_describe_layout_types(self) -> None:
         labels = dictionary_profile_labels()
-        self.assertIn("拉丁字母 · 音标密集双栏", labels)
-        self.assertIn("拉丁字母 · 紧邻词性经典双栏", labels)
-        self.assertIn("拉丁字母 · 编号词性双栏", labels)
-        self.assertIn("中文 · 圆点/拼音三栏", labels)
-        self.assertIn("中文 · 括号词头/大字三栏", labels)
+        self.assertEqual(set(labels.values()), {
+            "latin_regular", "numbered_prefix", "cjk_visual", "marker_prefixed", "custom",
+        })
+        self.assertIn("拉丁字母常规词头", labels)
+        self.assertIn("编号前缀词头", labels)
+        self.assertIn("CJK 大字/括号词头", labels)
         self.assertNotIn("FarEast", " ".join(labels))
-        self.assertGreaterEqual(len(labels), 6)
+        self.assertEqual(len(labels), 5)
 
     def test_v210_profile_preview_examples_exist(self) -> None:
-        seen = 0
-        for profile in available_dictionary_profiles():
-            for example in profile.examples:
-                seen += 1
-                self.assertTrue(example.dictionary)
-                self.assertTrue(profile_preview_path(example.image).is_file())
-        self.assertGreaterEqual(seen, 7)
+        import json
+        from picture_capture.dictionary_profile import profile_library_path
+        raw = json.loads(profile_library_path().read_text(encoding="utf-8"))
+        self.assertEqual(set(raw["validated_examples"]), {
+            "NewApproach", "LDER", "HZYLDZD", "XDHYCD", "TimesCED", "RUIGO", "XAHDCD", "shueisha",
+        })
 
     def test_v210_profile_defaults_keep_supported_language_variant(self) -> None:
         ita = profile_effective_settings("latin_pos_classic", current_language="ita+chi_sim")
@@ -1307,13 +1308,13 @@ class DictionaryProfileV2Tests(unittest.TestCase):
             raw = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(raw["format"], PROFILE_FORMAT_V3)
             self.assertEqual(raw["schema_version"], 3)
-            self.assertEqual(raw["preset"], "latin_numbered_pos")
+            self.assertEqual(raw["preset"], "latin_regular")
             self.assertEqual(raw["layout"]["columns"], 2)
             self.assertEqual(raw["ocr"]["semantic_language"], "spa")
             self.assertEqual(raw["headword"]["parser_modes"], ["latin", "numbered_pos"])
             self.assertEqual(raw["overrides"]["settings"]["paddle_left_tolerance"], 19)
             resolved = load_dictionary_profile(path, language="spa")
-            self.assertEqual(resolved.key, "latin_numbered_pos")
+            self.assertEqual(resolved.key, "latin_regular")
 
     def test_profile_v2_project_is_loaded_without_implicit_rewrite(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1343,8 +1344,6 @@ class DictionaryProfileV2Tests(unittest.TestCase):
             "arabic_rtl_bilingual_2col": (2, "present", "mirror_x", "horizontal-tb", "rtl"),
             "jpn_vertical_kana_bracket_3band": (3, "absent", "rotate_ccw90", "vertical-rl", "rtl"),
         }
-        keys = {profile.key for profile in available_dictionary_profiles()}
-        self.assertTrue(expected.keys() <= keys)
         for key, values in expected.items():
             layout = dictionary_profile_preset(key).layout
             self.assertEqual(
@@ -1380,6 +1379,24 @@ class DictionaryProfileV2Tests(unittest.TestCase):
             profile_layout_summary(dictionary_profile_preset("jpn_vertical_kana_bracket_3band")),
             "竖排 · CCW90 · 3 canonical columns",
         )
+
+    def test_profile_v3_numbered_prefix_parser_is_structural_and_language_neutral(self) -> None:
+        profile = load_dictionary_profile(preset="jpn_numbered_headword_2col")
+        accepted = parse_headword_text("12 【野生動物】 説明", AppSettings(ocr_language="jpn"), profile=profile)
+        rejected = parse_headword_text("【分類見出し】 説明", AppSettings(ocr_language="jpn"), profile=profile)
+        self.assertIsNotNone(accepted)
+        self.assertIsNone(rejected)
+
+    def test_profile_v3_direction_and_language_are_derived_components(self) -> None:
+        from picture_capture.dictionary_profile import language_effective_settings
+        vertical = language_effective_settings("jpn", "vertical-rl")
+        horizontal = language_effective_settings("jpn", "horizontal-tb")
+        self.assertEqual(vertical["tesseract_language"], "jpn_vert")
+        self.assertEqual(vertical["paddle_tesseract_psm"], 5)
+        self.assertEqual(horizontal["tesseract_language"], "jpn")
+        self.assertFalse(horizontal["paddle_use_textline_orientation"])
+        self.assertTrue(transformed_geometry_pending(AppSettings(layout_transform="mirror_x")))
+        self.assertFalse(transformed_geometry_pending(AppSettings(layout_transform="identity")))
 
 
 if __name__ == "__main__":

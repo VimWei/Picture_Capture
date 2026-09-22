@@ -11,7 +11,7 @@ PROFILE_FORMAT_V2 = "picture-capture-dictionary-profile-v2"
 PROFILE_LIBRARY_FORMAT_V2 = "picture-capture-profile-library-v2"
 PROFILE_FORMAT_V3 = "picture-capture-dictionary-profile-v3"
 PROFILE_LIBRARY_FORMAT_V3 = "picture-capture-profile-library-v3"
-DEFAULT_PROFILE_ID = "latin_structured_symbols"
+DEFAULT_PROFILE_ID = "custom"
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +62,9 @@ class DictionaryProfile:
     parser_modes: tuple[str, ...] = ("latin",)
     description: str = ""
     examples: tuple[ProfileExample, ...] = ()
+    headword_features: tuple[str, ...] = ()
+    prefix_regex: str = ""
+    prefix_required: bool = False
 
     @property
     def metadata_labels(self) -> tuple[str, ...]:
@@ -114,7 +117,9 @@ def _grammar_profile_from_blocks(
     examples: tuple[ProfileExample, ...],
     abbreviations: dict[str, Any],
     symbols: dict[str, Any],
+    headword: dict[str, Any] | None = None,
 ) -> DictionaryProfile:
+    headword = headword or {}
     return DictionaryProfile(
         name=name,
         pos_labels=_values(abbreviations, "part_of_speech"),
@@ -129,6 +134,9 @@ def _grammar_profile_from_blocks(
         parser_modes=tuple(str(x) for x in parser_modes if str(x)),
         description=description,
         examples=examples,
+        headword_features=tuple(str(x) for x in headword.get("features", []) if str(x)),
+        prefix_regex=str(headword.get("prefix_regex") or ""),
+        prefix_required=bool(headword.get("prefix_required", False)),
     )
 
 
@@ -144,6 +152,7 @@ def _profile_from_legacy_dict(raw: dict[str, Any]) -> DictionaryProfile:
         examples=(),
         abbreviations=abbreviations,
         symbols=symbols,
+        headword={},
     )
 
 
@@ -178,53 +187,36 @@ def _load_profile_library_raw() -> dict[str, Any]:
 def available_dictionary_profiles() -> tuple[DictionaryProfilePreset, ...]:
     raw = _load_profile_library_raw()
     result: list[DictionaryProfilePreset] = []
-    for key, item in (raw.get("profiles") or {}).items():
+    languages = raw.get("languages") or {}
+    supported = tuple(str(key) for key in languages)
+    paddle_by_language = {
+        str(key): str(value.get("paddle_language") or "")
+        for key, value in languages.items() if isinstance(value, dict)
+    }
+    for key, item in (raw.get("headword_profiles") or {}).items():
         if not isinstance(item, dict):
             continue
         examples = tuple(
-            ProfileExample(
-                dictionary=str(example.get("dictionary") or ""),
-                image=str(example.get("image") or ""),
-                note=str(example.get("note") or ""),
-            )
-            for example in (item.get("examples") or [])
-            if isinstance(example, dict)
+            ProfileExample(dictionary=str(name), image="", note="已验证组合示例")
+            for name in item.get("validated_examples", []) if str(name)
         )
-        layout = dict(item.get("layout") or {})
-        ocr = dict(item.get("ocr") or {})
-        headword = dict(item.get("headword") or {})
-        # v3 section names deliberately describe the domain rather than the
-        # historical widget names.  This adapter is the only place that maps
-        # bundled schema values onto AppSettings.
+        headword = dict(item)
+        layout: dict[str, Any] = {}
+        ocr: dict[str, Any] = {}
         settings = dict(headword.get("settings") or {})
-        settings.update({
-            "layout_writing_mode": str(layout.get("writing_mode") or "horizontal-tb"),
-            "layout_text_direction": str(layout.get("text_direction") or "ltr"),
-            "layout_transform": str(layout.get("canonical_transform") or "identity"),
-            "columns": max(1, int(layout.get("columns") or 1)),
-            "layout_columns_policy": str(layout.get("columns_policy") or "detect"),
-            "layout_column_separator_mode": str(layout.get("column_separator") or "auto"),
-            "analysis_threshold_mode": str(layout.get("analysis_threshold_mode") or "auto"),
-            "tesseract_language": str(ocr.get("tesseract_language") or ocr.get("semantic_language") or ""),
-            "paddle_use_textline_orientation": bool(ocr.get("use_textline_orientation", False)),
-        })
-        if "tesseract_psm" in ocr:
-            settings["paddle_tesseract_psm"] = int(ocr["tesseract_psm"])
         if "require_visual_cue" in headword:
             settings["paddle_require_visual_cue"] = bool(headword["require_visual_cue"])
         result.append(
             DictionaryProfilePreset(
                 key=str(key),
-                display_name=str(item.get("display_name") or key),
+                display_name=str(headword.get("display_name") or key),
                 family=str(item.get("family") or key),
                 description=str(item.get("description") or ""),
                 examples=examples,
-                supported_languages=tuple(str(x) for x in ocr.get("supported_languages", []) if str(x)),
-                default_language=str(ocr.get("semantic_language") or ""),
-                default_paddle_language=str(ocr.get("paddle_language") or ""),
-                paddle_language_by_language={
-                    str(k): str(v) for k, v in (ocr.get("paddle_language_by_language") or {}).items()
-                },
+                supported_languages=supported,
+                default_language="eng",
+                default_paddle_language="en",
+                paddle_language_by_language=paddle_by_language,
                 parser_modes=tuple(str(x) for x in headword.get("parser_modes", ["latin"]) if str(x)),
                 settings=settings,
                 layout=layout,
@@ -242,6 +234,12 @@ def dictionary_profile_preset(key: str | None) -> DictionaryProfilePreset:
     for profile in profiles:
         if profile.key == wanted:
             return profile
+    raw = _load_profile_library_raw()
+    alias = (raw.get("compatibility_aliases") or {}).get(wanted)
+    if isinstance(alias, dict):
+        base_key = str(alias.get("headword_profile") or DEFAULT_PROFILE_ID)
+        base = next((profile for profile in profiles if profile.key == base_key), profiles[0])
+        return _preset_for_configuration(wanted, base, alias, raw)
     for profile in profiles:
         if profile.key == DEFAULT_PROFILE_ID:
             return profile
@@ -250,14 +248,82 @@ def dictionary_profile_preset(key: str | None) -> DictionaryProfilePreset:
     return profiles[0]
 
 
+def _canonical_transform(writing_mode: str, text_direction: str) -> str:
+    if writing_mode == "vertical-rl":
+        return "rotate_ccw90"
+    if writing_mode == "vertical-lr":
+        return "rotate_cw90"
+    return "mirror_x" if text_direction == "rtl" else "identity"
+
+
+def _preset_for_configuration(
+    key: str, base: DictionaryProfilePreset, config: dict[str, Any], library: dict[str, Any]
+) -> DictionaryProfilePreset:
+    layout = dict(config.get("layout") or {})
+    writing = str(layout.get("writing_mode") or "horizontal-tb")
+    direction = str(layout.get("text_direction") or "ltr")
+    layout["canonical_transform"] = _canonical_transform(writing, direction)
+    language_key = str(config.get("language") or "eng")
+    language = dict((library.get("languages") or {}).get(language_key) or {})
+    tesseract = str(language.get("tesseract_language") or language_key)
+    psm = 6
+    orientation = False
+    if writing.startswith("vertical"):
+        tesseract = str(language.get("vertical_tesseract_language") or tesseract)
+        psm = int(language.get("vertical_tesseract_psm") or 5)
+        orientation = bool(language.get("use_textline_orientation", False))
+    ocr = {
+        "semantic_language": str(language.get("semantic_language") or language_key),
+        "paddle_language": str(language.get("paddle_language") or ""),
+        "tesseract_language": tesseract,
+        "tesseract_psm": psm,
+        "use_textline_orientation": orientation,
+    }
+    headword = dict(base.headword)
+    headword["features"] = list(config.get("headword_features") or [])
+    overrides = config.get("headword_overrides") or {}
+    internal = list(overrides.get("internal_labels") or []) if isinstance(overrides, dict) else []
+    if internal:
+        grammar = dict(headword.get("grammar") or {})
+        grammar["internal_not_new_entry"] = internal + list(grammar.get("internal_not_new_entry") or [])
+        headword["grammar"] = grammar
+    settings = dict(base.settings)
+    settings.update({
+        "layout_writing_mode": writing,
+        "layout_text_direction": direction,
+        "layout_transform": layout["canonical_transform"],
+        "columns": max(1, int(layout.get("columns") or 1)),
+        "layout_columns_policy": str(layout.get("columns_policy") or "detect"),
+        "layout_column_separator_mode": str(layout.get("column_separator") or "auto"),
+        "analysis_threshold_mode": str(layout.get("analysis_threshold_mode") or "auto"),
+        "ocr_language": ocr["semantic_language"],
+        "paddle_language": ocr["paddle_language"],
+        "tesseract_language": tesseract,
+        "paddle_tesseract_psm": psm,
+        "paddle_use_textline_orientation": orientation,
+    })
+    supported = tuple(str(x) for x in config.get("supported_languages", []) if str(x)) or (ocr["semantic_language"],)
+    parser_modes = tuple(str(x) for x in config.get("parser_modes", []) if str(x)) or base.parser_modes
+    headword["parser_modes"] = list(parser_modes)
+    return DictionaryProfilePreset(
+        key=key, display_name=base.display_name, family=base.family,
+        description=base.description, examples=base.examples,
+        supported_languages=supported,
+        default_language=ocr["semantic_language"], default_paddle_language=ocr["paddle_language"],
+        paddle_language_by_language=base.paddle_language_by_language,
+        parser_modes=parser_modes, settings=settings, layout=layout, ocr=ocr,
+        headword=headword, raw=config,
+    )
+
+
 def dictionary_profile_labels() -> dict[str, str]:
     """Return UI label -> stable preset key mapping in library order."""
     return {profile.display_name: profile.key for profile in available_dictionary_profiles()}
 
 
-def profile_layout_summary(profile: DictionaryProfilePreset) -> str:
+def profile_layout_summary(profile: DictionaryProfilePreset, layout_override: dict[str, Any] | None = None) -> str:
     """Return a compact, user-facing summary of v3 layout semantics."""
-    layout = profile.layout
+    layout = layout_override or profile.layout
     columns = max(1, int(layout.get("columns") or 1))
     writing = str(layout.get("writing_mode") or "horizontal-tb")
     direction = str(layout.get("text_direction") or "ltr").lower()
@@ -305,7 +371,28 @@ def profile_effective_settings(key: str | None, current_language: str | None = N
     paddle_language = profile.paddle_language_by_language.get(base, profile.default_paddle_language)
     if paddle_language:
         settings["paddle_language"] = paddle_language
+    settings.update(language_effective_settings(language, str(settings.get("layout_writing_mode") or "horizontal-tb")))
     return settings
+
+
+def language_effective_settings(language: str, writing_mode: str = "horizontal-tb") -> dict[str, Any]:
+    """Resolve OCR backends from language + orientation, independently of headword type."""
+    raw = _load_profile_library_raw()
+    key = _base_language(language)
+    resource = dict((raw.get("languages") or {}).get(key) or {})
+    if not resource:
+        return {"ocr_language": language, "tesseract_language": language}
+    vertical = writing_mode.startswith("vertical")
+    return {
+        "ocr_language": language or str(resource.get("semantic_language") or key),
+        "paddle_language": str(resource.get("paddle_language") or ""),
+        "tesseract_language": str(
+            (resource.get("vertical_tesseract_language") if vertical else None)
+            or resource.get("tesseract_language") or key
+        ),
+        "paddle_tesseract_psm": int(resource.get("vertical_tesseract_psm") or 5) if vertical else 6,
+        "paddle_use_textline_orientation": bool(resource.get("use_textline_orientation", False)) if vertical else False,
+    }
 
 
 def _grammar_block_from_preset(profile: DictionaryProfilePreset, language: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -394,6 +481,7 @@ def load_dictionary_profile(
         examples=profile.examples,
         abbreviations=abbreviations,
         symbols=symbols,
+        headword=profile.headword,
     )
 
 
@@ -407,7 +495,43 @@ def project_profile_preset_id(path: Path | None, fallback: str = DEFAULT_PROFILE
     if not isinstance(raw, dict) or raw.get("format") not in {PROFILE_FORMAT_V2, PROFILE_FORMAT_V3}:
         return fallback
     key = str(raw.get("preset") or fallback)
+    library = _load_profile_library_raw()
+    alias = (library.get("compatibility_aliases") or {}).get(key)
+    if isinstance(alias, dict):
+        return str(alias.get("headword_profile") or DEFAULT_PROFILE_ID)
     return dictionary_profile_preset(key).key
+
+
+def apply_project_profile_components(path: Path | None, settings: Any) -> None:
+    """Apply explicit v3 component selections; legacy profiles remain read-only."""
+    if path is None or not path.exists():
+        return
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, TypeError):
+        return
+    if not isinstance(raw, dict) or raw.get("format") != PROFILE_FORMAT_V3:
+        return
+    layout = raw.get("layout") or {}
+    ocr = raw.get("ocr") or {}
+    mapping = {
+        "layout_writing_mode": layout.get("writing_mode"),
+        "layout_text_direction": layout.get("text_direction"),
+        "columns": layout.get("columns"),
+        "layout_columns_policy": layout.get("columns_policy"),
+        "layout_column_separator_mode": layout.get("column_separator"),
+        "analysis_threshold_mode": layout.get("analysis_threshold_mode"),
+        "ocr_language": ocr.get("semantic_language"),
+        "paddle_language": ocr.get("paddle_language"),
+        "tesseract_language": ocr.get("tesseract_language"),
+        "paddle_use_textline_orientation": ocr.get("use_textline_orientation"),
+    }
+    writing = str(mapping["layout_writing_mode"] or getattr(settings, "layout_writing_mode", "horizontal-tb"))
+    direction = str(mapping["layout_text_direction"] or getattr(settings, "layout_text_direction", "ltr"))
+    mapping["layout_transform"] = _canonical_transform(writing, direction)
+    for name, value in mapping.items():
+        if value is not None and hasattr(settings, name):
+            setattr(settings, name, value)
 
 
 def profile_settings_overrides(settings: Any, key: str | None) -> dict[str, Any]:
@@ -426,7 +550,10 @@ def profile_settings_overrides(settings: Any, key: str | None) -> dict[str, Any]
 def write_project_profile(
     path: Path, settings: Any, key: str | None = None, *, force: bool = False,
 ) -> None:
-    selected = dictionary_profile_preset(key or getattr(settings, "dictionary_profile_id", DEFAULT_PROFILE_ID)).key
+    requested = key or getattr(settings, "dictionary_profile_id", DEFAULT_PROFILE_ID)
+    selected_profile = dictionary_profile_preset(requested)
+    library = _load_profile_library_raw()
+    selected = selected_profile.family if selected_profile.family in (library.get("headword_profiles") or {}) else selected_profile.key
     if path.exists() and not force:
         try:
             existing = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -442,9 +569,21 @@ def write_project_profile(
         "schema_version": 3,
         "preset": selected,
         "language": str(getattr(settings, "ocr_language", "") or ""),
-        "layout": dictionary_profile_preset(selected).layout,
-        "ocr": dictionary_profile_preset(selected).ocr,
-        "headword": dictionary_profile_preset(selected).headword,
+        "layout": {
+            "writing_mode": str(getattr(settings, "layout_writing_mode", "horizontal-tb")),
+            "text_direction": str(getattr(settings, "layout_text_direction", "ltr")),
+            "columns": int(getattr(settings, "columns", 1)),
+            "columns_policy": str(getattr(settings, "layout_columns_policy", "detect")),
+            "column_separator": str(getattr(settings, "layout_column_separator_mode", "auto")),
+            "analysis_threshold_mode": str(getattr(settings, "analysis_threshold_mode", "auto")),
+        },
+        "ocr": {
+            "semantic_language": str(getattr(settings, "ocr_language", "")),
+            "paddle_language": str(getattr(settings, "paddle_language", "")),
+            "tesseract_language": str(getattr(settings, "tesseract_language", "")),
+            "use_textline_orientation": bool(getattr(settings, "paddle_use_textline_orientation", False)),
+        },
+        "headword": selected_profile.headword,
         "overrides": {
             "settings": profile_settings_overrides(settings, selected),
             "grammar": {},
