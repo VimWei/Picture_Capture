@@ -551,8 +551,16 @@ def run_tesseract(image: Image.Image, language: str, executable: str = "tesserac
 
 
 def column_index(x: int, geometry: Geometry) -> int:
-    candidates = [i for i, start in enumerate(geometry.column_starts) if x >= start]
-    return candidates[-1] if candidates else 0
+    """Classify a saved/detected X using the same visual intervals as clicks.
+
+    Automatically detected column starts are robust percentiles, so an actual
+    PDIC marker may legitimately sit a few pixels to the left of its estimated
+    start.  The historical floor-by-start rule then assigned that marker to the
+    preceding column even though it was much closer to the next column.  Use
+    the interval/gutter-distance classifier everywhere so sorting, rendering,
+    cropping, and export all agree on the marker's visual column.
+    """
+    return column_index_for_click(x, geometry)
 
 
 def column_index_for_click(x: int, geometry: Geometry) -> int:

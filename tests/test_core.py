@@ -2062,6 +2062,26 @@ def test_v2812_manual_click_uses_column_interval_not_nearest_start():
     assert column_index_for_click(385, geometry) == 1
 
 
+def test_pdic_x_left_of_detected_start_stays_in_nearest_visual_column():
+    from picture_capture.processing import Geometry, ColumnPath, column_index, sort_entries_reading_order
+
+    geometry = Geometry(
+        column_starts=[20, 607, 1194],
+        column_widths=[530, 530, 530],
+        top=0, bottom=1600,
+        column_paths=[
+            ColumnPath([(0, 20)]), ColumnPath([(0, 607)]), ColumnPath([(0, 1194)]),
+        ],
+    )
+    # OCR/PDIC X can be a few pixels left of a percentile-estimated column
+    # start. It is in the narrow gutter beside column 2, not in column 1.
+    assert column_index(600, geometry) == 1
+    assert column_index(1186, geometry) == 2
+
+    entries = [Entry("第二栏", 600, 100), Entry("第一栏", 20, 900)]
+    assert [entry.word for entry in sort_entries_reading_order(entries, geometry)] == ["第一栏", "第二栏"]
+
+
 def test_v2817_separator_safety_is_configurable():
     import numpy as np
     from picture_capture.models import AppSettings
