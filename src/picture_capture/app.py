@@ -249,6 +249,22 @@ def vertical_index_anchor(entry_box: tuple[int, int, int, int]) -> tuple[int, in
     return right + 3, top
 
 
+def horizontal_rtl_entry_anchor(
+    transform, canonical_x: float, canonical_y: float, column_width: float,
+    x_ratio: float, source_size: tuple[int, int], view_scale: float,
+    marker_start: tuple[int, int], marker_end: tuple[int, int],
+    marker_height: float, overlay_scale: float,
+) -> tuple[float, float]:
+    """Return the RTL editor anchor below its canonical marker."""
+    editor_x, _source_y = transformed_entry_anchor(
+        transform, canonical_x, canonical_y, column_width, x_ratio,
+        source_size, view_scale,
+    )
+    marker_y = max(marker_start[1], marker_end[1]) * view_scale
+    editor_y = marker_y + max(2, round(marker_height * overlay_scale))
+    return editor_x, editor_y
+
+
 def _sorted_page_list_rows(rows: list[tuple[str, tuple]], column: str, descending: bool = False) -> list[tuple[str, tuple]]:
     """Sort Treeview-like page rows without changing their stable page iids.
 
@@ -7766,10 +7782,13 @@ class PictureCaptureApp(tk.Tk):
                 float(self.settings.main_entry_x_ratio), geometry.source_size, self.view_scale,
             )
         else:
-            # Horizontal RTL remains transform-aware.
-            source_box = line_box(entry, geometry, self.image, self.settings)
-            editor_x = source_box[0] * self.view_scale
-            editor_y = source_box[1] * self.view_scale
+            # Horizontal RTL uses the same canonical/read-order offset as LTR.
+            # The mirror transform makes increasing ratios move source-left.
+            editor_x, editor_y = horizontal_rtl_entry_anchor(
+                geometry.transform, canonical_x, entry_v, geometry.column_widths[col],
+                float(self.settings.main_entry_x_ratio), geometry.source_size, self.view_scale,
+                marker_start, marker_end, self.settings.marker_height, overlay_scale,
+            )
         
         if self.settings.layout_text_direction == "rtl":
             editor.configure(justify="right")
