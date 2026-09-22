@@ -53,6 +53,14 @@ class AppSettings:
     # processing can convert the values back to source-image pixels.
     parameter_display_width: int = 0
     columns: int = 2
+    # Profile v3 layout semantics. Geometry is measured in canonical space;
+    # source images and PDIC entry coordinates are never rewritten.
+    layout_writing_mode: str = "horizontal-tb"
+    layout_text_direction: str = "ltr"
+    layout_transform: str = "identity"
+    layout_columns_policy: str = "detect"
+    layout_column_separator_mode: str = "auto"
+    analysis_threshold_mode: str = "auto"
     gutter: int = 50
     column_width: int = 700
     start_y: int = 55
@@ -109,6 +117,7 @@ class AppSettings:
     analysis_left: int = 0
     analysis_right: int = 0
     ocr_language: str = "eng"
+    tesseract_language: str = ""
     ocr_replace: bool = True
     lowercase_ocr: bool = False
     manual_columns: bool = False
@@ -211,6 +220,7 @@ class AppSettings:
     paddle_language: str = ""
     paddle_device: str = "cpu"
     paddle_ocr_version: str = "PP-OCRv6"
+    paddle_use_textline_orientation: bool = False
     # Wider than v1.4 so long syllabified lemmas usually include the nearby
     # plural/POS label, which is a much stronger entry cue than boldness alone.
     paddle_band_width: int = 600

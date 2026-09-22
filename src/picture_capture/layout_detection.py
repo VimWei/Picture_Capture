@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import statistics
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -9,6 +10,7 @@ from PIL import Image, ImageOps
 
 from .models import AppSettings
 from .image_utils import normalize_page_rgb
+from .layout_transform import LayoutTransform
 from .processing import parameter_scale
 
 
@@ -24,6 +26,9 @@ class LayoutEstimate:
     row_padding: int
     source_boxes: int
     method: str = "paddle"
+    canonical_transform: str = "identity"
+    separator_x: int | None = None
+    confidence: float = 0.0
 
 
 @dataclass(slots=True)
@@ -31,6 +36,37 @@ class LayoutConsistencyEstimate:
     header_rule_y: int | None
     body_left_x: int | None
     is_blank: bool = False
+
+
+def aggregate_layout_estimates(
+    estimates: Iterable[LayoutEstimate], *, columns_policy: str = "detect", fixed_columns: int | None = None
+) -> tuple[dict[str, int], str]:
+    """Robustly combine page estimates and report column consistency.
+
+    Columns use a mode (or the Profile's fixed prior); continuous geometry uses
+    a median after conservative MAD outlier rejection.
+    """
+    rows = list(estimates)
+    if not rows:
+        raise ValueError("At least one layout estimate is required")
+    observed = [max(1, int(row.columns)) for row in rows]
+    counts = {value: observed.count(value) for value in set(observed)}
+    mode_columns = min(counts, key=lambda value: (-counts[value], value))
+    columns = max(1, int(fixed_columns or mode_columns)) if columns_policy == "fixed" else mode_columns
+
+    def robust_median(name: str) -> int:
+        values = [float(getattr(row, name)) for row in rows]
+        center = statistics.median(values)
+        deviations = [abs(value - center) for value in values]
+        mad = statistics.median(deviations)
+        kept = values if mad == 0 else [value for value in values if abs(value - center) <= 3.5 * mad]
+        return round(statistics.median(kept or values))
+
+    result = {"columns": columns}
+    for field in ("start_y", "bottom_y", "manual_x", "column_width", "gutter", "character_height", "row_padding"):
+        result[field] = robust_median(field)
+    result["row_padding"] = max(1, result["row_padding"])
+    return result, f"{columns}栏: {counts.get(columns, 0)}/{len(rows)} pages"
 
 
 _TEXT_DETECTION_CACHE: dict[str, Any] = {}
@@ -505,6 +541,8 @@ def detect_layout_parameters(image: Image.Image, settings: AppSettings) -> Layou
     installed Paddle/PaddleX stack still cannot execute detection.
     """
     source = normalize_page_rgb(image)
+    transform = LayoutTransform(settings.layout_transform)  # type: ignore[arg-type]
+    analysis = transform.canonical_image_for_analysis(source)
     paddle_error: Exception | None = None
     try:
         detector = _get_text_detector(settings)
@@ -512,19 +550,22 @@ def detect_layout_parameters(image: Image.Image, settings: AppSettings) -> Layou
         # while constructing other pipelines in the same application process.
         os.environ["FLAGS_enable_pir_api"] = "0"
         try:
-            results = list(detector.predict(np.asarray(source), batch_size=1, limit_side_len=2400))
+            results = list(detector.predict(np.asarray(analysis), batch_size=1, limit_side_len=2400))
         except TypeError:
-            results = list(detector.predict(np.asarray(source)))
+            results = list(detector.predict(np.asarray(analysis)))
         if results:
-            boxes = _boxes_from_detection(results[0], source.width, source.height)
+            boxes = _boxes_from_detection(results[0], analysis.width, analysis.height)
             if boxes:
-                source_gray = np.asarray(ImageOps.grayscale(source), dtype=np.uint8)
-                return infer_layout_from_boxes(
+                source_gray = np.asarray(ImageOps.grayscale(analysis), dtype=np.uint8)
+                estimate = infer_layout_from_boxes(
                     boxes,
-                    source.size,
-                    display_scale=parameter_scale(source, settings),
+                    analysis.size,
+                    display_scale=parameter_scale(analysis, settings),
                     ink_mask=source_gray < _otsu_threshold(source_gray),
                 )
+                estimate.canonical_transform = transform.kind
+                estimate.confidence = min(1.0, estimate.source_boxes / 40.0)
+                return estimate
             paddle_error = RuntimeError("PaddleOCR 整页版面检测没有返回文本框。")
         else:
             paddle_error = RuntimeError("PaddleOCR 整页版面检测没有返回结果。")
@@ -532,7 +573,10 @@ def detect_layout_parameters(image: Image.Image, settings: AppSettings) -> Layou
         paddle_error = exc
 
     try:
-        return _projection_layout_estimate(source, settings)
+        estimate = _projection_layout_estimate(analysis, settings)
+        estimate.canonical_transform = transform.kind
+        estimate.confidence = min(1.0, estimate.source_boxes / 6.0)
+        return estimate
     except Exception as fallback_exc:
         raise RuntimeError(
             f"PaddleOCR 整页版面检测失败：{paddle_error}\n"
