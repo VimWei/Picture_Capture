@@ -11,7 +11,6 @@ from typing import Literal
 
 from PIL import Image, ImageOps
 
-
 LayoutTransformKind = Literal["identity", "mirror_x", "rotate_ccw90", "rotate_cw90"]
 Box = tuple[int, int, int, int]
 Point = tuple[int, int]
@@ -85,8 +84,20 @@ class LayoutTransform:
         self, start: Point, end: Point, source_size: tuple[int, int]
     ) -> tuple[Point, Point]:
         """Inverse-map a canonical marker; rotated markers become vertical."""
+        return self.canonical_segment_to_source(start, end, source_size)
+
+    def canonical_segment_to_source(
+        self, start: Point, end: Point, source_size: tuple[int, int]
+    ) -> tuple[Point, Point]:
         return (
             self.canonical_to_source_point(*start, source_size),
             self.canonical_to_source_point(*end, source_size),
         )
 
+    def source_segment_to_canonical(
+        self, start: Point, end: Point, source_size: tuple[int, int]
+    ) -> tuple[Point, Point]:
+        return (
+            self.source_to_canonical_point(*start, source_size),
+            self.source_to_canonical_point(*end, source_size),
+        )

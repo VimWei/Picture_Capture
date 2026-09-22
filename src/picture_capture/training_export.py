@@ -95,7 +95,7 @@ def export_training_page(
     entries = read_pdic(pdic)
     ground_truth: list[dict[str, Any]] = []
     for order, entry in enumerate(entries, 1):
-        col = column_index(int(entry.x), geometry) if geometry.column_starts else 0
+        col = column_index(int(entry.x), geometry, int(entry.y)) if geometry.column_starts else 0
         ground_truth.append({
             "order": order,
             "word": entry.word,

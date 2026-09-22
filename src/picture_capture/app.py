@@ -142,8 +142,10 @@ def project_language_from_ocr(ocr_language: str) -> str:
 
 
 def transformed_geometry_pending(settings: AppSettings) -> bool:
-    """Return whether destructive geometry actions need a later staged adapter."""
-    return str(getattr(settings, "layout_transform", "identity") or "identity") != "identity"
+    """Return whether a configured transform is unknown to the geometry adapter."""
+    return str(getattr(settings, "layout_transform", "identity") or "identity") not in {
+        "identity", "mirror_x", "rotate_ccw90", "rotate_cw90",
+    }
 
 OCR_SCOPE_LABELS = {"current": "当前页", "all": "全部页面"}
 OCR_SCOPE_VALUES = {label: value for value, label in OCR_SCOPE_LABELS.items()}
@@ -323,6 +325,10 @@ def _review_line_box(
     display character even after increasing its requested row height.
     """
     if not _is_single_cjk_review_headword(entry.word):
+        if geometry.transform.kind != "identity":
+            regular_settings = replace(settings)
+            regular_settings.character_height = _effective_review_regular_crop_height(settings)
+            return line_box(entry, geometry, image, regular_settings)
         left, _old_top, right, _bottom = line_box(entry, geometry, image, settings)
         scale = parameter_scale(image, settings)
         half_spacing = round(0.5 * max(0, int(settings.row_padding)) / scale)
@@ -7481,7 +7487,7 @@ class PictureCaptureApp(tk.Tk):
             float(s.start_y), bool(s.crop_to_bottom_y), float(s.bottom_y),
             bool(s.follow_column_deformation), float(s.column_track_block_height),
             float(s.column_track_radius), float(s.body_indent),
-            float(s.column_track_max_step),
+            float(s.column_track_max_step), str(s.layout_transform),
         )
 
     def _get_cached_display_geometry(self):
@@ -7507,9 +7513,9 @@ class PictureCaptureApp(tk.Tk):
             return
         if processing_readonly is None:
             processing_readonly = self._foreground_batch_state(self.current_index) == "processing"
-        col = column_index(entry.x, geometry)
-        x = geometry.x_at(col, entry.y) * self.view_scale
-        y = entry.y * self.view_scale
+        entry_u, entry_v = geometry.source_to_canonical(entry.x, entry.y)
+        col = column_index(entry.x, geometry, entry.y)
+        canonical_x = geometry.x_at(col, entry_v)
         width = geometry.column_widths[col] * self.view_scale
         record = {"widgets": [], "canvas_items": [], "index_item": None}
 
@@ -7519,10 +7525,18 @@ class PictureCaptureApp(tk.Tk):
             else self.settings.show_headword_markers
         )
         if show_markers:
-            item = self.canvas.create_rectangle(
-                x, y, x + width * 0.95,
-                y + max(2, round(self.settings.marker_height * overlay_scale)),
-                fill=self.settings.headword_marker_color, stipple="gray50", outline="",
+            marker_start, marker_end = geometry.transform.canonical_marker_to_source(
+                (canonical_x, entry_v),
+                (canonical_x + round(geometry.column_widths[col] * 0.95), entry_v),
+                geometry.source_size,
+            )
+            item = self.canvas.create_line(
+                marker_start[0] * self.view_scale,
+                marker_start[1] * self.view_scale,
+                marker_end[0] * self.view_scale,
+                marker_end[1] * self.view_scale,
+                fill=self.settings.headword_marker_color,
+                width=max(2, round(self.settings.marker_height * overlay_scale)),
             )
             record["canvas_items"].append(item)
 
@@ -7557,8 +7571,12 @@ class PictureCaptureApp(tk.Tk):
         self.overlay_widgets.append(editor)
         record["widgets"].append(editor)
         self.entry_editor_bindings.append((editor, entry))
-        editor_x = x + width * float(self.settings.main_entry_x_ratio)
-        item = self.canvas.create_window(editor_x, y, window=editor, anchor="nw")
+        source_box = line_box(entry, geometry, self.image, self.settings)
+        editor_x = source_box[0] * self.view_scale
+        editor_y = source_box[1] * self.view_scale
+        if self.settings.layout_text_direction == "rtl":
+            editor.configure(justify="right")
+        item = self.canvas.create_window(editor_x, editor_y, window=editor, anchor="nw")
         record["canvas_items"].append(item)
 
         candidate = self._candidate_for_entry(entry)
@@ -7577,11 +7595,11 @@ class PictureCaptureApp(tk.Tk):
             ocr_x = editor_x + editor_req_width + 3
             if ocr_x + menu_req_width > size[0] - 2:
                 ocr_x = max(0, size[0] - menu_req_width - 2)
-            item = self.canvas.create_window(ocr_x, y, window=ocr_menu, anchor="nw")
+            item = self.canvas.create_window(ocr_x, editor_y, window=ocr_menu, anchor="nw")
             record["canvas_items"].append(item)
 
         index_item = self.canvas.create_text(
-            x + width + 3, y, text=str(index), fill="#222", anchor="nw", font=("Arial", 8),
+            editor_x + 3, editor_y - 10, text=str(index), fill="#222", anchor="nw", font=("Arial", 8),
         )
         record["canvas_items"].append(index_item)
         record["index_item"] = index_item
@@ -7806,11 +7824,8 @@ class PictureCaptureApp(tk.Tk):
             )
             if show_guides:
                 for path in geometry.column_paths:
-                    coords = [
-                        coordinate * self.view_scale
-                        for y, x in path.points
-                        for coordinate in (x, y)
-                    ]
+                    source_points = [geometry.canonical_to_source(x, y) for y, x in path.points]
+                    coords = [coordinate * self.view_scale for point in source_points for coordinate in point]
                     if len(coords) >= 4:
                         self.canvas.create_line(
                             *coords,
@@ -7842,9 +7857,14 @@ class PictureCaptureApp(tk.Tk):
                         continue
                     if cy_source <= 0:
                         continue
-                    cx = geometry.x_at(col, cy_source) * self.view_scale
-                    cy = cy_source * self.view_scale
-                    cwidth = geometry.column_widths[col] * self.view_scale
+                    cx_source = int(cand.get("source_x", 0))
+                    _cand_u, cand_v = geometry.source_to_canonical(cx_source, cy_source)
+                    control_source = geometry.canonical_to_source(
+                        geometry.x_at(col, cand_v) + round(geometry.column_widths[col] * 0.955),
+                        cand_v,
+                    )
+                    cx = control_source[0] * self.view_scale
+                    cy = control_source[1] * self.view_scale
                     cid = str(cand.get("candidate_id", ""))
                     if not cid:
                         continue
@@ -7865,7 +7885,7 @@ class PictureCaptureApp(tk.Tk):
                         command=lambda c=cid, v=var: self.candidate_checkbox_changed(c, v),
                     )
                     self.overlay_widgets.append(check)
-                    self.canvas.create_window(cx + cwidth * 0.955, cy, window=check, anchor="nw")
+                    self.canvas.create_window(cx, cy, window=check, anchor="nw")
         show_shapes = bool(self.polygon_var.get() or self.polygon_draw_var.get())
         show_labels = bool(self.settings.show_illustration_labels or self.polygon_draw_var.get())
         if show_shapes or show_labels:
@@ -8350,11 +8370,11 @@ class PictureCaptureApp(tk.Tk):
             self.new_polygon.append((x, y))
             self.redraw()
             return
-        if not self._guard_transformed_geometry("手动画线"):
-            return
         geometry = derive_geometry(self.image, self.settings)
-        col = column_index_for_click(x, geometry)
-        self.entries.append(WordEntry("", geometry.column_starts[col], y))
+        canonical_x, canonical_y = geometry.source_to_canonical(x, y)
+        col = column_index_for_click(x, geometry, y)
+        source_x, source_y = geometry.canonical_to_source(geometry.column_starts[col], canonical_y)
+        self.entries.append(WordEntry("", source_x, source_y))
         self._sort_entries_reading_order()
         self.redraw()
 
@@ -8926,11 +8946,18 @@ class PictureCaptureApp(tk.Tk):
         self.canvas.delete("review-highlight")
         geometry = derive_geometry(self.image, self.settings)
         col = max(0, min(len(geometry.column_starts) - 1, int(cand.get("column", 0))))
-        x = geometry.x_at(col, y) * self.view_scale
-        width = geometry.column_widths[col] * self.view_scale
-        yy = y * self.view_scale
-        self.canvas.create_rectangle(x, yy - 5, x + width * 0.98, yy + 18,
-                                     outline="#00bcd4", width=3, tags=("review-highlight",))
+        x_source = int(cand.get("source_x", 0))
+        _u, v = geometry.source_to_canonical(x_source, y)
+        canonical_box = (
+            geometry.x_at(col, v), v - 5,
+            geometry.x_at(col, v) + round(geometry.column_widths[col] * 0.98), v + 18,
+        )
+        x0, y0, x1, y1 = geometry.transform.canonical_box_to_source(canonical_box, self.image.size)
+        self.canvas.create_rectangle(
+            x0 * self.view_scale, y0 * self.view_scale,
+            x1 * self.view_scale, y1 * self.view_scale,
+            outline="#00bcd4", width=3, tags=("review-highlight",),
+        )
         self.canvas.tag_raise("review-highlight")
 
     def open_ocr_conflict_review(self) -> None:
@@ -9222,8 +9249,8 @@ class PictureCaptureApp(tk.Tk):
                 self.entries = detected
             else:
                 col = column_index_for_click(clicked_x, geometry)
-                self.entries = [e for e in self.entries if column_index(e.x, geometry) != col]
-                self.entries.extend(e for e in detected if column_index(e.x, geometry) == col)
+                self.entries = [e for e in self.entries if column_index(e.x, geometry, e.y) != col]
+                self.entries.extend(e for e in detected if column_index(e.x, geometry, e.y) == col)
             self._sort_entries_reading_order()
             if self.settings.detection_method == "paddleocr":
                 self._load_ocr_review_candidates()

@@ -618,7 +618,15 @@ def unwrap_column_band(
         )
         band_width = max(24, min(configured_band_width, max(24, column_width + left_margin)))
     top = max(0, geometry.top)
-    bottom = min(image.height, geometry.bottom)
+    canonical_size = geometry.transform.canonical_size(image.size)
+    bottom = min(canonical_size[1], geometry.bottom)
+    if geometry.transform.kind != "identity":
+        canonical_left = max(0, geometry.column_starts[column] - left_margin)
+        canonical_right = min(canonical_size[0], canonical_left + band_width)
+        source_box = geometry.transform.canonical_box_to_source(
+            (canonical_left, top, canonical_right, bottom), image.size
+        )
+        return normalize_page_rgb(image).crop(source_box), top, left_margin
     band = np.full((max(1, bottom - top), band_width, 3), 255, dtype=np.uint8)
     for band_y, source_y in enumerate(range(top, bottom)):
         source_x = geometry.x_at(column, source_y) - left_margin
@@ -687,6 +695,19 @@ def run_paddle_band(band: Image.Image, settings: AppSettings, engine: Any | None
     if not results:
         return []
     return extract_ocr_records(results[0])
+
+
+def _records_to_canonical_band(
+    records: list[OCRRecord], source_band_size: tuple[int, int], transform_kind: str
+) -> list[OCRRecord]:
+    """Map OCR boxes to analysis space without transforming OCR input pixels."""
+    from .layout_transform import LayoutTransform
+
+    transform = LayoutTransform(transform_kind)
+    return [
+        OCRRecord(record.text, record.confidence, transform.source_box_to_canonical(record.box, source_band_size))
+        for record in records
+    ]
 
 
 def recognize_paddle_text(
@@ -3136,6 +3157,7 @@ def _cache_signature(image: Image.Image, geometry: "Geometry", settings: AppSett
     data = {
         "version": 1,
         "image_size": list(image.size),
+        "layout_transform": geometry.transform.kind,
         "parameter_display_width": settings.parameter_display_width,
         "paths": [path.points for path in geometry.column_paths],
         "band_width": settings.paddle_band_width,
@@ -4662,6 +4684,9 @@ def detect_paddle_headwords(
             image, geometry, col, settings, source_width=separator_width,
             source_rgb=shared_source_rgb,
         )
+        transform_kind = geometry.transform.kind
+        analysis_band = geometry.transform.canonical_image_for_analysis(band)
+        analysis_separator_band = geometry.transform.canonical_image_for_analysis(separator_band)
 
         if cached_columns is not None and col < len(cached_columns):
             records = [OCRRecord(
@@ -4669,17 +4694,20 @@ def detect_paddle_headwords(
                 box=tuple(int(value) for value in item["box"]),  # type: ignore[arg-type]
             ) for item in cached_columns[col].get("ocr_records", [])]
         elif use_paddle:
-            records = run_paddle_band(band, settings, engine=engine)
+            source_records = run_paddle_band(band, settings, engine=engine)
+            records = _records_to_canonical_band(source_records, band.size, transform_kind)
         else:
             records = []
 
         paddle_lines = _records_as_merged_lines(records, settings)
         paddle_full_text = "\n".join(line.text for line in paddle_lines)
         paddle_entries, diagnostics = filter_headword_records(
-            records, band, source_top, source_x, settings,
-            separator_band=separator_band, user_rules=user_rules, engine_name="paddle", profile=profile,
+            records, analysis_band, source_top, source_x, settings,
+            separator_band=analysis_separator_band, user_rules=user_rules, engine_name="paddle", profile=profile,
             source_per_display_pixel=source_per_display_pixel,
         )
+        for entry in paddle_entries:
+            entry.x, entry.y = geometry.canonical_to_source(entry.x, entry.y)
 
         tess_payload: dict[str, Any] = {
             "enabled": use_tesseract,
@@ -4699,18 +4727,28 @@ def detect_paddle_headwords(
         tess_entries: list[Entry] = []
         tess_diagnostics: list[dict[str, Any]] = []
         if use_tesseract:
-            psm_values = [4, 6] if settings.paddle_tesseract_auto_psm else [max(3, int(settings.paddle_tesseract_psm))]
+            if str(getattr(settings, "layout_writing_mode", "horizontal-tb")).startswith("vertical"):
+                psm_values = [5]
+            else:
+                psm_values = [4, 6] if settings.paddle_tesseract_auto_psm else [max(3, int(settings.paddle_tesseract_psm))]
             variants: list[tuple[tuple[float, ...], int, list[OCRRecord], str, list[Entry], list[dict[str, Any]]]] = []
             errors: list[str] = []
             for psm in dict.fromkeys(psm_values):
                 try:
-                    candidate_records, candidate_text = run_tesseract_band_records(band, settings, psm_override=psm)
+                    source_candidate_records, candidate_text = run_tesseract_band_records(
+                        band, settings, psm_override=psm
+                    )
+                    candidate_records = _records_to_canonical_band(
+                        source_candidate_records, band.size, transform_kind
+                    )
                     candidate_entries, candidate_diagnostics = filter_headword_records(
-                        candidate_records, band, source_top, source_x, settings,
-                        separator_band=separator_band, user_rules=user_rules,
+                        candidate_records, analysis_band, source_top, source_x, settings,
+                        separator_band=analysis_separator_band, user_rules=user_rules,
                         engine_name="tesseract", profile=profile,
                         source_per_display_pixel=source_per_display_pixel,
                     )
+                    for entry in candidate_entries:
+                        entry.x, entry.y = geometry.canonical_to_source(entry.x, entry.y)
                     structural = sum(
                         1 for row in _candidate_rows(candidate_diagnostics)
                         if (row.get("features", {}) or {}).get("structural_cue")
@@ -4772,10 +4810,15 @@ def detect_paddle_headwords(
                     timeout=settings.paddle_lens_timeout,
                     default_confidence=settings.paddle_lens_default_confidence,
                 )
-                lens_records = [OCRRecord(text, confidence, box) for text, confidence, box in raw_lens_records]
+                source_lens_records = [
+                    OCRRecord(text, confidence, box) for text, confidence, box in raw_lens_records
+                ]
+                lens_records = _records_to_canonical_band(
+                    source_lens_records, band.size, transform_kind
+                )
                 lens_entries, lens_diagnostics = filter_headword_records(
-                    lens_records, band, source_top, source_x, settings,
-                    separator_band=separator_band, user_rules=user_rules,
+                    lens_records, analysis_band, source_top, source_x, settings,
+                    separator_band=analysis_separator_band, user_rules=user_rules,
                     engine_name="lens", profile=profile,
                 )
                 lens_payload.update({
@@ -4900,6 +4943,15 @@ def detect_paddle_headwords(
     _apply_manual_selection_overrides(review_candidates, overrides)
     _enforce_position_variant_exclusivity(review_candidates)
     cjk_duplicates_merged = _deduplicate_selected_cjk_review_candidates(review_candidates)
+    if geometry.transform.kind != "identity":
+        for item in review_candidates:
+            canonical_x = int(item.get("source_x", 0))
+            canonical_y = int(item.get("source_y", 0))
+            item["canonical_x"] = canonical_x
+            item["canonical_y"] = canonical_y
+            item["source_x"], item["source_y"] = geometry.canonical_to_source(
+                canonical_x, canonical_y
+            )
     all_entries = _entries_from_review_candidates(review_candidates)
     _apply_alphabetical_warnings_to_entries(report_columns, all_entries)
 

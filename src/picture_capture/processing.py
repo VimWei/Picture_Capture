@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 from .models import AppSettings, Entry, PolygonRegion, read_noncomment_lines, resolved_tesseract_language
 from .image_utils import normalize_page_rgb
+from .layout_transform import LayoutTransform
 from .ocr_engines import find_tesseract
 from .formats import read_pdic, read_ppp, write_pdic, write_ppp
 from .project_storage import crop_log_path, ppp_read_path_for_image, ppp_write_path_for_image, qt_root, special_pages_path
@@ -57,6 +58,8 @@ class Geometry:
     top: int
     bottom: int
     column_paths: list[ColumnPath]
+    transform: LayoutTransform = LayoutTransform()
+    source_size: tuple[int, int] = (0, 0)
 
     def x_at(self, column: int, y: int) -> int:
         if 0 <= column < len(self.column_paths):
@@ -68,6 +71,16 @@ class Geometry:
             return self.column_paths[column].x_bounds(y0, y1)
         x = self.column_starts[column]
         return x, x
+
+    def source_to_canonical(self, x: int, y: int) -> tuple[int, int]:
+        if self.source_size == (0, 0):
+            return x, y
+        return self.transform.source_to_canonical_point(x, y, self.source_size)
+
+    def canonical_to_source(self, x: int, y: int) -> tuple[int, int]:
+        if self.source_size == (0, 0):
+            return x, y
+        return self.transform.canonical_to_source_point(x, y, self.source_size)
 
 
 @dataclass(slots=True)
@@ -303,7 +316,7 @@ def _estimate_column_paths(
     return paths
 
 
-def derive_nominal_geometry(image_width: int, image_height: int, settings: AppSettings) -> Geometry:
+def _derive_nominal_geometry_canonical(image_width: int, image_height: int, settings: AppSettings) -> Geometry:
     """Return page geometry using only image dimensions and saved layout settings.
 
     This intentionally skips pixel decoding / column-edge tracking.  Reading-order
@@ -353,7 +366,18 @@ def derive_nominal_geometry(image_width: int, image_height: int, settings: AppSe
     return Geometry(starts, widths, top, bottom, paths)
 
 
-def derive_geometry(image: Image.Image, settings: AppSettings) -> Geometry:
+def derive_nominal_geometry(image_width: int, image_height: int, settings: AppSettings) -> Geometry:
+    """Return canonical nominal geometry while retaining source mapping metadata."""
+    transform = LayoutTransform(str(getattr(settings, "layout_transform", "identity") or "identity"))
+    source_size = (max(1, int(image_width)), max(1, int(image_height)))
+    canonical_size = transform.canonical_size(source_size)
+    geometry = _derive_nominal_geometry_canonical(*canonical_size, settings)
+    geometry.transform = transform
+    geometry.source_size = source_size
+    return geometry
+
+
+def _derive_geometry_canonical(image: Image.Image, settings: AppSettings) -> Geometry:
     """Translate legacy display-coordinate settings into source pixels.
 
     If the saved geometry cannot fit the current page, use a conservative
@@ -403,6 +427,17 @@ def derive_geometry(image: Image.Image, settings: AppSettings) -> Geometry:
     return Geometry(starts, widths, top, bottom, paths)
 
 
+def derive_geometry(image: Image.Image, settings: AppSettings) -> Geometry:
+    """Build layout geometry in canonical space without changing source pixels."""
+    source = normalize_page_rgb(image)
+    transform = LayoutTransform(str(getattr(settings, "layout_transform", "identity") or "identity"))
+    canonical = transform.canonical_image_for_analysis(source)
+    geometry = _derive_geometry_canonical(canonical, settings)
+    geometry.transform = transform
+    geometry.source_size = source.size
+    return geometry
+
+
 def _detect_entries_left_edge(image: Image.Image, settings: AppSettings) -> tuple[list[Entry], Geometry]:
     """Detect dictionary headword rows near each column's left edge.
 
@@ -412,8 +447,9 @@ def _detect_entries_left_edge(image: Image.Image, settings: AppSettings) -> tupl
     """
     source = normalize_page_rgb(image)
     geometry = derive_geometry(source, settings)
-    analysis, scale = _analysis_image(source)
-    parameter_to_analysis = scale / parameter_scale(source, settings)
+    canonical = geometry.transform.canonical_image_for_analysis(source)
+    analysis, scale = _analysis_image(canonical)
+    parameter_to_analysis = scale / parameter_scale(canonical, settings)
     gray = np.asarray(ImageOps.grayscale(analysis), dtype=np.uint8)
     threshold = max(0, min(255, settings.darkness_threshold / 3.0))
     dark = gray < threshold
@@ -468,7 +504,7 @@ def _detect_entries_left_edge(image: Image.Image, settings: AppSettings) -> tupl
                 # coarse Y produced by left-edge projection. Restrict analysis
                 # to this column so neighbouring columns cannot influence it.
                 from .paddle_headwords import refine_separator_y
-                display_per_source = parameter_scale(source, settings)
+                display_per_source = parameter_scale(canonical, settings)
                 source_per_display = 1.0 / max(1e-9, display_per_source)
                 column_x = max(0, round(geometry.x_at(col, y_source)))
                 column_right = min(gray.shape[1], column_x + max(10, geometry.column_widths[col]))
@@ -483,7 +519,8 @@ def _detect_entries_left_edge(image: Image.Image, settings: AppSettings) -> tupl
                     )
             if y_source - last_y < round(min_gap / scale):
                 continue
-            entries.append(Entry(word="", x=source_x, y=y_source))
+            source_point = geometry.canonical_to_source(source_x, y_source)
+            entries.append(Entry(word="", x=source_point[0], y=source_point[1]))
             last_y = y_source
 
     return sort_entries_reading_order(entries, geometry), geometry
@@ -563,7 +600,7 @@ def run_tesseract(image: Image.Image, language: str, executable: str = "tesserac
     return result.stdout.decode("utf-8", errors="replace")
 
 
-def column_index(x: int, geometry: Geometry) -> int:
+def column_index(x: int, geometry: Geometry, y: int = 0) -> int:
     """Classify a saved/detected X using the same visual intervals as clicks.
 
     Automatically detected column starts are robust percentiles, so an actual
@@ -573,16 +610,17 @@ def column_index(x: int, geometry: Geometry) -> int:
     the interval/gutter-distance classifier everywhere so sorting, rendering,
     cropping, and export all agree on the marker's visual column.
     """
-    return column_index_for_click(x, geometry)
+    return column_index_for_click(x, geometry, y)
 
 
-def column_index_for_click(x: int, geometry: Geometry) -> int:
+def column_index_for_click(x: int, geometry: Geometry, y: int = 0) -> int:
     """Return the visual column containing a manual click.
 
     Manual drawing must use each column's full horizontal interval, not the
     nearest column start. If the click is genuinely in a gutter or outside all
     columns, choose the interval boundary nearest to the click.
     """
+    x, _canonical_y = geometry.source_to_canonical(int(x), int(y))
     if not geometry.column_starts:
         return 0
     intervals: list[tuple[int, int]] = []
@@ -615,7 +653,8 @@ def entry_reading_order_key(entry: Entry, geometry: Geometry) -> tuple[int, int,
     lines ahead of OCR lines inside the same column.  Classify both sources
     into the same visual column first so their source never affects order.
     """
-    return (column_index_for_click(int(entry.x), geometry), int(entry.y), int(entry.x))
+    u, v = geometry.source_to_canonical(int(entry.x), int(entry.y))
+    return (column_index_for_click(int(entry.x), geometry, int(entry.y)), v, u)
 
 
 def sort_entries_reading_order(entries: list[Entry], geometry: Geometry) -> list[Entry]:
@@ -630,7 +669,10 @@ def sort_entries_column_y(entries: list[Entry], geometry: Geometry) -> list[Entr
     """
     return sorted(
         entries,
-        key=lambda entry: (column_index_for_click(int(entry.x), geometry), int(entry.y)),
+        key=lambda entry: (
+            column_index_for_click(int(entry.x), geometry, int(entry.y)),
+            geometry.source_to_canonical(int(entry.x), int(entry.y))[1],
+        ),
     )
 
 def clamp_box(box: tuple[int, int, int, int], image: Image.Image) -> tuple[int, int, int, int]:
@@ -643,18 +685,21 @@ def clamp_box(box: tuple[int, int, int, int], image: Image.Image) -> tuple[int, 
 
 
 def line_box(entry: Entry, geometry: Geometry, image: Image.Image, settings: AppSettings) -> tuple[int, int, int, int]:
-    idx = column_index(entry.x, geometry)
+    _entry_u, entry_v = geometry.source_to_canonical(entry.x, entry.y)
+    idx = column_index(entry.x, geometry, entry.y)
     scale = parameter_scale(image, settings)
     vertical_pad = round(abs(settings.row_padding) / scale)
     height = round((settings.character_height + 2 * abs(settings.row_padding)) / scale)
     width = round(geometry.column_widths[idx] * min(100.0, max(1.0, settings.right_ratio)) / 100.0)
     left_extension = round(geometry.column_starts[0] * 0.5)
-    tracked_x = geometry.x_at(idx, entry.y)
-    return clamp_box(
-        (tracked_x - left_extension, entry.y - vertical_pad,
-         tracked_x + width, entry.y - vertical_pad + height),
-        image,
+    tracked_x = geometry.x_at(idx, entry_v)
+    canonical_box = (
+        tracked_x - left_extension,
+        entry_v - vertical_pad,
+        tracked_x + width,
+        entry_v - vertical_pad + height,
     )
+    return clamp_box(geometry.transform.canonical_box_to_source(canonical_box, geometry.source_size), image)
 
 
 def ocr_entries(
@@ -675,7 +720,10 @@ def ocr_entries(
             from .paddle_headwords import recognize_paddle_text
             raw = recognize_paddle_text(crop, settings, engine=paddle_engine)
         else:
-            raw = run_tesseract(crop, resolved_tesseract_language(settings), settings.ocr_executable)
+            psm = 5 if str(getattr(settings, "layout_writing_mode", "")).startswith("vertical") else 7
+            raw = run_tesseract(
+                crop, resolved_tesseract_language(settings), settings.ocr_executable, psm=psm
+            )
         results.append(process_ocr_text(raw, replace_rules, settings.lowercase_ocr) if settings.ocr_replace else raw.strip())
     return results
 
@@ -745,8 +793,11 @@ def entry_crop_bounds(
         return max(0, top), min(image.height, bottom)
     top_param = settings.start_y if top_y is None else max(0, int(top_y))
     bottom_param = 0 if bottom_y is None else max(0, int(bottom_y))
-    top = max(0, min(image.height - 1, round(top_param * source_scale)))
-    bottom = image.height if bottom_param <= 0 else max(top + 1, min(image.height, round(bottom_param * source_scale)))
+    canonical_height = geometry.transform.canonical_size(image.size)[1]
+    top = max(0, min(canonical_height - 1, round(top_param * source_scale)))
+    bottom = canonical_height if bottom_param <= 0 else max(
+        top + 1, min(canonical_height, round(bottom_param * source_scale))
+    )
     return top, bottom
 
 
@@ -785,12 +836,20 @@ def _entry_crop_box_for_column(
     left_margin = outer_margin if col == 0 else half_gutter
     right_margin = outer_margin if col == len(geometry.column_starts) - 1 else gutter_px - half_gutter
     path_left, path_right = geometry.x_bounds(col, y0, y1)
-    return clamp_box((
+    canonical_size = geometry.transform.canonical_size(image.size)
+    canonical_box = (
         path_left - left_margin - extra_left_px,
         y0,
         path_right + nominal_width + right_margin + extra_right_px,
         y1,
-    ), image)
+    )
+    canonical_box = (
+        max(0, canonical_box[0]),
+        max(0, canonical_box[1]),
+        min(canonical_size[0], canonical_box[2]),
+        min(canonical_size[1], canonical_box[3]),
+    )
+    return clamp_box(geometry.transform.canonical_box_to_source(canonical_box, image.size), image)
 
 
 def entry_crop_column_boxes(
@@ -920,19 +979,22 @@ def _base_entry_crop_pieces(
         for col in range(len(geometry.column_starts)):
             add(0, None, "_上页末词条_", col_box(col,top,bottom), f"(0-{col+1})")
         return ordered, pieces
-    first_col=column_index(ordered[0].x, geometry)
+    _first_u, first_v = geometry.source_to_canonical(ordered[0].x, ordered[0].y)
+    first_col=column_index(ordered[0].x, geometry, ordered[0].y)
     for col in range(first_col): add(0,None,"_上页末词条_",col_box(col,top,bottom),f"(0-{col+1})")
-    if ordered[0].y-top>row_guard: add(0,None,"_上页末词条_",col_box(first_col,top,ordered[0].y),f"(0-{first_col+1})")
+    if first_v-top>row_guard: add(0,None,"_上页末词条_",col_box(first_col,top,first_v),f"(0-{first_col+1})")
     for index, entry in enumerate(ordered):
-        col=column_index(entry.x,geometry)
+        _entry_u, entry_v = geometry.source_to_canonical(entry.x, entry.y)
+        col=column_index(entry.x,geometry,entry.y)
         next_entry=ordered[index+1] if index+1<len(ordered) else None
-        next_col=column_index(next_entry.x,geometry) if next_entry else len(geometry.column_starts)
-        y0=max(top,entry.y-round(abs(settings.row_padding)/display_scale))
-        y1=next_entry.y if next_entry and next_col==col else bottom
+        next_v = geometry.source_to_canonical(next_entry.x, next_entry.y)[1] if next_entry else bottom
+        next_col=column_index(next_entry.x,geometry,next_entry.y) if next_entry else len(geometry.column_starts)
+        y0=max(top,entry_v-round(abs(settings.row_padding)/display_scale))
+        y1=next_v if next_entry and next_col==col else bottom
         add(index,index,entry.word,col_box(col,y0,y1))
         if next_entry and next_col>col:
             for continuation_col in range(col+1,next_col): add(index,index,entry.word,col_box(continuation_col,top,bottom))
-            if next_entry.y-top>row_guard: add(index,index,entry.word,col_box(next_col,top,next_entry.y))
+            if next_v-top>row_guard: add(index,index,entry.word,col_box(next_col,top,next_v))
         elif next_entry is None:
             for continuation_col in range(col+1,len(geometry.column_starts)): add(index,index,entry.word,col_box(continuation_col,top,bottom))
     return ordered, pieces
@@ -1307,6 +1369,7 @@ def detect_illustration_regions(
         image = normalize_page_rgb(opened)
     try:
         geometry = derive_geometry(image, settings)
+        work_image = geometry.transform.canonical_image_for_analysis(image)
         scale_param = parameter_scale(image, settings)
         source_margin = max(2, round(max(0, int(getattr(settings, "illustration_detect_padding", 8))) / max(scale_param, 0.01)))
         source_margin_right = max(
@@ -1317,7 +1380,7 @@ def detect_illustration_regions(
         for column, start in enumerate(geometry.column_starts):
             width = geometry.column_widths[column]
             base_x0 = max(0, int(start))
-            base_x1 = min(image.width, int(start + width))
+            base_x1 = min(work_image.width, int(start + width))
             # Illustrations frequently extend a little into the inter-column
             # gutter. The old detector clipped analysis exactly at column_width,
             # which systematically shortened the right edge. Borrow only the
@@ -1327,14 +1390,14 @@ def detect_illustration_regions(
                 free_right = max(0, next_start - base_x1)
                 right_room = min(max(source_margin_right, free_right // 2), max(source_margin_right, round(width * 0.10)))
             else:
-                free_right = max(0, image.width - base_x1)
+                free_right = max(0, work_image.width - base_x1)
                 right_room = min(free_right, max(source_margin_right, round(width * 0.08)))
             x0 = base_x0
-            x1 = min(image.width, base_x1 + max(0, right_room))
-            y0 = max(0, int(geometry.top)); y1 = min(image.height, int(geometry.bottom))
+            x1 = min(work_image.width, base_x1 + max(0, right_room))
+            y0 = max(0, int(geometry.top)); y1 = min(work_image.height, int(geometry.bottom))
             if x1 - x0 < 40 or y1 - y0 < 80:
                 continue
-            crop = image.crop((x0, y0, x1, y1)).convert("L")
+            crop = work_image.crop((x0, y0, x1, y1)).convert("L")
             try:
                 a_scale = min(1.0, analysis_column_width / max(1, crop.width))
                 aw = max(1, round(crop.width * a_scale)); ah = max(1, round(crop.height * a_scale))
@@ -1390,8 +1453,18 @@ def detect_illustration_regions(
                 crop.close()
         # Merge any boxes touching a column boundary only if they truly overlap;
         # most dictionary illustrations stay within one column, so this is rare.
-        return results
+        if geometry.transform.kind == "identity":
+            return results
+        return [
+            PolygonRegion(
+                region.label,
+                [geometry.canonical_to_source(x, y) for x, y in region.points],
+            )
+            for region in results
+        ]
     finally:
+        if "work_image" in locals():
+            work_image.close()
         image.close()
 
 

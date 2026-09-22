@@ -93,6 +93,7 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(ccw.source_to_canonical_point(6, 1, source_size), (1, 0))
         marker = ccw.canonical_marker_to_source((1, 2), (4, 2), source_size)
         self.assertEqual(marker, ((4, 1), (4, 4)))
+        self.assertEqual(ccw.source_segment_to_canonical(*marker, source_size), ((1, 2), (4, 2)))
 
     def test_layout_analysis_transform_does_not_mutate_source_pixels(self) -> None:
         source = Image.new("RGB", (4, 3), "white")
@@ -102,10 +103,23 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(canonical.getpixel((0, 0)), (1, 2, 3))
         self.assertEqual(source.tobytes(), before)
 
-    def test_nonidentity_layout_detection_is_gated_until_downstream_adapter(self) -> None:
-        image = Image.new("RGB", (40, 60), "white")
-        with self.assertRaisesRegex(RuntimeError, "仅加载其配置"):
-            detect_layout_parameters(image, AppSettings(layout_transform="mirror_x"))
+    def test_nonidentity_layout_detection_runs_in_canonical_space(self) -> None:
+        image = Image.new("RGB", (400, 600), "white")
+        draw = ImageDraw.Draw(image)
+        for y in range(80, 540, 30):
+            draw.rectangle((30, y, 175, y + 12), fill="black")
+            draw.rectangle((225, y, 370, y + 12), fill="black")
+        estimate = detect_layout_parameters(
+            image,
+            AppSettings(
+                parameter_display_width=400,
+                columns=2,
+                layout_columns_policy="fixed",
+                layout_transform="mirror_x",
+            ),
+        )
+        self.assertEqual(estimate.columns, 2)
+        self.assertEqual(estimate.canonical_transform, "mirror_x")
 
     def test_layout_aggregation_uses_mode_median_and_fixed_prior(self) -> None:
         rows = [
@@ -1421,7 +1435,7 @@ class DictionaryProfileV2Tests(unittest.TestCase):
         self.assertEqual(vertical["paddle_tesseract_psm"], 5)
         self.assertEqual(horizontal["tesseract_language"], "jpn")
         self.assertFalse(horizontal["paddle_use_textline_orientation"])
-        self.assertTrue(transformed_geometry_pending(AppSettings(layout_transform="mirror_x")))
+        self.assertFalse(transformed_geometry_pending(AppSettings(layout_transform="mirror_x")))
         self.assertFalse(transformed_geometry_pending(AppSettings(layout_transform="identity")))
 
     def test_v3_profile_file_does_not_override_authoritative_saved_settings(self) -> None:
@@ -5873,3 +5887,114 @@ def test_v2132_windows_launcher_reuses_saved_ocr_profile():
     assert '.picture_capture_ocr_extra' in text
     assert '--extra "%PC_OCR_EXTRA%"' in text
     assert 'uv run --locked' in text
+
+
+def test_rtl_geometry_orders_source_right_column_first_and_keeps_source_crop_pixels():
+    image = Image.new("RGB", (400, 300), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((300, 80, 360, 100), fill=(220, 20, 20))
+    settings = AppSettings(
+        parameter_display_width=400,
+        columns=2,
+        manual_x=30,
+        column_width=150,
+        gutter=40,
+        character_height=24,
+        layout_transform="mirror_x",
+        layout_text_direction="rtl",
+    )
+    geometry = derive_geometry(image, settings)
+    right = Entry("right", 350, 80)
+    left = Entry("left", 50, 80)
+
+    assert sort_entries_reading_order([left, right], geometry) == [right, left]
+    right_box = line_box(right, geometry, image, settings)
+    assert right_box[0] < 350 <= right_box[2]
+    assert right_box[1] <= 80 < right_box[3]
+    # The formal OCR path crops from the original source page. Its red source
+    # pixels therefore remain red rather than becoming a mirrored derivative.
+    crop = image.crop(right_box)
+    assert any(
+        crop.getpixel((x, y))[0] > 180 and crop.getpixel((x, y))[1] < 80
+        for y in range(crop.height)
+        for x in range(crop.width)
+    )
+
+
+def test_rtl_ordinary_drawing_detects_source_physical_right_edge():
+    canonical = Image.new("RGB", (400, 300), "white")
+    draw = ImageDraw.Draw(canonical)
+    for y in (70, 120, 170, 220):
+        draw.rectangle((30, y, 55, y + 12), fill="black")
+    source = canonical.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    settings = AppSettings(
+        parameter_display_width=400,
+        columns=1,
+        manual_x=30,
+        column_width=330,
+        start_y=40,
+        body_indent=35,
+        character_height=18,
+        layout_transform="mirror_x",
+        detection_method="left_edge",
+        paddle_refine_separator_y=False,
+    )
+
+    entries, _geometry = detect_entries(source, settings)
+
+    assert len(entries) == 4
+    assert all(entry.x > 300 for entry in entries)
+
+
+def test_vertical_geometry_maps_markers_boxes_and_whole_crops_back_to_source():
+    from picture_capture.processing import entry_crop_column_boxes
+
+    image = Image.new("RGB", (300, 500), "white")
+    settings = AppSettings(
+        parameter_display_width=500,
+        columns=3,
+        manual_x=20,
+        column_width=130,
+        gutter=25,
+        character_height=30,
+        layout_transform="rotate_ccw90",
+        layout_writing_mode="vertical-rl",
+    )
+    geometry = derive_geometry(image, settings)
+    source_point = geometry.canonical_to_source(geometry.column_starts[0], 70)
+    entry = Entry("縦", *source_point)
+    box = line_box(entry, geometry, image, settings)
+    marker = geometry.transform.canonical_marker_to_source(
+        (geometry.column_starts[0], 70),
+        (geometry.column_starts[0] + geometry.column_widths[0], 70),
+        image.size,
+    )
+
+    assert marker[0][0] == marker[1][0]
+    assert box[2] - box[0] < box[3] - box[1]
+    column_boxes = entry_crop_column_boxes(image, settings)
+    assert len(column_boxes) == 3
+    assert all(0 <= x0 < x1 <= image.width and 0 <= y0 < y1 <= image.height for x0, y0, x1, y1 in column_boxes)
+
+
+def test_transformed_ocr_band_uses_original_source_orientation_and_box_adapter():
+    from picture_capture.paddle_headwords import _records_to_canonical_band, unwrap_column_band
+    from picture_capture.paddle_headwords import OCRRecord
+
+    image = Image.new("RGB", (120, 200), "white")
+    image.putpixel((110, 80), (1, 2, 3))
+    settings = AppSettings(
+        parameter_display_width=120,
+        columns=1,
+        manual_x=5,
+        column_width=100,
+        layout_transform="mirror_x",
+    )
+    geometry = derive_geometry(image, settings)
+    band, _top, _margin = unwrap_column_band(image, geometry, 0, settings)
+    canonical = geometry.transform.canonical_image_for_analysis(band)
+    records = _records_to_canonical_band([OCRRecord("abc", 1.0, (80, 5, 100, 20))], band.size, "mirror_x")
+
+    source_pixel_x = next(x for x in range(band.width) if band.getpixel((x, 25)) == (1, 2, 3))
+    assert canonical.getpixel((band.width - 1 - source_pixel_x, 25)) == (1, 2, 3)
+    assert records[0].box[0] < records[0].box[2] <= band.width
