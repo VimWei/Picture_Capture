@@ -38,6 +38,19 @@ class LayoutConsistencyEstimate:
     is_blank: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class VerticalRuleEstimate:
+    rule_start: int
+    rule_end: int
+    gutter_start: int
+    gutter_end: int
+    confidence: float
+
+    @property
+    def center(self) -> int:
+        return round((self.rule_start + self.rule_end) / 2)
+
+
 def aggregate_layout_estimates(
     estimates: Iterable[LayoutEstimate], *, columns_policy: str = "detect", fixed_columns: int | None = None
 ) -> tuple[dict[str, int], str]:
@@ -257,6 +270,59 @@ def _gutter_before_next_start(
     return max(candidates, key=lambda run: (run[1], run[0])) if candidates else None
 
 
+def _detect_persistent_vertical_rule(
+    ink: np.ndarray, left: int, right: int, body_top: int, body_bottom: int, mode: str = "auto"
+) -> VerticalRuleEstimate | None:
+    """Detect a narrow persistent divider and include blank space on both sides."""
+    if mode == "absent" or right - left < 20 or ink.ndim != 2:
+        return None
+    top = max(0, min(ink.shape[0] - 1, int(body_top)))
+    bottom = max(top + 1, min(ink.shape[0], int(body_bottom)))
+    body = ink[top:bottom]
+    pitch = right - left
+    search_left = max(0, left + round(pitch * 0.45))
+    search_right = min(ink.shape[1], right - max(2, round(pitch * 0.02)))
+    if search_right <= search_left:
+        return None
+    blocks = [block for block in np.array_split(body, min(20, max(5, body.shape[0] // 60)), axis=0) if block.size]
+    density = body.mean(axis=0)
+    persistence = np.vstack([block.mean(axis=0) >= 0.18 for block in blocks]).mean(axis=0)
+    threshold = 0.45 if mode == "present" else 0.68
+    candidates = (persistence >= threshold) & (density >= (0.22 if mode == "present" else 0.34))
+    max_width = max(3, min(round(pitch * 0.035), round(ink.shape[1] * 0.012)))
+    runs = [
+        (search_left + a, search_left + b)
+        for a, b in _runs(candidates[search_left:search_right])
+        if 1 <= b - a <= max_width
+    ]
+    if not runs:
+        return None
+    rule_start, rule_end = max(
+        runs, key=lambda run: float(persistence[run[0]:run[1]].mean()) - (run[1] - run[0]) * 0.002
+    )
+    stable_blank = _persistent_vertical_whitespace(body)
+    # The whitespace helper deliberately bridges tiny interruptions so broken
+    # scans still form a useful gutter.  A real divider is precisely such a
+    # tiny interruption, however, so split the mask back at the detected rule
+    # before looking for its two adjacent blank regions.
+    stable_blank[rule_start:rule_end] = False
+    blank_runs = _runs(stable_blank)
+    left_blanks = [run for run in blank_runs if run[1] <= rule_start and rule_start - run[1] <= max_width + 3]
+    right_blanks = [run for run in blank_runs if run[0] >= rule_end and run[0] - rule_end <= max_width + 3]
+    minimum_blank = max(2, round(pitch * 0.008))
+    if mode == "auto" and (
+        not left_blanks
+        or not right_blanks
+        or left_blanks[-1][1] - left_blanks[-1][0] < minimum_blank
+        or right_blanks[0][1] - right_blanks[0][0] < minimum_blank
+    ):
+        return None
+    gutter_start = max(left_blanks, key=lambda run: run[1])[0] if left_blanks else rule_start
+    gutter_end = min(right_blanks, key=lambda run: run[0])[1] if right_blanks else rule_end
+    confidence = float(persistence[rule_start:rule_end].mean())
+    return VerticalRuleEstimate(rule_start, rule_end, gutter_start, gutter_end, confidence)
+
+
 def _estimate_start_y(boxes: list[tuple[int, int, int, int]], height: int) -> int:
     if not boxes:
         return 0
@@ -288,6 +354,9 @@ def infer_layout_from_boxes(
     image_size: tuple[int, int],
     display_scale: float = 1.0,
     ink_mask: np.ndarray | None = None,
+    columns_policy: str = "detect",
+    fixed_columns: int | None = None,
+    column_separator_mode: str = "auto",
 ) -> LayoutEstimate:
     width, height = image_size
     raw = [
@@ -309,6 +378,21 @@ def infer_layout_from_boxes(
     starts = sorted(set(starts))
     if not starts:
         starts = [int(np.percentile([box[0] for box in filtered], 4))]
+    if columns_policy == "fixed" and fixed_columns:
+        count = max(1, min(12, int(fixed_columns)))
+        page_left = int(np.percentile([box[0] for box in filtered], 4))
+        observed_right = int(np.percentile([box[2] for box in filtered], 98))
+        # Sparse pages may contain text in only the first column.  Under a
+        # fixed-column prior, use the symmetric page extent rather than
+        # compressing every configured column into that one occupied region.
+        page_right = max(observed_right, width - page_left)
+        pitch = max(10.0, (page_right - page_left) / count)
+        constrained: list[int] = []
+        for index in range(count):
+            expected = page_left + index * pitch
+            nearby = [box[0] for box in filtered if abs(box[0] - expected) <= pitch * 0.28]
+            constrained.append(int(np.percentile(nearby, 8)) if nearby else round(expected))
+        starts = constrained
 
     density = np.zeros(max(1, width), dtype=float)
     for x0, y0, x1, y1 in filtered:
@@ -318,9 +402,27 @@ def infer_layout_from_boxes(
     col_widths: list[int] = []
     body_top = _estimate_start_y(filtered, height)
     body_bottom = int(np.percentile([box[3] for box in filtered], 99))
+    separators: list[int] = []
     for left, right in zip(starts, starts[1:]):
         pitch = right - left
-        run = (
+        divider = (
+            _detect_persistent_vertical_rule(
+                ink_mask,
+                left,
+                right,
+                body_top,
+                body_bottom,
+                column_separator_mode,
+            )
+            if ink_mask is not None
+            else None
+        )
+        if divider is not None:
+            run = (divider.gutter_start, divider.gutter_end)
+            separators.append(divider.center)
+        else:
+            run = None
+        run = run or (
             _gutter_before_next_start(ink_mask, left, right, body_top, body_bottom)
             if ink_mask is not None else None
         )
@@ -364,6 +466,7 @@ def infer_layout_from_boxes(
         row_padding=max(1, round(row_padding_source * scale)),
         source_boxes=len(filtered),
         method="paddle",
+        separator_x=(round(float(np.median(separators)) * scale) if separators else None),
     )
 
 
@@ -516,6 +619,64 @@ def _projection_layout_estimate(source: Image.Image, settings: AppSettings) -> L
         stable = widths[:-1] if widths[:-1] else widths
         widths[-1] = int(round(float(np.median(stable))))
 
+    separator_centers: list[int] = []
+    if settings.layout_columns_policy == "fixed":
+        count = max(1, min(12, int(settings.columns)))
+        span = max(10.0, (page_right - page_left) / count)
+        starts = []
+        for index in range(count):
+            zone_left = round(page_left + index * span)
+            zone_right = round(page_left + (index + 0.35) * span)
+            search_left = zone_left
+            if index and settings.layout_column_separator_mode != "absent":
+                search_left += max(3, round(span * 0.02))
+            # A central rule may be the first dark feature in the next slot.
+            # Exclude unusually persistent columns when finding the leading
+            # edge; ordinary glyph columns vary down the page, while a divider
+            # remains dark through most body rows.
+            leading_mask = text_mask & (x_density < 0.72)
+            positions = np.flatnonzero(leading_mask[search_left:zone_right])
+            if not positions.size:
+                minimum_text_run = max(4, round(span * 0.015))
+                text_runs = [
+                    (a, b)
+                    for a, b in _runs(text_mask[search_left:zone_right])
+                    if b - a >= minimum_text_run
+                ]
+                if text_runs:
+                    positions = np.arange(text_runs[0][0], text_runs[0][1])
+            starts.append(search_left + int(positions[0]) if positions.size else zone_left)
+        widths = []
+        gutters = []
+        for left, right in zip(starts, starts[1:]):
+            divider = _detect_persistent_vertical_rule(
+                ink,
+                left,
+                right,
+                body_top,
+                body_bottom,
+                settings.layout_column_separator_mode,
+            )
+            run = (
+                (divider.gutter_start, divider.gutter_end)
+                if divider
+                else _gutter_before_next_start(ink, left, right, body_top, body_bottom)
+            )
+            if divider:
+                separator_centers.append(divider.center)
+            if run:
+                widths.append(max(10, run[0] - left))
+                gutters.append(run[1] - run[0])
+            else:
+                fallback = max(8, round((right - left) * 0.055))
+                widths.append(max(10, right - left - fallback))
+                gutters.append(fallback)
+        if count == 1:
+            widths = [max(10, page_right - starts[0])]
+            gutters = []
+        else:
+            widths.append(round(float(np.median(widths))))
+
     back = 1.0 / resize_scale
     display = parameter_scale(source, settings)
     factor = back * display
@@ -530,6 +691,7 @@ def _projection_layout_estimate(source: Image.Image, settings: AppSettings) -> L
         row_padding=1,
         source_boxes=max(1, len(starts) + len(chosen)),
         method="projection_fallback",
+        separator_x=(round(float(np.median(separator_centers)) * factor) if separator_centers else None),
     )
 
 
@@ -571,6 +733,9 @@ def detect_layout_parameters(image: Image.Image, settings: AppSettings) -> Layou
                     analysis.size,
                     display_scale=parameter_scale(analysis, settings),
                     ink_mask=source_gray < _otsu_threshold(source_gray),
+                    columns_policy=settings.layout_columns_policy,
+                    fixed_columns=settings.columns,
+                    column_separator_mode=settings.layout_column_separator_mode,
                 )
                 estimate.canonical_transform = transform.kind
                 estimate.confidence = min(1.0, estimate.source_boxes / 40.0)
