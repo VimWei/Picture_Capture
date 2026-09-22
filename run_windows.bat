@@ -2,10 +2,15 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
+rem When launched by Picture_Capture.vbs the console is hidden, so keep it open
+rem for error messages only in visible mode.
+set "PC_HOLD=pause"
+if defined PC_HIDDEN set "PC_HOLD="
+
 where uv >nul 2>&1
 if errorlevel 1 (
   echo [Picture Capture] uv was not found. Install it from https://docs.astral.sh/uv/
-  pause
+  %PC_HOLD%
   exit /b 1
 )
 
@@ -22,9 +27,11 @@ if defined PC_OCR_EXTRA (
   uv run --locked python run.py
 )
 
-if errorlevel 1 (
+set "PC_RC=%errorlevel%"
+if not "%PC_RC%"=="0" (
   echo.
   echo [Picture Capture] If uv reports that its version is too old, run: uv self update
   echo [Picture Capture] To install or change OCR components, run: install_ocr_windows.bat
-  pause
+  %PC_HOLD%
 )
+exit /b %PC_RC%
