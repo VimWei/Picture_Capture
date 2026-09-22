@@ -43,8 +43,9 @@ from .collation import (
 )
 from .dictionary_profile import (
     DEFAULT_PROFILE_ID, PROFILE_FILENAME, dictionary_profile_labels, dictionary_profile_preset,
+    effective_project_profile_id,
     language_effective_settings, managed_profile_setting_names, profile_effective_settings, profile_preview_path,
-    profile_layout_summary, project_profile_preset_id, write_project_profile,
+    profile_layout_summary, write_project_profile,
 )
 from .picdic import build_picdic_package
 from .image_utils import normalize_page_rgb
@@ -213,6 +214,23 @@ def binary_preview_image(source: Image.Image) -> Image.Image:
             best_variance = variance
             threshold = value
     return gray.point(lambda pixel: 255 if pixel > threshold else 0, mode="1").convert("RGB")
+
+
+def vertical_entry_label_text(word: str) -> str:
+    """Return a top-to-bottom label with a clickable blank-entry placeholder."""
+    return "\n".join(word) or "□"
+
+
+def vertical_overlay_anchors(
+    marker_start: tuple[int, int], marker_end: tuple[int, int], view_scale: float,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Anchor vertical editor/label and index to one transformed source marker."""
+    editor = (
+        (min(marker_start[0], marker_end[0]) + 5) * view_scale,
+        min(marker_start[1], marker_end[1]) * view_scale,
+    )
+    index = (marker_start[0] * view_scale + 3, marker_start[1] * view_scale + 3)
+    return editor, index
 
 
 def _sorted_page_list_rows(rows: list[tuple[str, tuple]], column: str, descending: bool = False) -> list[tuple[str, tuple]]:
@@ -1231,11 +1249,10 @@ class SettingsDialog(tk.Toplevel):
         top.columnconfigure(1, weight=1)
 
         self._profile_label_to_key = dictionary_profile_labels()
-        selected_key = getattr(self.parent.settings, "dictionary_profile_id", DEFAULT_PROFILE_ID)
-        if self.parent.project:
-            selected_key = project_profile_preset_id(
-                project_profile_path(self.parent.project.root), selected_key
-            )
+        selected_key = effective_project_profile_id(
+            self.parent.settings,
+            project_profile_path(self.parent.project.root) if self.parent.project else None,
+        )
         try:
             selected = dictionary_profile_preset(selected_key)
         except Exception:
@@ -7236,6 +7253,17 @@ class PictureCaptureApp(tk.Tk):
         host = ttk.Frame(dialog, padding=10)
         host.pack(fill="both", expand=True)
 
+        def open_selected(root: Path) -> None:
+            if not root.is_dir():
+                messagebox.showerror("无法打开项目", f"项目路径不存在：\n{root}", parent=dialog)
+                return
+            try:
+                self._load_project(root)
+            except Exception as exc:
+                messagebox.showerror("无法打开项目", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+
         def rebuild() -> None:
             for child in host.winfo_children():
                 child.destroy()
@@ -7249,7 +7277,7 @@ class PictureCaptureApp(tk.Tk):
                 status = "" if root.is_dir() else "（路径不存在）"
                 ttk.Label(host, text=str(row.get("name") or root.name), width=18).grid(row=index, column=0, sticky="w")
                 ttk.Label(host, text=f"{root} {status}").grid(row=index, column=1, sticky="ew", padx=6)
-                ttk.Button(host, text="打开", command=lambda p=root: (dialog.destroy(), self._load_project(p))).grid(row=index, column=2)
+                ttk.Button(host, text="打开", command=lambda p=root: open_selected(p)).grid(row=index, column=2)
                 remove = ttk.Button(host, text="× 删除", command=lambda p=root: (remove_recent_project(p), rebuild()))
                 remove.grid(row=index, column=3, padx=(4, 0))
                 self._attach_tooltip(remove, "仅从列表清除，不删除项目文件。")
@@ -7368,7 +7396,12 @@ class PictureCaptureApp(tk.Tk):
         self._display_geometry_cache = None
         self._display_geometry_cache_key = None
         self.project = project; self._project_words = set(project.words); self.settings = project.settings
-        touch_recent_project(project.root)
+        try:
+            touch_recent_project(project.root)
+        except (OSError, ValueError, TypeError) as exc:
+            # Recent history is application convenience data. A read-only/full
+            # profile directory must never prevent a valid project transition.
+            self._recent_projects_warning = str(exc)
         if hasattr(self, "_page_column_vars"):
             self._page_column_vars["lined"].set(bool(getattr(self.settings, "page_list_show_lined", True)))
             self._page_column_vars["fill_status"].set(bool(getattr(self.settings, "page_list_show_fill_status", True)))
@@ -7712,8 +7745,9 @@ class PictureCaptureApp(tk.Tk):
         elif self.settings.layout_writing_mode != "horizontal-tb":
             # Anchor every vertical overlay to the same transformed marker used
             # above rather than projecting a second horizontal coordinate path.
-            editor_x = (min(marker_start[0], marker_end[0]) + 5) * self.view_scale
-            editor_y = min(marker_start[1], marker_end[1]) * self.view_scale
+            (editor_x, editor_y), _vertical_index = vertical_overlay_anchors(
+                marker_start, marker_end, self.view_scale,
+            )
         else:
             # Horizontal RTL remains transform-aware.
             source_box = line_box(entry, geometry, self.image, self.settings)
@@ -7728,8 +7762,9 @@ class PictureCaptureApp(tk.Tk):
             # Tk Entry cannot render vertical text.  Keep it detached until the
             # user clicks the source-oriented canvas label, then show a short-
             # lived horizontal editor at that exact marker anchor.
+            vertical_label_text = vertical_entry_label_text(entry.word)
             label_item = self.canvas.create_text(
-                editor_x, editor_y, text="\n".join(entry.word), anchor="nw",
+                editor_x, editor_y, text=vertical_label_text, anchor="nw",
                 justify="center", fill="#111111",
                 font=_entry_font_spec(
                     self.settings.main_entry_font_family, editor_font_size,
@@ -7741,7 +7776,7 @@ class PictureCaptureApp(tk.Tk):
 
             def close_vertical_editor(_event=None, *, e=entry, w=editor) -> None:
                 self.update_entry(e, w)
-                self.canvas.itemconfigure(label_item, text="\n".join(e.word), state="normal")
+                self.canvas.itemconfigure(label_item, text=vertical_entry_label_text(e.word), state="normal")
                 if popup_item[0] is not None:
                     self.canvas.delete(popup_item[0])
                     popup_item[0] = None
@@ -7809,8 +7844,9 @@ class PictureCaptureApp(tk.Tk):
             index_y = entry_v * self.view_scale
 
         elif self.settings.layout_writing_mode != "horizontal-tb":
-            index_x = marker_start[0] * self.view_scale + 3
-            index_y = marker_start[1] * self.view_scale + 3
+            _vertical_editor, (index_x, index_y) = vertical_overlay_anchors(
+                marker_start, marker_end, self.view_scale,
+            )
         else:
             # RTL follows its transform-aware editor position.
             index_x = editor_x + 3

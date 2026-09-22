@@ -310,9 +310,9 @@ class AppSettings:
         # accepted as syllable separators only when directly adjacent to the
         # next letters, so ``mail. Pron.`` is not swallowed as one fake lemma.
         # Mixed runs such as '.-' / '+-' remain supported.
-        r"(-?[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+(?:\s*[·•∙‧]\s*[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+|"
-        r"[.:+]{1,3}[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+|[·•∙‧.:+]*-+[·•∙‧.:+]*[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+|"
-        r"['’][A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+)*-?)"
+        r"(-?[^\W\d_]+(?:\s*[·•∙‧]\s*[^\W\d_]+|"
+        r"[.:+]{1,3}[^\W\d_]+|[·•∙‧.:+]*-+[·•∙‧.:+]*[^\W\d_]+|"
+        r"['’][^\W\d_]+)*-?)"
     )
     paddle_pos_regex: str = (
         # Dictionary POS labels observed across pp.55-70. Longer forms must
@@ -543,7 +543,17 @@ class ProjectState:
         # settings.json is authoritative for mutable project state.  The profile
         # sidecar is only a compatibility fallback for projects that do not yet
         # have settings.json; it must never overwrite a user's newer selection.
-        if not json_settings.exists():
+        settings_has_profile = False
+        if json_settings.exists():
+            try:
+                saved_settings = json.loads(json_settings.read_text(encoding="utf-8-sig"))
+                settings_has_profile = bool(
+                    isinstance(saved_settings, dict)
+                    and str(saved_settings.get("dictionary_profile_id") or "").strip()
+                )
+            except (OSError, ValueError, TypeError):
+                settings_has_profile = False
+        if not settings_has_profile:
             try:
                 from .dictionary_profile import project_profile_preset_id
                 settings.dictionary_profile_id = project_profile_preset_id(

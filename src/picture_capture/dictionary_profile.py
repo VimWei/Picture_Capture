@@ -453,9 +453,10 @@ def load_dictionary_profile(
 ) -> DictionaryProfile:
     """Load a v3/v2 preset project or a legacy v1 grammar file.
 
-    ``preset`` normally comes from ``AppSettings.dictionary_profile_id``.  A v2
-    project file can override that selection; a v1 project file remains fully
-    supported and is interpreted exactly as before.
+    ``preset`` normally comes from ``AppSettings.dictionary_profile_id`` and is
+    authoritative when supplied. A project sidecar is used as a migration
+    fallback, or contributes synchronized overrides only when it names the same
+    preset. A v1 project file remains supported when no preset is supplied.
     """
     raw: dict[str, Any] | None = None
     if path is not None and path.exists():
@@ -466,15 +467,23 @@ def load_dictionary_profile(
         if not isinstance(candidate, dict):
             raise ValueError(f"词典配置顶层必须是 JSON 对象：{path}")
         raw = candidate
-        if candidate.get("format") not in {PROFILE_FORMAT_V2, PROFILE_FORMAT_V3}:
+        if candidate.get("format") not in {PROFILE_FORMAT_V2, PROFILE_FORMAT_V3} and not str(preset or "").strip():
             return _profile_from_legacy_dict(candidate)
 
-    compatibility_default = "latin_structured_symbols" if raw is None and preset is None else DEFAULT_PROFILE_ID
-    selected = str((raw or {}).get("preset") or preset or compatibility_default)
+    requested = str(preset or "").strip()
+    compatibility_default = "latin_structured_symbols" if raw is None and not requested else DEFAULT_PROFILE_ID
+    selected = requested or str((raw or {}).get("preset") or compatibility_default)
     profile = dictionary_profile_preset(selected)
-    selected_language = str(language or (raw or {}).get("language") or profile.default_language)
+    raw_matches = False
+    if raw is not None and raw.get("format") in {PROFILE_FORMAT_V2, PROFILE_FORMAT_V3}:
+        try:
+            raw_matches = dictionary_profile_preset(str(raw.get("preset") or selected)).key == profile.key
+        except (KeyError, ValueError):
+            raw_matches = False
+    effective_raw = raw if not requested or raw_matches else None
+    selected_language = str(language or (effective_raw or {}).get("language") or profile.default_language)
     abbreviations, symbols = _grammar_block_from_preset(profile, selected_language)
-    overrides = ((raw or {}).get("overrides") or {}).get("grammar") if raw else None
+    overrides = ((effective_raw or {}).get("overrides") or {}).get("grammar") if effective_raw else None
     abbreviations, symbols = _apply_grammar_overrides(abbreviations, symbols, overrides)
     return _grammar_profile_from_blocks(
         name=profile.display_name,
@@ -504,6 +513,14 @@ def project_profile_preset_id(path: Path | None, fallback: str = DEFAULT_PROFILE
     if isinstance(alias, dict):
         return str(alias.get("headword_profile") or DEFAULT_PROFILE_ID)
     return dictionary_profile_preset(key).key
+
+
+def effective_project_profile_id(settings: Any, path: Path | None = None) -> str:
+    """Resolve a current profile with mutable settings taking precedence."""
+    configured = str(getattr(settings, "dictionary_profile_id", "") or "").strip()
+    if configured:
+        return dictionary_profile_preset(configured).key
+    return project_profile_preset_id(path, DEFAULT_PROFILE_ID)
 
 
 def apply_project_profile_components(path: Path | None, settings: Any) -> None:

@@ -22,6 +22,7 @@ from .image_utils import normalize_page_rgb
 from .dictionary_profile import (
     PROFILE_FILENAME,
     DictionaryProfile,
+    effective_project_profile_id,
     leading_relation_label,
     load_dictionary_profile,
     starts_with_internal_article_symbol,
@@ -313,16 +314,20 @@ def _parse_cjk_marker_pinyin_headword(
     )
 
 
+_CJK_SINGLE_PINYIN_RE = re.compile(
+    r"^\s*(?P<head>[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])\s*[＊*]?\s*"
+    r"(?P<pinyin>[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+"
+    r"(?:[ '\-’]+[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+)*)\b",
+    flags=re.UNICODE,
+)
+
+
 def _parse_cjk_single_with_pinyin(text: str, settings: AppSettings) -> HeadwordParse | None:
     """Recognize a single CJK head followed by optional star and pinyin."""
     if not _is_chinese_ocr(settings):
         return None
     parse_text, repairs = _repair_headword_ocr(text)
-    match = re.match(
-        r"^\s*(?P<head>[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])\s*[＊*]?\s*"
-        r"(?P<pinyin>[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+(?:[ '\-]?[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]+)*)\b",
-        parse_text, flags=re.UNICODE,
-    )
+    match = _CJK_SINGLE_PINYIN_RE.match(parse_text)
     if not match:
         return None
     result = _make_chinese_visual_headword(
@@ -1244,7 +1249,16 @@ def _compile_patterns(
     profile: DictionaryProfile | None = None,
 ) -> tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str]]:
     try:
-        headword_pattern = re.compile(settings.paddle_headword_regex, re.UNICODE | re.IGNORECASE)
+        headword_regex = settings.paddle_headword_regex
+        if (
+            profile is not None and profile.uses_parser("latin")
+            and headword_regex == AppSettings().paddle_headword_regex
+        ):
+            # Shared settings remain script-neutral for Arabic/Kana/custom
+            # profiles. Latin profiles narrow only their own structural parser.
+            latin_letter = r"[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]"
+            headword_regex = headword_regex.replace(r"[^\W\d_]", latin_letter)
+        headword_pattern = re.compile(headword_regex, re.UNICODE | re.IGNORECASE)
         special_pattern = re.compile(settings.paddle_special_symbol_regex, re.UNICODE)
         pos_pattern = re.compile(
             profile.pos_regex() if profile is not None else settings.paddle_pos_regex,
@@ -1653,14 +1667,8 @@ def parse_headword_text(
         chinese_single = _parse_chinese_single_character_headword(text, settings)
         if chinese_single is not None:
             return chinese_single
-    headword_pattern, _special_pattern, pos_pattern = patterns or _compile_patterns(settings, active_profile)
-    if legacy_language_driven_cjk and patterns is None:
-        # Preserve the legacy CJK diagnostic parse path for section labels; the
-        # Latin profiles themselves remain script-restricted.
-        legacy_regex = settings.paddle_headword_regex.replace(
-            r"[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]", r"[^\W\d_]"
-        )
-        headword_pattern = re.compile(legacy_regex, re.UNICODE | re.IGNORECASE)
+    compile_profile = None if legacy_language_driven_cjk and profile is None else active_profile
+    headword_pattern, _special_pattern, pos_pattern = patterns or _compile_patterns(settings, compile_profile)
     parse_text, repairs = _repair_headword_ocr(text)
     match = headword_pattern.search(parse_text)
     if not match:
@@ -4740,7 +4748,9 @@ def detect_paddle_headwords(
     user_rules = load_headword_filter_rules(filter_rules_path)
     profile_path = filter_rules_path.parent / PROFILE_FILENAME if filter_rules_path else None
     profile = load_dictionary_profile(
-        profile_path, preset=getattr(settings, "dictionary_profile_id", None), language=settings.ocr_language,
+        profile_path,
+        preset=effective_project_profile_id(settings, profile_path),
+        language=settings.ocr_language,
     )
     cached_columns: list[dict[str, Any]] | None = None
     if cache_path and cache_path.exists() and not force_refresh:

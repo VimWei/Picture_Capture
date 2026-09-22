@@ -3,8 +3,11 @@ from dataclasses import replace
 
 from PIL import Image
 
-from picture_capture.app import binary_preview_image, effective_main_overlay_font_size
-from picture_capture.dictionary_profile import load_dictionary_profile
+from picture_capture.app import (
+    binary_preview_image, effective_main_overlay_font_size,
+    vertical_entry_label_text, vertical_overlay_anchors,
+)
+from picture_capture.dictionary_profile import effective_project_profile_id, load_dictionary_profile
 from picture_capture.models import AppSettings, ProjectState
 from picture_capture.paddle_headwords import (
     OCRLine, OCRRecord, _compile_patterns, _repair_multiline_headword_state_machine,
@@ -64,6 +67,16 @@ def test_binary_preview_and_font_scaling_are_display_only():
     assert effective_main_overlay_font_size(4200, 1 / 3, settings) == 32
 
 
+def test_vertical_overlay_anchors_and_blank_entry_hit_target():
+    # A vertical source marker has constant X. Both label/editor and index stay
+    # attached to that same transformed marker rather than horizontal geometry.
+    editor, index = vertical_overlay_anchors((900, 120), (900, 640), .5)
+    assert editor == (452.5, 60)
+    assert index == (453, 63)
+    assert vertical_entry_label_text("漢字") == "漢\n字"
+    assert vertical_entry_label_text("") == "□"
+
+
 def test_latin_pronunciation_pos_and_cjk_rejection():
     profile = load_dictionary_profile(preset="latin_pos_classic", language="eng")
     settings = AppSettings(ocr_language="eng")
@@ -71,6 +84,41 @@ def test_latin_pronunciation_pos_and_cjk_rejection():
         parsed = parse_headword_text(text, settings, profile=profile)
         assert parsed is not None and parsed.has_pos
     assert parse_headword_text("中文正文", settings, profile=profile) is None
+
+
+def test_script_neutral_default_is_narrowed_only_for_latin_profiles():
+    assert r"[^\W\d_]" in AppSettings().paddle_headword_regex
+    arabic = load_dictionary_profile(preset="arabic_rtl_bilingual_2col", language="ara")
+    parsed_arabic = parse_headword_text("كتاب", AppSettings(ocr_language="ara"), profile=arabic)
+    assert parsed_arabic is not None and parsed_arabic.normalized == "كتاب"
+    japanese = load_dictionary_profile(preset="jpn_numbered_headword_2col", language="jpn")
+    parsed_kana = parse_headword_text("10. かな", AppSettings(ocr_language="jpn"), profile=japanese)
+    assert parsed_kana is not None and parsed_kana.normalized == "かな"
+
+
+def test_settings_profile_is_authoritative_for_ui_and_ocr_resolution(tmp_path):
+    root = tmp_path / "project"
+    _project(root, dictionary_profile_id="latin_pos_classic", ocr_language="eng")
+    sidecar = profile_path(root)
+    sidecar.write_text(
+        '{"format":"dictionary-profile-v2","preset":"cjk_bracket_display","language":"chi_sim"}',
+        encoding="utf-8",
+    )
+    settings = ProjectState.open(root).settings
+    # SettingsDialog and OCR both call this resolver; loading with its result
+    # must ignore the disagreeing sidecar preset.
+    selected = effective_project_profile_id(settings, sidecar)
+    assert selected == "latin_pos_classic"
+    ocr_profile = load_dictionary_profile(sidecar, preset=selected, language=settings.ocr_language)
+    assert ocr_profile.key == "latin_pos_classic"
+    assert parse_headword_text("中文正文", settings, profile=ocr_profile) is None
+
+
+def test_cjk_pinyin_regex_handles_stars_and_apostrophes_without_ambiguity():
+    profile = load_dictionary_profile(preset="cjk_large_head_pinyin_2col", language="chi_sim")
+    settings = AppSettings(ocr_language="chi_sim")
+    for text, expected in (("案* ān", "案"), ("暗* àn", "暗"), ("谙 ān", "谙"), ("西 xī'ān", "西")):
+        assert parse_headword_text(text, settings, profile=profile).normalized == expected
 
 
 def test_multiline_pronunciation_keeps_first_line_geometry():
