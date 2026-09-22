@@ -192,7 +192,7 @@ def effective_main_overlay_font_size(
 
     if settings.main_entry_follow_zoom:
         displayed_page_width = max(1.0, image_width * view_scale)
-        scale = displayed_page_width / 1600.0
+        scale = displayed_page_width / 1400.0
         font_size = round(base_size * scale)
     else:
         font_size = base_size
@@ -232,16 +232,21 @@ def vertical_entry_label_text(word: str) -> str:
     return "\n".join(word) or "□"
 
 
-def vertical_overlay_anchors(
-    marker_start: tuple[int, int], marker_end: tuple[int, int], view_scale: float,
-) -> tuple[tuple[float, float], tuple[float, float]]:
-    """Anchor vertical editor/label and index to one transformed source marker."""
-    editor = (
-        (min(marker_start[0], marker_end[0]) + 5) * view_scale,
-        min(marker_start[1], marker_end[1]) * view_scale,
+def transformed_entry_anchor(
+    transform, canonical_x: float, canonical_y: float, column_width: float,
+    x_ratio: float, source_size: tuple[int, int], view_scale: float,
+) -> tuple[float, float]:
+    """Apply the entry offset in canonical space, then map it to the source."""
+    source_x, source_y = transform.canonical_to_source_point(
+        round(canonical_x + column_width * x_ratio), round(canonical_y), source_size,
     )
-    index = (marker_start[0] * view_scale + 3, marker_start[1] * view_scale + 3)
-    return editor, index
+    return source_x * view_scale, source_y * view_scale
+
+
+def vertical_index_anchor(entry_box: tuple[int, int, int, int]) -> tuple[int, int]:
+    """Place the small index beside the rendered vertical entry proxy box."""
+    left, top, right, _bottom = entry_box
+    return right + 3, top
 
 
 def _sorted_page_list_rows(rows: list[tuple[str, tuple]], column: str, descending: bool = False) -> list[tuple[str, tuple]]:
@@ -7754,10 +7759,11 @@ class PictureCaptureApp(tk.Tk):
             ) * self.view_scale
             editor_y = entry_v * self.view_scale
         elif self.settings.layout_writing_mode != "horizontal-tb":
-            # Anchor every vertical overlay to the same transformed marker used
-            # above rather than projecting a second horizontal coordinate path.
-            (editor_x, editor_y), _vertical_index = vertical_overlay_anchors(
-                marker_start, marker_end, self.view_scale,
+            # Match horizontal semantics: apply main_entry_x_ratio within the
+            # canonical column first, then transform that point to source space.
+            editor_x, editor_y = transformed_entry_anchor(
+                geometry.transform, canonical_x, entry_v, geometry.column_widths[col],
+                float(self.settings.main_entry_x_ratio), geometry.source_size, self.view_scale,
             )
         else:
             # Horizontal RTL remains transform-aware.
@@ -7769,6 +7775,8 @@ class PictureCaptureApp(tk.Tk):
             editor.configure(justify="right")
         
         vertical = self.settings.layout_writing_mode != "horizontal-tb"
+        vertical_box: tuple[int, int, int, int] | None = None
+        vertical_index_item: list[int | None] = [None]
         if vertical:
             # Tk Entry cannot render vertical text.  Keep it detached until the
             # user clicks the source-oriented canvas label, then show a short-
@@ -7782,12 +7790,38 @@ class PictureCaptureApp(tk.Tk):
                     self.settings.main_entry_font_bold, self.settings.main_entry_font_italic,
                 ),
             )
-            record["canvas_items"].append(label_item)
+            label_bbox = self.canvas.bbox(label_item) or (
+                round(editor_x), round(editor_y), round(editor_x + editor_font_size),
+                round(editor_y + editor_font_size),
+            )
+            pad = max(2, round(editor_font_size * 0.12))
+            vertical_box = (
+                label_bbox[0] - pad, label_bbox[1] - pad,
+                label_bbox[2] + pad, label_bbox[3] + pad,
+            )
+            proxy_bg, proxy_border, proxy_width = self._entry_overlay_style(entry)
+            proxy_box_item = self.canvas.create_rectangle(
+                *vertical_box, fill=proxy_bg, outline=proxy_border, width=proxy_width,
+            )
+            self.canvas.tag_lower(proxy_box_item, label_item)
+            record["canvas_items"].extend((proxy_box_item, label_item))
             popup_item: list[int | None] = [None]
 
             def close_vertical_editor(_event=None, *, e=entry, w=editor) -> None:
                 self.update_entry(e, w)
                 self.canvas.itemconfigure(label_item, text=vertical_entry_label_text(e.word), state="normal")
+                new_bbox = self.canvas.bbox(label_item) or label_bbox
+                new_box = (
+                    new_bbox[0] - pad, new_bbox[1] - pad,
+                    new_bbox[2] + pad, new_bbox[3] + pad,
+                )
+                bg, border, thickness = self._entry_overlay_style(e)
+                self.canvas.coords(proxy_box_item, *new_box)
+                self.canvas.itemconfigure(
+                    proxy_box_item, fill=bg, outline=border, width=thickness, state="normal",
+                )
+                if vertical_index_item[0] is not None:
+                    self.canvas.coords(vertical_index_item[0], *vertical_index_anchor(new_box))
                 if popup_item[0] is not None:
                     self.canvas.delete(popup_item[0])
                     popup_item[0] = None
@@ -7796,6 +7830,7 @@ class PictureCaptureApp(tk.Tk):
                 if processing_readonly or popup_item[0] is not None:
                     return
                 self.canvas.itemconfigure(label_item, state="hidden")
+                self.canvas.itemconfigure(proxy_box_item, state="hidden")
                 popup_item[0] = self.canvas.create_window(
                     editor_x, editor_y, window=editor, anchor="nw",
                 )
@@ -7830,14 +7865,15 @@ class PictureCaptureApp(tk.Tk):
             editor_req_width = max(1, editor.winfo_reqwidth())
             menu_req_width = max(1, ocr_menu.winfo_reqwidth())
 
-            ocr_x = editor_x + (editor_font_size + 8 if vertical else editor_req_width + 3)
+            ocr_x = (vertical_box[2] + 3) if vertical and vertical_box else editor_x + editor_req_width + 3
+            ocr_y = vertical_box[1] if vertical and vertical_box else editor_y
 
             if ocr_x + menu_req_width > size[0] - 2:
                 ocr_x = max(0, size[0] - menu_req_width - 2)
 
             item = self.canvas.create_window(
                 ocr_x,
-                editor_y,
+                ocr_y,
                 window=ocr_menu,
                 anchor="nw",
             )
@@ -7855,9 +7891,8 @@ class PictureCaptureApp(tk.Tk):
             index_y = entry_v * self.view_scale
 
         elif self.settings.layout_writing_mode != "horizontal-tb":
-            _vertical_editor, (index_x, index_y) = vertical_overlay_anchors(
-                marker_start, marker_end, self.view_scale,
-            )
+            assert vertical_box is not None
+            index_x, index_y = vertical_index_anchor(vertical_box)
         else:
             # RTL follows its transform-aware editor position.
             index_x = editor_x + 3
@@ -7874,6 +7909,8 @@ class PictureCaptureApp(tk.Tk):
 
         record["canvas_items"].append(index_item)
         record["index_item"] = index_item
+        if vertical:
+            vertical_index_item[0] = index_item
 
         if self.crop_preview_var.get():
             left, top, right, bottom = line_box(entry, geometry, self.image, self.settings)
@@ -8751,6 +8788,18 @@ class PictureCaptureApp(tk.Tk):
         ``displayed_word`` lets KeyRelease refresh the border before FocusOut
         commits the edit back to ``entry.word``.
         """
+        bg, border, thickness = self._entry_overlay_style(entry, displayed_word)
+        widget.configure(
+            bg=bg, disabledbackground=bg,
+            highlightthickness=thickness,
+            highlightbackground=border,
+            highlightcolor=border,
+        )
+
+    def _entry_overlay_style(
+        self, entry: WordEntry, displayed_word: str | None = None,
+    ) -> tuple[str, str, int]:
+        """Return the shared editor/proxy background and membership border."""
         word = entry.word if displayed_word is None else displayed_word
         in_wordlist = bool(word and word in self._project_words)
         bg = (
@@ -8764,12 +8813,7 @@ class PictureCaptureApp(tk.Tk):
         else:
             border = "#d32f2f"
             thickness = 2
-        widget.configure(
-            bg=bg, disabledbackground=bg,
-            highlightthickness=thickness,
-            highlightbackground=border,
-            highlightcolor=border,
-        )
+        return bg, border, thickness
 
     def _candidate_for_entry(self, entry: WordEntry) -> dict | None:
         """Find the OCR review candidate corresponding to a visible headword row."""
