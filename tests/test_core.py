@@ -16,7 +16,12 @@ from picture_capture.app import (
 )
 from picture_capture.models import AppSettings, Entry, PolygonRegion, ProjectState
 from picture_capture.processing import Geometry, ColumnPath, sort_entries_reading_order, sort_entries_column_y
-from picture_capture.layout_detection import _projection_layout_estimate, detect_layout_parameters, infer_layout_from_boxes
+from picture_capture.layout_detection import (
+    _detect_persistent_vertical_rule,
+    _projection_layout_estimate,
+    detect_layout_parameters,
+    infer_layout_from_boxes,
+)
 from picture_capture.layout_detection import LayoutEstimate, aggregate_layout_estimates
 from picture_capture.layout_transform import LayoutTransform
 from picture_capture.collation import available_profile_labels, collation_key, parse_custom_order
@@ -233,6 +238,27 @@ class FormatTests(unittest.TestCase):
         self.assertTrue(150 <= estimate.start_y <= 220)
         self.assertTrue(430 <= estimate.column_width <= 520)
         self.assertTrue(70 <= estimate.gutter <= 130)
+
+    def test_fixed_projection_detects_divider_and_complete_gutter(self) -> None:
+        image = Image.new("RGB", (1000, 1200), "white")
+        draw = ImageDraw.Draw(image)
+        for row, y in enumerate(range(100, 1100, 32)):
+            for left, right in ((50, 430), (570, 950)):
+                for x in range(left + row % 3 * 2, right, 35):
+                    draw.rectangle((x, y, min(x + 20, right), y + 12), fill="black")
+        draw.rectangle((497, 100, 502, 1099), fill="black")
+        settings = AppSettings(
+            parameter_display_width=1000,
+            columns=2,
+            layout_columns_policy="fixed",
+            layout_column_separator_mode="present",
+        )
+
+        estimate = _projection_layout_estimate(image, settings)
+
+        self.assertEqual(estimate.columns, 2)
+        self.assertTrue(495 <= (estimate.separator_x or 0) <= 505)
+        self.assertTrue(130 <= estimate.gutter <= 155)
 
     def test_v221_editor_sync_keeps_text_bound_after_middle_entry_removal(self) -> None:
         class FakeEditor:
@@ -3763,6 +3789,47 @@ def test_layout_gutter_uses_persistent_pixel_whitespace_not_ragged_line_ends():
     assert estimate.columns == 2
     assert 390 <= estimate.column_width <= 410
     assert 45 <= estimate.gutter <= 55
+
+
+def test_vertical_rule_gutter_includes_blank_space_on_both_sides():
+    ink = np.zeros((600, 1000), dtype=bool)
+    for y in range(50, 550, 30):
+        ink[y:y + 12, 50:430] = True
+        ink[y:y + 12, 570:950] = True
+    ink[50:550, 497:503] = True
+
+    divider = _detect_persistent_vertical_rule(ink, 50, 570, 50, 550, "auto")
+
+    assert divider is not None
+    assert divider.center == 500
+    assert divider.gutter_start == 430
+    assert divider.gutter_end == 570
+    assert _detect_persistent_vertical_rule(ink, 50, 570, 50, 550, "absent") is None
+
+
+def test_auto_vertical_rule_rejects_persistent_text_stroke_without_blank_sides():
+    ink = np.zeros((600, 800), dtype=bool)
+    for y in range(50, 550, 24):
+        ink[y:y + 16, 40:760] = True
+    ink[50:550, 397:403] = True
+
+    assert _detect_persistent_vertical_rule(ink, 40, 440, 50, 550, "auto") is None
+
+
+def test_fixed_column_prior_constrains_sparse_box_layout():
+    boxes = [(60, y, 340, y + 18) for y in range(100, 700, 45)]
+    estimate = infer_layout_from_boxes(
+        boxes,
+        (1000, 800),
+        columns_policy="fixed",
+        fixed_columns=2,
+        column_separator_mode="absent",
+    )
+
+    assert estimate.columns == 2
+    assert estimate.manual_x == 60
+    assert estimate.column_width == 280
+    assert estimate.gutter > 100
 
 
 def test_bookmark_controls_and_project_switch_protect_project_settings():
