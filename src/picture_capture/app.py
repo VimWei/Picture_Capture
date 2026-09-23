@@ -8047,19 +8047,47 @@ class PictureCaptureApp(tk.Tk):
                     self.canvas.delete(popup_item[0])
                     popup_item[0] = None
 
-            def open_vertical_editor(_event=None) -> None:
-                if processing_readonly or popup_item[0] is not None:
+            opening_vertical_editor = [False]
+
+            def _focus_vertical_editor() -> None:
+                """Focus the real Entry after the canvas click event has finished."""
+                if popup_item[0] is None or not editor.winfo_exists():
                     return
+                if not processing_readonly:
+                    editor.configure(state="normal")
+                editor.focus_force()
+                editor.selection_range(0, "end")
+                editor.icursor("end")
+                opening_vertical_editor[0] = False
+
+            def open_vertical_editor(_event=None) -> str | None:
+                if processing_readonly:
+                    self.status_var.set("当前页正在后台处理，暂时只读；完成后即可校对。")
+                    return "break"
+                if popup_item[0] is not None:
+                    return "break"
                 assert vertical_popup is not None
+                opening_vertical_editor[0] = True
                 self.canvas.itemconfigure(label_item, state="hidden")
                 self.canvas.itemconfigure(proxy_box_item, state="hidden")
                 popup_item[0] = self.canvas.create_window(
                     *vertical_popup, window=editor, anchor=vertical_popup_anchor,
                 )
-                editor.focus_set()
-                editor.selection_range(0, "end")
+                self.canvas.tag_raise(popup_item[0])
+                # Focusing immediately inside a Canvas <Button-1> callback is
+                # unreliable on Windows: the click can hand focus back to the
+                # canvas, firing <FocusOut> and closing the popup at once.
+                self.after_idle(_focus_vertical_editor)
+                return "break"
 
-            editor.bind("<FocusOut>", close_vertical_editor)
+            def _close_vertical_editor_on_focus_out(event=None) -> None:
+                # Ignore the transient focus-out emitted while the popup is
+                # still being installed; the after-idle callback owns focus.
+                if opening_vertical_editor[0]:
+                    return
+                close_vertical_editor(event)
+
+            editor.bind("<FocusOut>", _close_vertical_editor_on_focus_out)
             editor.bind("<Return>", lambda _event: (close_vertical_editor(), "break")[-1])
             self.canvas.tag_bind(label_item, "<Button-1>", open_vertical_editor)
             self.canvas.tag_bind(proxy_box_item, "<Button-1>", open_vertical_editor)
