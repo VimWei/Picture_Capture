@@ -363,3 +363,7 @@ def test_vertical_proxy_binding_and_alignment_use_horizontal_rtl_only():
     assert "vertical_overlay_layout(" in text
     assert "vertical_popup_anchor" in text
     assert "vertical_index_item" not in text
+    assert "self.after_idle(_focus_vertical_editor)" in text
+    assert 'editor.configure(state="normal")' in text
+    assert "opening_vertical_editor" in text
+    assert 'return "break"' in text
