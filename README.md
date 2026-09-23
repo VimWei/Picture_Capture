@@ -134,20 +134,10 @@ Picture Capture 仍然可以启动；如果系统已经安装 Tesseract，也可
 安装完成后，日常只需双击：
 
 ```text
-Picture_Capture.vbs
-```
-
-它会在后台隐藏启动，不再保留命令行窗口。首次启动（尚未生成 `.venv`）时会保留可见窗口，以便看到 uv 安装环境的进度；启动失败时会弹出提示，并把日志写入：
-
-```text
-%LOCALAPPDATA%\Picture_Capture\launcher.log
-```
-
-如果需要查看命令行输出或排查启动问题，仍可双击：
-
-```text
 run_windows.bat
 ```
+
+首次启动（尚未生成 `.venv`）时会在当前窗口显示 uv 安装环境的进度。如果启动失败，窗口会保留并显示错误信息，方便排查。
 
 安装器会在程序目录生成本机配置：
 
