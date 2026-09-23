@@ -8095,6 +8095,13 @@ class PictureCaptureApp(tk.Tk):
             editor.bind("<Return>", lambda _event: (close_vertical_editor(), "break")[-1])
             self.canvas.tag_bind(label_item, "<Button-1>", open_vertical_editor)
             self.canvas.tag_bind(proxy_box_item, "<Button-1>", open_vertical_editor)
+            for target in (label_item, proxy_box_item):
+                self.canvas.tag_bind(
+                    target, "<Enter>", lambda _e: self.canvas.configure(cursor="xterm"),
+                )
+                self.canvas.tag_bind(
+                    target, "<Leave>", lambda _e: self.canvas.configure(cursor=""),
+                )
         else:
             item = self.canvas.create_window(
                 editor_x, editor_y,
