@@ -130,11 +130,12 @@ def test_horizontal_ui_uses_shared_layout_and_keeps_arabic_semantics():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
     start = text.index("        horizontal = self.settings.layout_writing_mode == \"horizontal-tb\"")
-    end = text.index("        if self.settings.layout_text_direction == \"rtl\":", start)
+    end = text.index("        vertical = self.settings.layout_writing_mode != \"horizontal-tb\"", start)
     rtl_branch = text[start:end]
     assert "horizontal_overlay_layout(" in rtl_branch
     assert "line_box(" not in rtl_branch
-    assert 'editor.configure(justify="right")' in text[end:end + 140]
+    assert "if rtl:" in rtl_branch
+    assert 'editor.configure(justify="right")' in rtl_branch
 
 
 def test_review_edits_remain_bound_to_entries_after_main_line_insert():
@@ -290,7 +291,7 @@ def test_sidecar_only_v3_project_restores_components(tmp_path):
     ProjectState.open(root)
     settings_path(root).unlink(missing_ok=True)
     profile_path(root).write_text(
-        '{"format":"dictionary-profile-v3","preset":"cjk_bracket_display",'
+        '{"format":"picture-capture-dictionary-profile-v3","preset":"cjk_bracket_display",'
         '"layout":{"writing_mode":"vertical-rl","text_direction":"rtl","columns":3,'
         '"columns_policy":"fixed","column_separator":"absent","analysis_threshold_mode":"fixed"},'
         '"ocr":{"semantic_language":"jpn","paddle_language":"japan",'
