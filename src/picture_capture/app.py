@@ -70,7 +70,9 @@ from .project_storage import (
     profile_path as project_profile_path, qt_root, replace_rules_path, settings_path,
     training_exports_root, word_fill_status_path, words_of_pages_default_path,
 )
-from .recent_projects import load_recent_projects, remove_recent_project, touch_recent_project
+from .recent_projects import (
+    load_recent_projects, recent_project_details, remove_recent_project, touch_recent_project,
+)
 from .processing import (
     append_crop_log,
     append_illustration_crop_log,
@@ -249,20 +251,29 @@ def vertical_index_anchor(entry_box: tuple[int, int, int, int]) -> tuple[int, in
     return right + 3, top
 
 
-def horizontal_rtl_entry_anchor(
+def horizontal_overlay_layout(
     transform, canonical_x: float, canonical_y: float, column_width: float,
-    x_ratio: float, source_size: tuple[int, int], view_scale: float,
-    marker_start: tuple[int, int], marker_end: tuple[int, int],
-    marker_height: float, overlay_scale: float,
-) -> tuple[float, float]:
-    """Return the RTL editor anchor below its canonical marker."""
-    editor_x, _source_y = transformed_entry_anchor(
+    x_ratio: float, source_size: tuple[int, int], view_scale: float, *, rtl: bool,
+) -> tuple[tuple[float, float], str, tuple[float, float], str]:
+    """Return mirror-equivalent editor/index anchors for horizontal writing."""
+    editor = transformed_entry_anchor(
         transform, canonical_x, canonical_y, column_width, x_ratio,
         source_size, view_scale,
     )
-    marker_y = max(marker_start[1], marker_end[1]) * view_scale
-    editor_y = marker_y + max(2, round(marker_height * overlay_scale))
-    return editor_x, editor_y
+    index_source = transform.canonical_to_source_point(
+        round(canonical_x + column_width), round(canonical_y), source_size,
+    )
+    index = (index_source[0] * view_scale + (-3 if rtl else 3), index_source[1] * view_scale)
+    return editor, ("ne" if rtl else "nw"), index, ("ne" if rtl else "nw")
+
+
+def horizontal_ocr_menu_layout(
+    editor_x: float, editor_y: float, editor_width: int, *, rtl: bool,
+) -> tuple[float, float, str]:
+    """Place the OCR selector outside the editor in its reading direction."""
+    if rtl:
+        return editor_x - editor_width - 3, editor_y, "ne"
+    return editor_x + editor_width + 3, editor_y, "nw"
 
 
 def _sorted_page_list_rows(rows: list[tuple[str, tuple]], column: str, descending: bool = False) -> list[tuple[str, tuple]]:
@@ -1854,6 +1865,9 @@ class ReviewWindow(tk.Toplevel):
         self.sorted_word_indices: list[int] = []
         self.word_sort_key_cache: dict[int, tuple[str, str]] = {}
         self.vars: list[tk.StringVar] = []
+        # Stable Entry identities corresponding to ``vars``. Main-canvas line
+        # insertion can reorder parent.entries while this window remains open.
+        self.row_entries: list[WordEntry] = []
         self.editors: list[tk.Entry] = []
         self.editor_frames: list[tk.Frame] = []
         self.simplified_vars: list[tk.StringVar] = []
@@ -2264,10 +2278,10 @@ class ReviewWindow(tk.Toplevel):
         state = self.parent._foreground_batch_state(self.parent.current_index)
         if state == "processing":
             return True
-        ordered = self.parent._ordered_entries_reading_order()
+        row_entries = self._bound_row_entries()
         word_dirty = any(
-            i < len(ordered) and self.vars[i].get().strip() != ordered[i].word
-            for i in range(min(len(self.vars), len(ordered)))
+            i < len(row_entries) and self.vars[i].get().strip() != row_entries[i].word
+            for i in range(min(len(self.vars), len(row_entries)))
         )
         current_stem = self.parent.current_page.stem
         simplified_dirty = current_stem in self._simplified_dirty_pages
@@ -2788,10 +2802,16 @@ class ReviewWindow(tk.Toplevel):
         self.parent.status_var.set(f"已选择 wordslist：{path}｜{count} 条；校对右侧参考词表已更新。")
 
     def _commit_edits(self) -> None:
-        ordered = self.parent._ordered_entries_reading_order()
-        for entry, var in zip(ordered, self.vars):
+        for entry, var in zip(self._bound_row_entries(), self.vars):
+            if entry not in self.parent.entries:
+                continue
             entry.word = var.get().strip()
         self._capture_simplified_edits(getattr(self, "_rendered_page_stem", ""))
+
+    def _bound_row_entries(self) -> list[WordEntry]:
+        """Return stable rendered-row bindings, with compatibility fallback."""
+        bound = getattr(self, "row_entries", None)
+        return list(bound) if bound is not None else self.parent._ordered_entries_reading_order()
 
     def _simplified_page_records(self, page_stem: str | None = None) -> dict[str, dict]:
         stem = str(page_stem or (self.parent.current_page.stem if self.parent.current_page else ""))
@@ -3505,7 +3525,7 @@ class ReviewWindow(tk.Toplevel):
             self._capture_simplified_edits(self._rendered_page_stem)
         for child in self.rows.winfo_children():
             child.destroy()
-        self.vars.clear(); self.editors.clear(); self.editor_frames.clear(); self.simplified_vars.clear(); self.simplified_editors.clear(); self.simplified_search_buttons.clear(); self.simplified_actual_values.clear(); self.simplified_manual_flags.clear(); self.simplified_auto_refresh_flags.clear(); self.editor_crop_widths.clear(); self.thumbnails.clear()
+        self.vars.clear(); self.row_entries.clear(); self.editors.clear(); self.editor_frames.clear(); self.simplified_vars.clear(); self.simplified_editors.clear(); self.simplified_search_buttons.clear(); self.simplified_actual_values.clear(); self.simplified_manual_flags.clear(); self.simplified_auto_refresh_flags.clear(); self.editor_crop_widths.clear(); self.thumbnails.clear()
         self._rendered_page_stem = current_stem
         simplified_records = self._simplified_page_records(current_stem) if current_stem else {}
         if not self.parent.image:
@@ -3643,7 +3663,7 @@ class ReviewWindow(tk.Toplevel):
                 widget.bind("<MouseWheel>", self.scroll_rows)
                 widget.bind("<Button-4>", lambda e: self.scroll_rows_linux(-1))
                 widget.bind("<Button-5>", lambda e: self.scroll_rows_linux(1))
-            self.vars.append(var); self.editors.append(editor); self.editor_frames.append(editor_frame)
+            self.vars.append(var); self.row_entries.append(entry); self.editors.append(editor); self.editor_frames.append(editor_frame)
             self.simplified_vars.append(simplified_var); self.simplified_editors.append(simplified_editor)
             self.simplified_search_buttons.append(simplified_search_button)
             self.simplified_actual_values.append(simplified_actual)
@@ -3691,9 +3711,9 @@ class ReviewWindow(tk.Toplevel):
             self.simplified_actual_values[index] = actual
         self.simplified_vars[index].set(self._simplified_display_from_value(original, actual, False))
         stem = self._rendered_page_stem
-        ordered = self.parent._ordered_entries_reading_order()
-        if stem and index < len(ordered):
-            entry = ordered[index]
+        row_entries = self._bound_row_entries()
+        if stem and index < len(row_entries):
+            entry = row_entries[index]
             self._simplified_page_records(stem)[simplified_entry_key(entry.x, entry.y)] = {
                 "x": int(entry.x), "y": int(entry.y),
                 "source_word": original, "text": "" if actual is None else str(actual),
@@ -3928,14 +3948,14 @@ class ReviewWindow(tk.Toplevel):
         PDIC immediately and redraw both views; the grave/backtick shortcut uses
         the same path as the visible [X] button.
         """
-        ordered = self.parent._ordered_entries_reading_order()
-        if not (0 <= int(index) < len(ordered)):
+        row_entries = self._bound_row_entries()
+        if not (0 <= int(index) < len(row_entries)):
             return "break"
         if not self.parent._claim_page_for_manual_edit():
             return "break"
 
         self._commit_edits()
-        entry = ordered[int(index)]
+        entry = row_entries[int(index)]
         simplified_key = simplified_entry_key(entry.x, entry.y)
         rendered_stem = getattr(self, "_rendered_page_stem", "")
         if rendered_stem and hasattr(self, "_simplified_page_cache"):
@@ -4053,8 +4073,11 @@ class ReviewWindow(tk.Toplevel):
             self.parent.status_var.set("当前页正在后台处理，校对窗口保持只读，未写入 PDIC。")
             return
         if state == "pending":
-            ordered = self.parent._ordered_entries_reading_order()
-            word_dirty = any(i < len(ordered) and self.vars[i].get().strip() != ordered[i].word for i in range(len(self.vars)))
+            row_entries = self._bound_row_entries()
+            word_dirty = any(
+                i < len(row_entries) and self.vars[i].get().strip() != row_entries[i].word
+                for i in range(len(self.vars))
+            )
             simplified_dirty = bool(self.parent.current_page and self.parent.current_page.stem in self._simplified_dirty_pages)
             dirty = word_dirty or simplified_dirty
             if not dirty:
@@ -5205,6 +5228,10 @@ class PictureCaptureApp(tk.Tk):
         body = ttk.Panedwindow(self, orient="horizontal")
         body.pack(fill="both", expand=True)
         sidebar_host = ttk.Frame(body)
+        # Project actions are outside the scrollable/collapsible sidebar so
+        # they remain fixed and visible at the bottom of the left pane.
+        self.project_action_bar = ttk.Frame(sidebar_host, padding=(6, 4, 5, 6))
+        self.project_action_bar.pack(side="bottom", fill="x")
         self.sidebar_canvas = tk.Canvas(sidebar_host, highlightthickness=0, borderwidth=0)
         self.sidebar_scrollbar = ttk.Scrollbar(
             sidebar_host, orient="vertical", command=self.sidebar_canvas.yview
@@ -5306,8 +5333,7 @@ class PictureCaptureApp(tk.Tk):
         }
         self._apply_page_list_display_columns(save=False)
 
-        bottom_row = ttk.Frame(page_panel)
-        bottom_row.grid(row=4, column=0, sticky="ew", pady=(5, 0))
+        bottom_row = self.project_action_bar
         ttk.Button(bottom_row, text="新建项目", command=self.open_project).pack(side="left", fill="x", expand=True)
         ttk.Button(bottom_row, text="打开既往项目", command=self.open_recent_project).pack(side="left", fill="x", expand=True, padx=(4, 0))
         ttk.Label(bottom_row, text="图片后缀：").pack(side="left", padx=(8, 2))
@@ -7284,6 +7310,20 @@ class PictureCaptureApp(tk.Tk):
         dialog.geometry("760x360")
         host = ttk.Frame(dialog, padding=10)
         host.pack(fill="both", expand=True)
+        columns = (
+            ("full_name", "词典完整名称"), ("abbreviation", "词典缩写名称"),
+            ("image_count", "图片数量"), ("last_edited", "最后编辑时间"),
+            ("path", "路径"), ("delete", "从列表删除"),
+        )
+        visible = {key: tk.BooleanVar(value=True) for key, _label in columns}
+        toolbar = ttk.Frame(host)
+        toolbar.pack(fill="x", pady=(0, 6))
+        ttk.Label(toolbar, text="单击项目行即可打开").pack(side="left")
+        table = ttk.Frame(host)
+        table.pack(fill="both", expand=True)
+        path_font = font.nametofont("TkDefaultFont").copy()
+        path_size = int(path_font.cget("size"))
+        path_font.configure(size=max(5, round(abs(path_size) * 0.6)) * (-1 if path_size < 0 else 1))
 
         def open_selected(root: Path) -> None:
             if not root.is_dir():
@@ -7297,22 +7337,50 @@ class PictureCaptureApp(tk.Tk):
             dialog.destroy()
 
         def rebuild() -> None:
-            for child in host.winfo_children():
+            for child in table.winfo_children():
                 child.destroy()
             rows = load_recent_projects()
             if not rows:
-                ttk.Label(host, text="尚无最近项目").grid(row=0, column=0, sticky="w")
+                ttk.Label(table, text="尚无最近项目").grid(row=0, column=0, sticky="w")
                 return
-            host.columnconfigure(1, weight=1)
-            for index, row in enumerate(rows):
-                root = Path(str(row["path"]))
-                status = "" if root.is_dir() else "（路径不存在）"
-                ttk.Label(host, text=str(row.get("name") or root.name), width=18).grid(row=index, column=0, sticky="w")
-                ttk.Label(host, text=f"{root} {status}").grid(row=index, column=1, sticky="ew", padx=6)
-                ttk.Button(host, text="打开", command=lambda p=root: open_selected(p)).grid(row=index, column=2)
-                remove = ttk.Button(host, text="× 删除", command=lambda p=root: (remove_recent_project(p), rebuild()))
-                remove.grid(row=index, column=3, padx=(4, 0))
-                self._attach_tooltip(remove, "仅从列表清除，不删除项目文件。")
+            shown = [(key, label) for key, label in columns if visible[key].get()]
+            for column_index, (_key, label) in enumerate(shown):
+                ttk.Label(table, text=label, font=self.section_title_font).grid(
+                    row=0, column=column_index, sticky="ew", padx=3, pady=(0, 4),
+                )
+                table.columnconfigure(column_index, weight=1 if _key in {"full_name", "path"} else 0)
+            for row_index, row in enumerate(rows, start=1):
+                detail = recent_project_details(row)
+                root = Path(str(detail["path"]))
+                path_text = str(root) + ("（路径不存在）" if not detail["exists"] else "")
+                values = {
+                    "full_name": detail["full_name"], "abbreviation": detail["abbreviation"],
+                    "image_count": detail["image_count"], "last_edited": detail["last_edited"],
+                    "path": path_text,
+                }
+                for column_index, (key, _label) in enumerate(shown):
+                    if key == "delete":
+                        remove = ttk.Button(
+                            table, text="×", width=3,
+                            command=lambda p=root: (remove_recent_project(p), rebuild()),
+                        )
+                        remove.grid(row=row_index, column=column_index, padx=3, pady=2)
+                        self._attach_tooltip(remove, "仅从列表清除，不删除项目文件。")
+                        continue
+                    label = ttk.Label(
+                        table, text=str(values[key]),
+                        font=path_font if key == "path" else None,
+                        cursor="hand2", padding=(3, 3),
+                    )
+                    label.grid(row=row_index, column=column_index, sticky="ew")
+                    label.bind("<Button-1>", lambda _event, p=root: open_selected(p))
+
+        column_menu = tk.Menu(dialog, tearoff=False)
+        for key, label in columns:
+            column_menu.add_checkbutton(label=label, variable=visible[key], command=rebuild)
+        ttk.Button(toolbar, text="显示列", command=lambda: column_menu.tk_popup(
+            toolbar.winfo_pointerx(), toolbar.winfo_pointery()
+        )).pack(side="right")
 
         rebuild()
 
@@ -7763,31 +7831,25 @@ class PictureCaptureApp(tk.Tk):
         record["widgets"].append(editor)
         self.entry_editor_bindings.append((editor, entry))
         
-        # LTR 横排保持原来的文本框位置：
-        # 从栏左起点向右移动 main_entry_x_ratio × 栏宽。
-        if (
-            self.settings.layout_writing_mode == "horizontal-tb"
-            and self.settings.layout_text_direction == "ltr"
-        ):
-            editor_x = (
-                canonical_x
-                + geometry.column_widths[col] * float(self.settings.main_entry_x_ratio)
-            ) * self.view_scale
-            editor_y = entry_v * self.view_scale
-        elif self.settings.layout_writing_mode != "horizontal-tb":
+        horizontal = self.settings.layout_writing_mode == "horizontal-tb"
+        rtl = horizontal and self.settings.layout_text_direction == "rtl"
+        editor_anchor = "nw"
+        horizontal_index: tuple[float, float] | None = None
+        horizontal_index_anchor = "nw"
+        if horizontal:
+            (editor_x, editor_y), editor_anchor, horizontal_index, horizontal_index_anchor = (
+                horizontal_overlay_layout(
+                    geometry.transform, canonical_x, entry_v, geometry.column_widths[col],
+                    float(self.settings.main_entry_x_ratio), geometry.source_size,
+                    self.view_scale, rtl=rtl,
+                )
+            )
+        else:
             # Match horizontal semantics: apply main_entry_x_ratio within the
             # canonical column first, then transform that point to source space.
             editor_x, editor_y = transformed_entry_anchor(
                 geometry.transform, canonical_x, entry_v, geometry.column_widths[col],
                 float(self.settings.main_entry_x_ratio), geometry.source_size, self.view_scale,
-            )
-        else:
-            # Horizontal RTL uses the same canonical/read-order offset as LTR.
-            # The mirror transform makes increasing ratios move source-left.
-            editor_x, editor_y = horizontal_rtl_entry_anchor(
-                geometry.transform, canonical_x, entry_v, geometry.column_widths[col],
-                float(self.settings.main_entry_x_ratio), geometry.source_size, self.view_scale,
-                marker_start, marker_end, self.settings.marker_height, overlay_scale,
             )
         
         if self.settings.layout_text_direction == "rtl":
@@ -7863,7 +7925,7 @@ class PictureCaptureApp(tk.Tk):
             item = self.canvas.create_window(
                 editor_x, editor_y,
                 window=editor,
-                anchor="nw",
+                anchor=editor_anchor,
             )
             record["canvas_items"].append(item)
 
@@ -7884,45 +7946,44 @@ class PictureCaptureApp(tk.Tk):
             editor_req_width = max(1, editor.winfo_reqwidth())
             menu_req_width = max(1, ocr_menu.winfo_reqwidth())
 
-            ocr_x = (vertical_box[2] + 3) if vertical and vertical_box else editor_x + editor_req_width + 3
-            ocr_y = vertical_box[1] if vertical and vertical_box else editor_y
+            if vertical and vertical_box:
+                ocr_x, ocr_y, ocr_anchor = vertical_box[2] + 3, vertical_box[1], "nw"
+            else:
+                ocr_x, ocr_y, ocr_anchor = horizontal_ocr_menu_layout(
+                    editor_x, editor_y, editor_req_width, rtl=rtl,
+                )
 
-            if ocr_x + menu_req_width > size[0] - 2:
+            if not rtl and ocr_x + menu_req_width > size[0] - 2:
                 ocr_x = max(0, size[0] - menu_req_width - 2)
+            elif rtl and ocr_x - menu_req_width < 2:
+                ocr_x = menu_req_width + 2
 
             item = self.canvas.create_window(
                 ocr_x,
                 ocr_y,
                 window=ocr_menu,
-                anchor="nw",
+                anchor=ocr_anchor,
             )
             record["canvas_items"].append(item)
 
         # 编号位置与 OCR 菜单无关，必须放在 if ocr_menu is not None 外面。
-        if (
-            self.settings.layout_writing_mode == "horizontal-tb"
-            and self.settings.layout_text_direction == "ltr"
-        ):
-            # LTR：编号恢复到横线右端。
-            index_x = (
-                canonical_x + geometry.column_widths[col]
-            ) * self.view_scale + 3
-            index_y = entry_v * self.view_scale
-
+        if horizontal:
+            assert horizontal_index is not None
+            index_x, index_y = horizontal_index
+            index_anchor = horizontal_index_anchor
         elif self.settings.layout_writing_mode != "horizontal-tb":
             assert vertical_box is not None
             index_x, index_y = vertical_index_anchor(vertical_box)
+            index_anchor = "nw"
         else:
-            # RTL follows its transform-aware editor position.
-            index_x = editor_x + 3
-            index_y = editor_y - 10
+            raise AssertionError("unreachable overlay layout")
 
         index_item = self.canvas.create_text(
             index_x,
             index_y,
             text=str(index),
             fill="#222",
-            anchor="nw",
+            anchor=index_anchor,
             font=("Arial", 8),
         )
 

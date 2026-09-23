@@ -6,6 +6,9 @@ import json
 import os
 from pathlib import Path
 
+from .models import IMAGE_EXTENSIONS
+from .project_storage import settings_path
+
 
 def default_recent_projects_path() -> Path:
     base = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA")
@@ -44,3 +47,47 @@ def remove_recent_project(root: Path, path: Path | None = None) -> list[dict[str
     rows = [row for row in load_recent_projects(path) if Path(str(row["path"])).expanduser() != resolved]
     save_recent_projects(rows, path)
     return rows
+
+
+def recent_project_details(row: dict[str, str]) -> dict[str, str | int | bool]:
+    """Read display metadata without initializing or modifying the project."""
+    root = Path(str(row.get("path") or "")).expanduser()
+    details: dict[str, str | int | bool] = {
+        "full_name": str(row.get("name") or root.name),
+        "abbreviation": "",
+        "image_count": 0,
+        "last_edited": str(row.get("opened_at") or ""),
+        "path": str(root),
+        "exists": root.is_dir(),
+    }
+    if not root.is_dir():
+        return details
+    try:
+        details["image_count"] = sum(
+            1 for item in root.iterdir()
+            if item.is_file() and item.suffix.lower() in IMAGE_EXTENSIONS
+        )
+    except OSError:
+        details["exists"] = False
+        return details
+    project_settings = settings_path(root)
+    if project_settings.is_file():
+        try:
+            raw = json.loads(project_settings.read_text(encoding="utf-8-sig"))
+            if isinstance(raw, dict):
+                details["full_name"] = str(raw.get("dictionary_full_name") or details["full_name"])
+                details["abbreviation"] = str(raw.get("dictionary_abbreviation") or "")
+        except (OSError, ValueError, TypeError):
+            pass
+    try:
+        candidates = [root.stat().st_mtime]
+    except OSError:
+        return details
+    metadata = project_settings.parent
+    if metadata.is_dir():
+        try:
+            candidates.extend(item.stat().st_mtime for item in metadata.iterdir() if item.is_file())
+        except OSError:
+            pass
+    details["last_edited"] = datetime.fromtimestamp(max(candidates)).strftime("%Y-%m-%d %H:%M")
+    return details

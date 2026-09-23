@@ -6,7 +6,7 @@ from PIL import Image
 
 from picture_capture.app import (
     PictureCaptureApp, binary_preview_image, effective_main_overlay_font_size,
-    horizontal_rtl_entry_anchor, transformed_entry_anchor,
+    ReviewWindow, horizontal_ocr_menu_layout, horizontal_overlay_layout, transformed_entry_anchor,
     vertical_entry_label_text, vertical_index_anchor,
 )
 from picture_capture.dictionary_profile import effective_project_profile_id, load_dictionary_profile
@@ -17,7 +17,9 @@ from picture_capture.paddle_headwords import (
     parse_headword_text, prepare_ocr_band, run_paddle_band,
 )
 from picture_capture.project_storage import profile_path, settings_path
-from picture_capture.recent_projects import load_recent_projects, remove_recent_project, touch_recent_project
+from picture_capture.recent_projects import (
+    load_recent_projects, recent_project_details, remove_recent_project, touch_recent_project,
+)
 
 
 def _project(root: Path, **settings) -> None:
@@ -58,6 +60,17 @@ def test_recent_removal_only_changes_registry(tmp_path):
     assert (project / "user.jpg").read_bytes() == b"user"
 
 
+def test_recent_project_details_expose_requested_columns(tmp_path):
+    project = tmp_path / "scan"
+    _project(project, dictionary_full_name="完整词典", dictionary_abbreviation="缩写")
+    detail = recent_project_details({"name": "scan", "path": str(project), "opened_at": "old"})
+    assert detail["full_name"] == "完整词典"
+    assert detail["abbreviation"] == "缩写"
+    assert detail["image_count"] == 3
+    assert detail["path"] == str(project)
+    assert detail["last_edited"] != "old"
+
+
 def test_binary_preview_and_font_scaling_are_display_only():
     source = Image.new("RGB", (2, 1)); source.putdata([(20, 20, 20), (240, 200, 160)])
     before = source.tobytes()
@@ -94,35 +107,45 @@ def test_vertical_proxy_reuses_editor_membership_and_confidence_style():
     assert missing == ("#ffcdd2", "#d32f2f", 2)
 
 
-def test_horizontal_rtl_ratio_moves_in_reading_direction_below_marker():
-    transform = LayoutTransform("mirror_x")
-    common = dict(
-        transform=transform, canonical_x=100, canonical_y=300, column_width=600,
-        source_size=(1400, 2200), view_scale=.5,
-        marker_start=(1299, 300), marker_end=(730, 300),
-        marker_height=2, overlay_scale=1,
-    )
-    low = horizontal_rtl_entry_anchor(x_ratio=.2, **common)
-    high = horizontal_rtl_entry_anchor(x_ratio=.8, **common)
-    assert low[0] != high[0]
-    assert high[0] < low[0]  # increasing canonical/read-order ratio moves source-left
-    assert low[1] == high[1] == 152  # marker display Y is 150; editor begins below it
-    # Generic canonical transform behavior used by vertical overlays is stable,
-    # and identity/LTR continues moving increasing ratios source-right.
-    ltr_low = transformed_entry_anchor(LayoutTransform("identity"), 100, 300, 600, .2, (1400, 2200), .5)
-    ltr_high = transformed_entry_anchor(LayoutTransform("identity"), 100, 300, 600, .8, (1400, 2200), .5)
-    assert ltr_high[0] > ltr_low[0]
+def test_horizontal_ltr_rtl_are_mirror_equivalent():
+    args = dict(canonical_x=100, canonical_y=300, column_width=600,
+                source_size=(1400, 2200), view_scale=.5)
+    ltr_low = horizontal_overlay_layout(LayoutTransform("identity"), x_ratio=.2, rtl=False, **args)
+    ltr_high = horizontal_overlay_layout(LayoutTransform("identity"), x_ratio=.8, rtl=False, **args)
+    rtl_low = horizontal_overlay_layout(LayoutTransform("mirror_x"), x_ratio=.2, rtl=True, **args)
+    rtl_high = horizontal_overlay_layout(LayoutTransform("mirror_x"), x_ratio=.8, rtl=True, **args)
+    assert ltr_low[0][1] == ltr_high[0][1] == rtl_low[0][1] == rtl_high[0][1] == 150
+    assert ltr_high[0][0] > ltr_low[0][0]
+    assert rtl_high[0][0] < rtl_low[0][0]
+    assert ltr_low[1] == "nw" and rtl_low[1] == "ne"
+    assert ltr_low[2][1] == rtl_low[2][1] == 150
+    assert ltr_low[3] == "nw" and rtl_low[3] == "ne"
+    assert horizontal_ocr_menu_layout(500, 150, 180, rtl=False) == (683, 150, "nw")
+    assert horizontal_ocr_menu_layout(500, 150, 180, rtl=True) == (317, 150, "ne")
 
 
-def test_horizontal_rtl_ui_anchor_does_not_use_crop_box():
+def test_horizontal_ui_uses_shared_layout_and_keeps_arabic_semantics():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
-    start = text.index("            # Horizontal RTL uses the same canonical/read-order offset as LTR.")
+    start = text.index("        horizontal = self.settings.layout_writing_mode == \"horizontal-tb\"")
     end = text.index("        if self.settings.layout_text_direction == \"rtl\":", start)
     rtl_branch = text[start:end]
-    assert "horizontal_rtl_entry_anchor(" in rtl_branch
+    assert "horizontal_overlay_layout(" in rtl_branch
     assert "line_box(" not in rtl_branch
     assert 'editor.configure(justify="right")' in text[end:end + 140]
+
+
+def test_review_edits_remain_bound_to_entries_after_main_line_insert():
+    first, second = Entry("first", 10, 20), Entry("second", 10, 40)
+    inserted = Entry("", 10, 30)
+    fake = SimpleNamespace(
+        row_entries=[first, second], vars=[SimpleNamespace(get=lambda: "FIRST"), SimpleNamespace(get=lambda: "SECOND")],
+        parent=SimpleNamespace(entries=[first, inserted, second]),
+        _capture_simplified_edits=lambda _stem: None, _rendered_page_stem="page",
+    )
+    fake._bound_row_entries = lambda: fake.row_entries
+    ReviewWindow._commit_edits(fake)
+    assert (first.word, inserted.word, second.word) == ("FIRST", "", "SECOND")
 
 
 def test_latin_pronunciation_pos_and_cjk_rejection():
