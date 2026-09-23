@@ -2,8 +2,8 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-rem When launched by Picture_Capture.vbs the console is hidden, so keep it open
-rem for error messages only in visible mode.
+rem Keep the console open on failure so error messages stay readable when the
+rem launcher is double-clicked.
 set "PC_HOLD=pause"
 if defined PC_HIDDEN set "PC_HOLD="
 
