@@ -7,7 +7,8 @@ from PIL import Image
 from picture_capture.app import (
     PictureCaptureApp, binary_preview_image, effective_main_overlay_font_size,
     ReviewWindow, horizontal_ocr_menu_layout, horizontal_overlay_layout, transformed_entry_anchor,
-    vertical_entry_label_text, vertical_index_anchor,
+    vertical_entry_label_text, vertical_index_anchor, vertical_ocr_menu_layout,
+    vertical_overlay_layout,
 )
 from picture_capture.dictionary_profile import effective_project_profile_id, load_dictionary_profile
 from picture_capture.models import AppSettings, Entry, ProjectState
@@ -87,7 +88,7 @@ def test_binary_preview_and_font_scaling_are_display_only():
 
 def test_vertical_overlay_anchors_and_blank_entry_hit_target():
     # x_ratio is applied in canonical space. Rotating that point produces the
-    # source-space vertical label anchor; the index follows its rendered box.
+    # source-space marker anchor.
     editor = transformed_entry_anchor(
         LayoutTransform("rotate_ccw90"), 100, 200, 600, .5, (1400, 2200), .5,
     )
@@ -95,6 +96,36 @@ def test_vertical_overlay_anchors_and_blank_entry_hit_target():
     assert vertical_index_anchor((590, 195, 625, 320)) == (628, 195)
     assert vertical_entry_label_text("漢字") == "漢\n字"
     assert vertical_entry_label_text("") == "□"
+    assert vertical_entry_label_text("一二三四", 3) == "一\n二\n…"
+
+
+def test_vertical_entry_boxes_have_fixed_length_and_mirror_marker_side():
+    # The horizontal Entry width becomes the fixed vertical proxy length.
+    rl_box, rl_popup, rl_anchor, rl_index, rl_index_anchor = vertical_overlay_layout(
+        600, 200, editor_width=180, editor_height=28, writing_mode="vertical-rl", gap=4,
+    )
+    lr_box, lr_popup, lr_anchor, lr_index, lr_index_anchor = vertical_overlay_layout(
+        600, 200, editor_width=180, editor_height=28, writing_mode="vertical-lr", gap=4,
+    )
+
+    assert rl_box == (568, 200, 596, 380)
+    assert lr_box == (604, 200, 632, 380)
+    assert rl_box[2] < 600 < lr_box[0]
+    assert (rl_box[3] - rl_box[1]) == (lr_box[3] - lr_box[1]) == 180
+    assert (rl_box[2] - rl_box[0]) == (lr_box[2] - lr_box[0]) == 28
+    assert rl_popup == (596.0, 200.0) and rl_anchor == "ne"
+    assert lr_popup == (604.0, 200.0) and lr_anchor == "nw"
+    assert rl_index == (565.0, 200.0) and rl_index_anchor == "ne"
+    assert lr_index == (635.0, 200.0) and lr_index_anchor == "nw"
+
+
+def test_vertical_ocr_menu_follows_vertical_writing_side():
+    assert vertical_ocr_menu_layout((568, 200, 596, 380), 80, "vertical-rl", 1000) == (
+        565.0, 200.0, "ne",
+    )
+    assert vertical_ocr_menu_layout((604, 200, 632, 380), 80, "vertical-lr", 1000) == (
+        635.0, 200.0, "nw",
+    )
 
 
 def test_vertical_proxy_reuses_editor_membership_and_confidence_style():
@@ -328,6 +359,6 @@ def test_vertical_proxy_binding_and_alignment_use_horizontal_rtl_only():
     text = source.read_text(encoding="utf-8")
     assert 'self.canvas.tag_bind(proxy_box_item, "<Button-1>", open_vertical_editor)' in text
     assert 'if rtl:\n            editor.configure(justify="right")' in text
-    assert "vertical_ocr_menu_item" in text
-    assert "ocr_x = new_box[2] + 3" in text
-    assert "size[0] - menu_width - 2" in text
+    assert "vertical_ocr_menu_layout(" in text
+    assert "vertical_overlay_layout(" in text
+    assert "vertical_popup_anchor" in text
