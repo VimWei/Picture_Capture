@@ -359,6 +359,6 @@ def test_vertical_proxy_binding_and_alignment_use_horizontal_rtl_only():
     text = source.read_text(encoding="utf-8")
     assert 'self.canvas.tag_bind(proxy_box_item, "<Button-1>", open_vertical_editor)' in text
     assert 'if rtl:\n            editor.configure(justify="right")' in text
-    assert "vertical_ocr_menu_item" in text
-    assert "ocr_x = new_box[2] + 3" in text
-    assert "size[0] - menu_width - 2" in text
+    assert "vertical_ocr_menu_layout(" in text
+    assert "vertical_overlay_layout(" in text
+    assert "vertical_popup_anchor" in text
