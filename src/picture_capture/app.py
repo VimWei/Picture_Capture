@@ -8061,6 +8061,10 @@ class PictureCaptureApp(tk.Tk):
                 opening_vertical_editor[0] = False
 
             def open_vertical_editor(_event=None) -> str | None:
+                # Canvas-item clicks also reach the Canvas-wide left-click handler.
+                # Suppress that one widget-level click so it cannot insert a new
+                # blank entry and redraw away the editor popup.
+                self._suppress_next_canvas_left_click = True
                 if processing_readonly:
                     self.status_var.set("当前页正在后台处理，暂时只读；完成后即可校对。")
                     return "break"
@@ -8091,6 +8095,13 @@ class PictureCaptureApp(tk.Tk):
             editor.bind("<Return>", lambda _event: (close_vertical_editor(), "break")[-1])
             self.canvas.tag_bind(label_item, "<Button-1>", open_vertical_editor)
             self.canvas.tag_bind(proxy_box_item, "<Button-1>", open_vertical_editor)
+            for target in (label_item, proxy_box_item):
+                self.canvas.tag_bind(
+                    target, "<Enter>", lambda _e: self.canvas.configure(cursor="xterm"),
+                )
+                self.canvas.tag_bind(
+                    target, "<Leave>", lambda _e: self.canvas.configure(cursor=""),
+                )
         else:
             item = self.canvas.create_window(
                 editor_x, editor_y,
@@ -8902,9 +8913,14 @@ class PictureCaptureApp(tk.Tk):
             self.status_var.set("已退出插图多边形绘制模式")
         self.redraw()
 
-    def canvas_left_click(self, event: tk.Event) -> None:
+    def canvas_left_click(self, event: tk.Event) -> str | None:
+        # Canvas item bindings run before this widget-level binding. A vertical
+        # entry proxy marks its opening click for consumption so this handler
+        # cannot insert a blank entry and redraw away the real editor widget.
+        if self.__dict__.pop("_suppress_next_canvas_left_click", False):
+            return "break"
         if not self.guard():
-            return
+            return None
         x, y = self.original_xy(event)
         if not (0 <= x < self.image.width and 0 <= y < self.image.height):
             return

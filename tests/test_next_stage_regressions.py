@@ -354,6 +354,13 @@ def test_numbered_profile_accepts_three_and_four_digit_prefixes():
         assert parsed is not None and parsed.normalized == expected
 
 
+def test_vertical_proxy_click_is_consumed_before_canvas_adds_a_new_entry():
+    fake = SimpleNamespace(_suppress_next_canvas_left_click=True)
+    result = PictureCaptureApp.canvas_left_click(fake, SimpleNamespace())
+    assert result == "break"
+    assert "_suppress_next_canvas_left_click" not in fake.__dict__
+
+
 def test_vertical_proxy_binding_and_alignment_use_horizontal_rtl_only():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
@@ -367,3 +374,5 @@ def test_vertical_proxy_binding_and_alignment_use_horizontal_rtl_only():
     assert 'editor.configure(state="normal")' in text
     assert "opening_vertical_editor" in text
     assert 'return "break"' in text
+    assert "self._suppress_next_canvas_left_click = True" in text
+    assert 'cursor="xterm"' in text
