@@ -229,19 +229,48 @@ def binary_preview_image(source: Image.Image) -> Image.Image:
     return gray.point(lambda pixel: 255 if pixel > threshold else 0, mode="1").convert("RGB")
 
 
-def vertical_entry_label_text(word: str, max_lines: int | None = None) -> str:
-    """Return a top-to-bottom label with a clickable blank-entry placeholder.
+class VerticalWordText(tk.Text):
+    """A real editable Tk widget that presents a headword as a narrow vertical column.
 
-    max_lines keeps the canvas proxy inside its fixed-size editor box. The
-    complete word remains available in the real Entry shown when the box is
-    clicked.
+    It intentionally exposes the small subset of Entry-like methods used by the
+    main overlay code, so OCR fill, autosave, wordslist styling, and manual edit
+    persistence share the same code path as horizontal Entry widgets.
     """
-    chars = list(word) if word else ["□"]
-    if max_lines is not None:
-        limit = max(1, int(max_lines))
-        if len(chars) > limit:
-            chars = (chars[:limit - 1] + ["…"]) if limit > 1 else ["…"]
-    return "\n".join(chars)
+
+    @staticmethod
+    def _entry_index(index) -> str:
+        if index in {"end", tk.END}:
+            return "end-1c"
+        if isinstance(index, int):
+            return f"1.{max(0, index)}"
+        if str(index) == "0":
+            return "1.0"
+        return str(index)
+
+    def get(self, *args):
+        if args:
+            return super().get(*args)
+        # Main-overlay words are single logical strings.  A pasted newline must
+        # not become part of the dictionary headword.
+        return super().get("1.0", "end-1c").replace("\n", "")
+
+    def delete(self, first=0, last=None):
+        first_index = self._entry_index(first)
+        if last is None:
+            return super().delete(first_index)
+        return super().delete(first_index, self._entry_index(last))
+
+    def insert(self, index, chars, *args):
+        return super().insert(self._entry_index(index), chars, *args)
+
+    def icursor(self, index) -> None:
+        target = self._entry_index(index)
+        self.mark_set("insert", target)
+        self.see(target)
+
+    def selection_range(self, start, end) -> None:
+        self.tag_remove("sel", "1.0", "end")
+        self.tag_add("sel", self._entry_index(start), self._entry_index(end))
 
 
 def vertical_overlay_layout(
@@ -259,15 +288,14 @@ def vertical_overlay_layout(
     tuple[float, float],
     str,
 ]:
-    """Return a fixed-size vertical proxy mirroring the horizontal Entry.
+    """Return a fixed-size real vertical editor layout around the marker.
 
-    The horizontal Entry requested width becomes the vertical proxy height,
-    while its requested height becomes the proxy width. For vertical-rl the
-    proxy stays entirely to the left of the marker; vertical-lr is the exact
-    opposite.
+    editor_width/editor_height are the actual requested dimensions of the
+    vertical Text widget. For vertical-rl the widget stays entirely to the
+    left of the marker; vertical-lr is the exact opposite.
     """
-    proxy_width = max(1, int(round(editor_height)))
-    proxy_height = max(1, int(round(editor_width)))
+    proxy_width = max(1, int(round(editor_width)))
+    proxy_height = max(1, int(round(editor_height)))
     gap = max(0, int(gap))
     top = int(round(marker_y))
 
@@ -7930,19 +7958,48 @@ class PictureCaptureApp(tk.Tk):
         editor_font_size = effective_main_overlay_font_size(
             self.image.width, self.view_scale, self.settings,
         )
-        editor = tk.Entry(
-            self.canvas,
-            width=max(4, int(self.settings.main_entry_width_chars)),
-            font=_entry_font_spec(
-                self.settings.main_entry_font_family, editor_font_size,
-                self.settings.main_entry_font_bold, self.settings.main_entry_font_italic,
-            ),
-            relief="flat",
+        horizontal = self.settings.layout_writing_mode == "horizontal-tb"
+        vertical = not horizontal
+        rtl = horizontal and self.settings.layout_text_direction == "rtl"
+        editor_font = _entry_font_spec(
+            self.settings.main_entry_font_family, editor_font_size,
+            self.settings.main_entry_font_bold, self.settings.main_entry_font_italic,
         )
+        if horizontal:
+            editor = tk.Entry(
+                self.canvas,
+                width=max(4, int(self.settings.main_entry_width_chars)),
+                font=editor_font,
+                relief="flat",
+            )
+        else:
+            # Use a real child widget, not a Canvas rectangle/text proxy.  The
+            # narrow Text widget wraps by character, so CJK/kana display
+            # top-to-bottom while remaining directly clickable and editable.
+            editor = VerticalWordText(
+                self.canvas,
+                width=2,
+                height=max(4, int(self.settings.main_entry_width_chars)),
+                font=editor_font,
+                wrap="char",
+                relief="flat",
+                borderwidth=0,
+                padx=2,
+                pady=1,
+                spacing1=0,
+                spacing2=0,
+                spacing3=0,
+                undo=False,
+                cursor="xterm",
+                exportselection=False,
+            )
         editor.insert(0, entry.word)
         self._style_entry_editor(editor, entry)
         if processing_readonly:
-            editor.configure(state="disabled", disabledforeground="#555555")
+            if isinstance(editor, VerticalWordText):
+                editor.configure(state="disabled", foreground="#555555")
+            else:
+                editor.configure(state="disabled", disabledforeground="#555555")
         editor.bind("<FocusOut>", lambda _e, e=entry, w=editor: self.update_entry(e, w))
         editor.bind("<KeyPress>", self._entry_keypress_batch_guard)
         editor.bind("<<Paste>>", lambda _e: None if self._claim_page_for_manual_edit() else "break")
@@ -7952,6 +8009,8 @@ class PictureCaptureApp(tk.Tk):
             lambda _e, e=entry, w=editor: self._style_entry_editor(w, e, w.get().strip()),
         )
         editor.bind("<Return>", lambda e: self.focus_next(e.widget))
+        editor.bind("<Tab>", lambda e: self.focus_next(e.widget))
+        editor.bind("<Shift-Tab>", lambda e: self.focus_previous(e.widget))
         editor.bind("<Down>", lambda e: self.focus_next(e.widget))
         editor.bind("<Up>", lambda e: self.focus_previous(e.widget))
         editor.bind("<Delete>", lambda _e, e=entry: self.delete_entry(e))
@@ -7961,9 +8020,6 @@ class PictureCaptureApp(tk.Tk):
         self.entry_editor_bindings.append((editor, entry))
         editor_req_width = max(1, editor.winfo_reqwidth())
         editor_req_height = max(1, editor.winfo_reqheight())
-
-        horizontal = self.settings.layout_writing_mode == "horizontal-tb"
-        rtl = horizontal and self.settings.layout_text_direction == "rtl"
         editor_anchor = "nw"
         horizontal_index: tuple[float, float] | None = None
         horizontal_index_anchor = "nw"
@@ -7986,122 +8042,35 @@ class PictureCaptureApp(tk.Tk):
         if rtl:
             editor.configure(justify="right")
         
-        vertical = self.settings.layout_writing_mode != "horizontal-tb"
         vertical_box: tuple[int, int, int, int] | None = None
         vertical_index: tuple[float, float] | None = None
         vertical_index_anchor_name = "nw"
-        vertical_popup: tuple[float, float] | None = None
-        vertical_popup_anchor = "nw"
-        vertical_max_lines = 1
         if vertical:
-            # Mirror the normal horizontal Entry instead of sizing the proxy
-            # from OCR text. The configured Entry width becomes a fixed
-            # vertical length, so every vertical word box has identical size.
             marker_gap = max(
                 3,
                 round(max(2, self.settings.marker_height * overlay_scale) / 2) + 1,
             )
             (
                 vertical_box,
-                vertical_popup,
-                vertical_popup_anchor,
+                vertical_window,
+                vertical_window_anchor,
                 vertical_index,
                 vertical_index_anchor_name,
             ) = vertical_overlay_layout(
                 editor_x, editor_y, editor_req_width, editor_req_height,
                 self.settings.layout_writing_mode, gap=marker_gap,
             )
-            pad = max(2, round(editor_font_size * 0.12))
-            available_height = max(1, vertical_box[3] - vertical_box[1] - pad * 2)
-            line_step = max(1, round(editor_font_size * 1.15))
-            vertical_max_lines = max(1, available_height // line_step)
-            proxy_bg, proxy_border, proxy_width = self._entry_overlay_style(entry)
-            proxy_box_item = self.canvas.create_rectangle(
-                *vertical_box, fill=proxy_bg, outline=proxy_border, width=proxy_width,
+            # The Text widget is permanently present.  Unlike the old Canvas
+            # proxy, it receives mouse/key events exactly like a horizontal
+            # Entry, so no click routing or temporary popup is involved.
+            item = self.canvas.create_window(
+                *vertical_window,
+                window=editor,
+                anchor=vertical_window_anchor,
+                width=vertical_box[2] - vertical_box[0],
+                height=vertical_box[3] - vertical_box[1],
             )
-            label_item = self.canvas.create_text(
-                (vertical_box[0] + vertical_box[2]) / 2,
-                vertical_box[1] + pad,
-                text=vertical_entry_label_text(entry.word, vertical_max_lines),
-                anchor="n", justify="center", fill="#111111",
-                font=_entry_font_spec(
-                    self.settings.main_entry_font_family, editor_font_size,
-                    self.settings.main_entry_font_bold, self.settings.main_entry_font_italic,
-                ),
-            )
-            record["canvas_items"].extend((proxy_box_item, label_item))
-            popup_item: list[int | None] = [None]
-
-            def close_vertical_editor(_event=None, *, e=entry, w=editor) -> None:
-                self.update_entry(e, w)
-                self.canvas.itemconfigure(
-                    label_item,
-                    text=vertical_entry_label_text(e.word, vertical_max_lines),
-                    state="normal",
-                )
-                bg, border, thickness = self._entry_overlay_style(e)
-                self.canvas.itemconfigure(
-                    proxy_box_item, fill=bg, outline=border, width=thickness, state="normal",
-                )
-                if popup_item[0] is not None:
-                    self.canvas.delete(popup_item[0])
-                    popup_item[0] = None
-
-            opening_vertical_editor = [False]
-
-            def _focus_vertical_editor() -> None:
-                """Focus the real Entry after the canvas click event has finished."""
-                if popup_item[0] is None or not editor.winfo_exists():
-                    return
-                if not processing_readonly:
-                    editor.configure(state="normal")
-                editor.focus_force()
-                editor.selection_range(0, "end")
-                editor.icursor("end")
-                opening_vertical_editor[0] = False
-
-            def open_vertical_editor(_event=None) -> str | None:
-                # Canvas-item clicks also reach the Canvas-wide left-click handler.
-                # Suppress that one widget-level click so it cannot insert a new
-                # blank entry and redraw away the editor popup.
-                self._suppress_next_canvas_left_click = True
-                if processing_readonly:
-                    self.status_var.set("当前页正在后台处理，暂时只读；完成后即可校对。")
-                    return "break"
-                if popup_item[0] is not None:
-                    return "break"
-                assert vertical_popup is not None
-                opening_vertical_editor[0] = True
-                self.canvas.itemconfigure(label_item, state="hidden")
-                self.canvas.itemconfigure(proxy_box_item, state="hidden")
-                popup_item[0] = self.canvas.create_window(
-                    *vertical_popup, window=editor, anchor=vertical_popup_anchor,
-                )
-                self.canvas.tag_raise(popup_item[0])
-                # Focusing immediately inside a Canvas <Button-1> callback is
-                # unreliable on Windows: the click can hand focus back to the
-                # canvas, firing <FocusOut> and closing the popup at once.
-                self.after_idle(_focus_vertical_editor)
-                return "break"
-
-            def _close_vertical_editor_on_focus_out(event=None) -> None:
-                # Ignore the transient focus-out emitted while the popup is
-                # still being installed; the after-idle callback owns focus.
-                if opening_vertical_editor[0]:
-                    return
-                close_vertical_editor(event)
-
-            editor.bind("<FocusOut>", _close_vertical_editor_on_focus_out)
-            editor.bind("<Return>", lambda _event: (close_vertical_editor(), "break")[-1])
-            self.canvas.tag_bind(label_item, "<Button-1>", open_vertical_editor)
-            self.canvas.tag_bind(proxy_box_item, "<Button-1>", open_vertical_editor)
-            for target in (label_item, proxy_box_item):
-                self.canvas.tag_bind(
-                    target, "<Enter>", lambda _e: self.canvas.configure(cursor="xterm"),
-                )
-                self.canvas.tag_bind(
-                    target, "<Leave>", lambda _e: self.canvas.configure(cursor=""),
-                )
+            record["canvas_items"].append(item)
         else:
             item = self.canvas.create_window(
                 editor_x, editor_y,
@@ -8913,14 +8882,9 @@ class PictureCaptureApp(tk.Tk):
             self.status_var.set("已退出插图多边形绘制模式")
         self.redraw()
 
-    def canvas_left_click(self, event: tk.Event) -> str | None:
-        # Canvas item bindings run before this widget-level binding. A vertical
-        # entry proxy marks its opening click for consumption so this handler
-        # cannot insert a blank entry and redraw away the real editor widget.
-        if self.__dict__.pop("_suppress_next_canvas_left_click", False):
-            return "break"
+    def canvas_left_click(self, event: tk.Event) -> None:
         if not self.guard():
-            return None
+            return
         x, y = self.original_xy(event)
         if not (0 <= x < self.image.width and 0 <= y < self.image.height):
             return
@@ -9043,7 +9007,7 @@ class PictureCaptureApp(tk.Tk):
         return "#ffcdd2"
 
     def _style_entry_editor(
-        self, widget: tk.Entry, entry: WordEntry, displayed_word: str | None = None
+        self, widget: tk.Entry | VerticalWordText, entry: WordEntry, displayed_word: str | None = None
     ) -> None:
         """Style a main-view headword editor by wordslist membership.
 
@@ -9054,12 +9018,17 @@ class PictureCaptureApp(tk.Tk):
         commits the edit back to ``entry.word``.
         """
         bg, border, thickness = self._entry_overlay_style(entry, displayed_word)
-        widget.configure(
-            bg=bg, disabledbackground=bg,
-            highlightthickness=thickness,
-            highlightbackground=border,
-            highlightcolor=border,
-        )
+        options = {
+            "bg": bg,
+            "highlightthickness": thickness,
+            "highlightbackground": border,
+            "highlightcolor": border,
+        }
+        if isinstance(widget, VerticalWordText):
+            options["insertbackground"] = "#111111"
+        else:
+            options["disabledbackground"] = bg
+        widget.configure(**options)
 
     def _entry_overlay_style(
         self, entry: WordEntry, displayed_word: str | None = None,
@@ -9104,7 +9073,7 @@ class PictureCaptureApp(tk.Tk):
         return word if len(word) <= limit else word[: max(1, limit - 1)] + "…"
 
     def _fill_main_entry_from_ocr(
-        self, entry: WordEntry, editor: tk.Entry, candidate: dict,
+        self, entry: WordEntry, editor: tk.Entry | VerticalWordText, candidate: dict,
         engine: str, word: str, menu_button: tk.Menubutton | None = None,
     ) -> None:
         """Fill one main-page editor from a compact OCR choice and persist it."""
@@ -9147,7 +9116,7 @@ class PictureCaptureApp(tk.Tk):
         self.status_var.set(f"已填入 OCR 结果：{word}")
 
     def _create_main_ocr_menu(
-        self, entry: WordEntry, editor: tk.Entry, candidate: dict | None,
+        self, entry: WordEntry, editor: tk.Entry | VerticalWordText, candidate: dict | None,
     ) -> tk.Menubutton | None:
         """Create a compact OCR-result selector displayed beside a main editor."""
         rows = _candidate_choice_rows(candidate)
@@ -9709,7 +9678,7 @@ class PictureCaptureApp(tk.Tk):
                 entry.parser_score = None
             entry.manually_selected = bool(item.get("manually_selected", False))
 
-    def update_entry(self, entry: WordEntry, widget: tk.Entry) -> None:
+    def update_entry(self, entry: WordEntry, widget: tk.Entry | VerticalWordText) -> None:
         new_word = widget.get().strip()
         if new_word != entry.word:
             if not self._claim_page_for_manual_edit():
