@@ -229,9 +229,89 @@ def binary_preview_image(source: Image.Image) -> Image.Image:
     return gray.point(lambda pixel: 255 if pixel > threshold else 0, mode="1").convert("RGB")
 
 
-def vertical_entry_label_text(word: str) -> str:
-    """Return a top-to-bottom label with a clickable blank-entry placeholder."""
-    return "\n".join(word) or "□"
+def vertical_entry_label_text(word: str, max_lines: int | None = None) -> str:
+    """Return a top-to-bottom label with a clickable blank-entry placeholder.
+
+    max_lines keeps the canvas proxy inside its fixed-size editor box. The
+    complete word remains available in the real Entry shown when the box is
+    clicked.
+    """
+    chars = list(word) if word else ["□"]
+    if max_lines is not None:
+        limit = max(1, int(max_lines))
+        if len(chars) > limit:
+            chars = (chars[:limit - 1] + ["…"]) if limit > 1 else ["…"]
+    return "\n".join(chars)
+
+
+def vertical_overlay_layout(
+    marker_x: float,
+    marker_y: float,
+    editor_width: int,
+    editor_height: int,
+    writing_mode: str,
+    *,
+    gap: int = 3,
+) -> tuple[
+    tuple[int, int, int, int],
+    tuple[float, float],
+    str,
+    tuple[float, float],
+    str,
+]:
+    """Return a fixed-size vertical proxy mirroring the horizontal Entry.
+
+    The horizontal Entry requested width becomes the vertical proxy height,
+    while its requested height becomes the proxy width. For vertical-rl the
+    proxy stays entirely to the left of the marker; vertical-lr is the exact
+    opposite.
+    """
+    proxy_width = max(1, int(round(editor_height)))
+    proxy_height = max(1, int(round(editor_width)))
+    gap = max(0, int(gap))
+    top = int(round(marker_y))
+
+    if writing_mode == "vertical-rl":
+        right = int(round(marker_x - gap))
+        left = right - proxy_width
+        popup = (float(right), float(top))
+        popup_anchor = "ne"
+        index = (float(left - 3), float(top))
+        index_anchor = "ne"
+    elif writing_mode == "vertical-lr":
+        left = int(round(marker_x + gap))
+        right = left + proxy_width
+        popup = (float(left), float(top))
+        popup_anchor = "nw"
+        index = (float(right + 3), float(top))
+        index_anchor = "nw"
+    else:
+        raise ValueError(f"Not a vertical writing mode: {writing_mode}")
+
+    box = (left, top, right, top + proxy_height)
+    return box, popup, popup_anchor, index, index_anchor
+
+
+def vertical_ocr_menu_layout(
+    entry_box: tuple[int, int, int, int],
+    menu_width: int,
+    writing_mode: str,
+    canvas_width: int,
+) -> tuple[float, float, str]:
+    """Place the OCR selector outside the vertical entry box on the same side."""
+    left, top, right, _bottom = entry_box
+    menu_width = max(1, int(menu_width))
+    if writing_mode == "vertical-rl":
+        x = left - 3
+        if x - menu_width < 2:
+            x = menu_width + 2
+        return float(x), float(top), "ne"
+    if writing_mode == "vertical-lr":
+        x = right + 3
+        if x + menu_width > canvas_width - 2:
+            x = max(0, canvas_width - menu_width - 2)
+        return float(x), float(top), "nw"
+    raise ValueError(f"Not a vertical writing mode: {writing_mode}")
 
 
 def transformed_entry_anchor(
@@ -7879,7 +7959,9 @@ class PictureCaptureApp(tk.Tk):
         self.overlay_widgets.append(editor)
         record["widgets"].append(editor)
         self.entry_editor_bindings.append((editor, entry))
-        
+        editor_req_width = max(1, editor.winfo_reqwidth())
+        editor_req_height = max(1, editor.winfo_reqheight())
+
         horizontal = self.settings.layout_writing_mode == "horizontal-tb"
         rtl = horizontal and self.settings.layout_text_direction == "rtl"
         editor_anchor = "nw"
@@ -7906,60 +7988,61 @@ class PictureCaptureApp(tk.Tk):
         
         vertical = self.settings.layout_writing_mode != "horizontal-tb"
         vertical_box: tuple[int, int, int, int] | None = None
-        vertical_index_item: list[int | None] = [None]
-        vertical_ocr_menu_item: list[int | None] = [None]
-        vertical_ocr_menu_width: list[int] = [0]
+        vertical_index: tuple[float, float] | None = None
+        vertical_index_anchor_name = "nw"
+        vertical_popup: tuple[float, float] | None = None
+        vertical_popup_anchor = "nw"
+        vertical_max_lines = 1
         if vertical:
-            # Tk Entry cannot render vertical text.  Keep it detached until the
-            # user clicks the source-oriented canvas label, then show a short-
-            # lived horizontal editor at that exact marker anchor.
-            vertical_label_text = vertical_entry_label_text(entry.word)
+            # Mirror the normal horizontal Entry instead of sizing the proxy
+            # from OCR text. The configured Entry width becomes a fixed
+            # vertical length, so every vertical word box has identical size.
+            marker_gap = max(
+                3,
+                round(max(2, self.settings.marker_height * overlay_scale) / 2) + 1,
+            )
+            (
+                vertical_box,
+                vertical_popup,
+                vertical_popup_anchor,
+                vertical_index,
+                vertical_index_anchor_name,
+            ) = vertical_overlay_layout(
+                editor_x, editor_y, editor_req_width, editor_req_height,
+                self.settings.layout_writing_mode, gap=marker_gap,
+            )
+            pad = max(2, round(editor_font_size * 0.12))
+            available_height = max(1, vertical_box[3] - vertical_box[1] - pad * 2)
+            line_step = max(1, round(editor_font_size * 1.15))
+            vertical_max_lines = max(1, available_height // line_step)
+            proxy_bg, proxy_border, proxy_width = self._entry_overlay_style(entry)
+            proxy_box_item = self.canvas.create_rectangle(
+                *vertical_box, fill=proxy_bg, outline=proxy_border, width=proxy_width,
+            )
             label_item = self.canvas.create_text(
-                editor_x, editor_y, text=vertical_label_text, anchor="nw",
-                justify="center", fill="#111111",
+                (vertical_box[0] + vertical_box[2]) / 2,
+                vertical_box[1] + pad,
+                text=vertical_entry_label_text(entry.word, vertical_max_lines),
+                anchor="n", justify="center", fill="#111111",
                 font=_entry_font_spec(
                     self.settings.main_entry_font_family, editor_font_size,
                     self.settings.main_entry_font_bold, self.settings.main_entry_font_italic,
                 ),
             )
-            label_bbox = self.canvas.bbox(label_item) or (
-                round(editor_x), round(editor_y), round(editor_x + editor_font_size),
-                round(editor_y + editor_font_size),
-            )
-            pad = max(2, round(editor_font_size * 0.12))
-            vertical_box = (
-                label_bbox[0] - pad, label_bbox[1] - pad,
-                label_bbox[2] + pad, label_bbox[3] + pad,
-            )
-            proxy_bg, proxy_border, proxy_width = self._entry_overlay_style(entry)
-            proxy_box_item = self.canvas.create_rectangle(
-                *vertical_box, fill=proxy_bg, outline=proxy_border, width=proxy_width,
-            )
-            self.canvas.tag_lower(proxy_box_item, label_item)
             record["canvas_items"].extend((proxy_box_item, label_item))
             popup_item: list[int | None] = [None]
 
             def close_vertical_editor(_event=None, *, e=entry, w=editor) -> None:
                 self.update_entry(e, w)
-                self.canvas.itemconfigure(label_item, text=vertical_entry_label_text(e.word), state="normal")
-                new_bbox = self.canvas.bbox(label_item) or label_bbox
-                new_box = (
-                    new_bbox[0] - pad, new_bbox[1] - pad,
-                    new_bbox[2] + pad, new_bbox[3] + pad,
+                self.canvas.itemconfigure(
+                    label_item,
+                    text=vertical_entry_label_text(e.word, vertical_max_lines),
+                    state="normal",
                 )
                 bg, border, thickness = self._entry_overlay_style(e)
-                self.canvas.coords(proxy_box_item, *new_box)
                 self.canvas.itemconfigure(
                     proxy_box_item, fill=bg, outline=border, width=thickness, state="normal",
                 )
-                if vertical_index_item[0] is not None:
-                    self.canvas.coords(vertical_index_item[0], *vertical_index_anchor(new_box))
-                if vertical_ocr_menu_item[0] is not None:
-                    ocr_x = new_box[2] + 3
-                    menu_width = max(1, vertical_ocr_menu_width[0])
-                    if ocr_x + menu_width > size[0] - 2:
-                        ocr_x = max(0, size[0] - menu_width - 2)
-                    self.canvas.coords(vertical_ocr_menu_item[0], ocr_x, new_box[1])
                 if popup_item[0] is not None:
                     self.canvas.delete(popup_item[0])
                     popup_item[0] = None
@@ -7967,10 +8050,11 @@ class PictureCaptureApp(tk.Tk):
             def open_vertical_editor(_event=None) -> None:
                 if processing_readonly or popup_item[0] is not None:
                     return
+                assert vertical_popup is not None
                 self.canvas.itemconfigure(label_item, state="hidden")
                 self.canvas.itemconfigure(proxy_box_item, state="hidden")
                 popup_item[0] = self.canvas.create_window(
-                    editor_x, editor_y, window=editor, anchor="nw",
+                    *vertical_popup, window=editor, anchor=vertical_popup_anchor,
                 )
                 editor.focus_set()
                 editor.selection_range(0, "end")
@@ -8001,20 +8085,21 @@ class PictureCaptureApp(tk.Tk):
             self.overlay_widgets.append(ocr_menu)
             record["widgets"].append(ocr_menu)
 
-            editor_req_width = max(1, editor.winfo_reqwidth())
             menu_req_width = max(1, ocr_menu.winfo_reqwidth())
 
             if vertical and vertical_box:
-                ocr_x, ocr_y, ocr_anchor = vertical_box[2] + 3, vertical_box[1], "nw"
+                ocr_x, ocr_y, ocr_anchor = vertical_ocr_menu_layout(
+                    vertical_box, menu_req_width,
+                    self.settings.layout_writing_mode, size[0],
+                )
             else:
                 ocr_x, ocr_y, ocr_anchor = horizontal_ocr_menu_layout(
                     editor_x, editor_y, editor_req_width, rtl=rtl,
                 )
-
-            if not rtl and ocr_x + menu_req_width > size[0] - 2:
-                ocr_x = max(0, size[0] - menu_req_width - 2)
-            elif rtl and ocr_x - menu_req_width < 2:
-                ocr_x = menu_req_width + 2
+                if not rtl and ocr_x + menu_req_width > size[0] - 2:
+                    ocr_x = max(0, size[0] - menu_req_width - 2)
+                elif rtl and ocr_x - menu_req_width < 2:
+                    ocr_x = menu_req_width + 2
 
             item = self.canvas.create_window(
                 ocr_x,
@@ -8022,9 +8107,6 @@ class PictureCaptureApp(tk.Tk):
                 window=ocr_menu,
                 anchor=ocr_anchor,
             )
-            if vertical:
-                vertical_ocr_menu_item[0] = item
-                vertical_ocr_menu_width[0] = menu_req_width
             record["canvas_items"].append(item)
 
         # 编号位置与 OCR 菜单无关，必须放在 if ocr_menu is not None 外面。
@@ -8033,9 +8115,9 @@ class PictureCaptureApp(tk.Tk):
             index_x, index_y = horizontal_index
             index_anchor = horizontal_index_anchor
         elif self.settings.layout_writing_mode != "horizontal-tb":
-            assert vertical_box is not None
-            index_x, index_y = vertical_index_anchor(vertical_box)
-            index_anchor = "nw"
+            assert vertical_index is not None
+            index_x, index_y = vertical_index
+            index_anchor = vertical_index_anchor_name
         else:
             raise AssertionError("unreachable overlay layout")
 
