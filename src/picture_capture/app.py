@@ -8913,9 +8913,14 @@ class PictureCaptureApp(tk.Tk):
             self.status_var.set("已退出插图多边形绘制模式")
         self.redraw()
 
-    def canvas_left_click(self, event: tk.Event) -> None:
+    def canvas_left_click(self, event: tk.Event) -> str | None:
+        # Canvas item bindings run before this widget-level binding. A vertical
+        # entry proxy marks its opening click for consumption so this handler
+        # cannot insert a blank entry and redraw away the real editor widget.
+        if self.__dict__.pop("_suppress_next_canvas_left_click", False):
+            return "break"
         if not self.guard():
-            return
+            return None
         x, y = self.original_xy(event)
         if not (0 <= x < self.image.width and 0 <= y < self.image.height):
             return
