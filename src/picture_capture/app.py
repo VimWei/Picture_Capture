@@ -8061,6 +8061,10 @@ class PictureCaptureApp(tk.Tk):
                 opening_vertical_editor[0] = False
 
             def open_vertical_editor(_event=None) -> str | None:
+                # Canvas-item clicks also reach the Canvas-wide left-click handler.
+                # Suppress that one widget-level click so it cannot insert a new
+                # blank entry and redraw away the editor popup.
+                self._suppress_next_canvas_left_click = True
                 if processing_readonly:
                     self.status_var.set("当前页正在后台处理，暂时只读；完成后即可校对。")
                     return "break"
