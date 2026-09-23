@@ -353,12 +353,6 @@ def transformed_entry_anchor(
     return source_x * view_scale, source_y * view_scale
 
 
-def vertical_index_anchor(entry_box: tuple[int, int, int, int]) -> tuple[int, int]:
-    """Place the small index beside the rendered vertical entry proxy box."""
-    left, top, right, _bottom = entry_box
-    return right + 3, top
-
-
 def horizontal_overlay_layout(
     transform, canonical_x: float, canonical_y: float, column_width: float,
     x_ratio: float, source_size: tuple[int, int], view_scale: float, *, rtl: bool,
@@ -9033,7 +9027,7 @@ class PictureCaptureApp(tk.Tk):
     def _entry_overlay_style(
         self, entry: WordEntry, displayed_word: str | None = None,
     ) -> tuple[str, str, int]:
-        """Return the shared editor/proxy background and membership border."""
+        """Return the shared editor background and membership border."""
         word = entry.word if displayed_word is None else displayed_word
         in_wordlist = bool(word and word in self._project_words)
         bg = (
