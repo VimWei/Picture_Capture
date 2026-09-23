@@ -8132,8 +8132,6 @@ class PictureCaptureApp(tk.Tk):
 
         record["canvas_items"].append(index_item)
         record["index_item"] = index_item
-        if vertical:
-            vertical_index_item[0] = index_item
 
         if self.crop_preview_var.get():
             left, top, right, bottom = line_box(entry, geometry, self.image, self.settings)
