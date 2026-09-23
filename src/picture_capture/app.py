@@ -7908,6 +7908,7 @@ class PictureCaptureApp(tk.Tk):
         vertical_box: tuple[int, int, int, int] | None = None
         vertical_index_item: list[int | None] = [None]
         vertical_ocr_menu_item: list[int | None] = [None]
+        vertical_ocr_menu_width: list[int] = [0]
         if vertical:
             # Tk Entry cannot render vertical text.  Keep it detached until the
             # user clicks the source-oriented canvas label, then show a short-
@@ -7954,7 +7955,11 @@ class PictureCaptureApp(tk.Tk):
                 if vertical_index_item[0] is not None:
                     self.canvas.coords(vertical_index_item[0], *vertical_index_anchor(new_box))
                 if vertical_ocr_menu_item[0] is not None:
-                    self.canvas.coords(vertical_ocr_menu_item[0], new_box[2] + 3, new_box[1])
+                    ocr_x = new_box[2] + 3
+                    menu_width = max(1, vertical_ocr_menu_width[0])
+                    if ocr_x + menu_width > size[0] - 2:
+                        ocr_x = max(0, size[0] - menu_width - 2)
+                    self.canvas.coords(vertical_ocr_menu_item[0], ocr_x, new_box[1])
                 if popup_item[0] is not None:
                     self.canvas.delete(popup_item[0])
                     popup_item[0] = None
@@ -8019,6 +8024,7 @@ class PictureCaptureApp(tk.Tk):
             )
             if vertical:
                 vertical_ocr_menu_item[0] = item
+                vertical_ocr_menu_width[0] = menu_req_width
             record["canvas_items"].append(item)
 
         # 编号位置与 OCR 菜单无关，必须放在 if ocr_menu is not None 外面。
