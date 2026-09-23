@@ -311,7 +311,7 @@
         "numbered_headword_prefix"
       ],
       "require_visual_cue": false,
-      "prefix_regex": "^\\s*\\d{1,2}\\s*",
+      "prefix_regex": "^\\s*\\d{1,4}(?:\\s*[.．]\\s*|\\s+)",
       "prefix_required": true,
       "display_name": "编号前缀词头",
       "description": "以一至两位数字前缀作为强词条提示，适用于日文及其他编号词典。",
