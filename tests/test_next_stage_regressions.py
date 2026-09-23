@@ -311,7 +311,7 @@ def test_sidecar_only_v3_project_restores_components(tmp_path):
 
 
 def test_numbered_profile_accepts_three_and_four_digit_prefixes():
-    profile = load_dictionary_profile(preset="numbered_headword_prefix", language="eng")
+    profile = load_dictionary_profile(preset="numbered_prefix", language="eng")
     settings = AppSettings(ocr_language="eng")
     for text, expected in (
         ("100. anniversary", "anniversary"),
