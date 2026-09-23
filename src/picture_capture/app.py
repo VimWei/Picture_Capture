@@ -1055,8 +1055,9 @@ class SettingsDialog(tk.Toplevel):
                 row = index // 2
                 column = (index % 2) * 2
                 ttk.Label(group, text=label).grid(row=row, column=column, sticky="e", padx=(0, 7), pady=3)
-                var = tk.StringVar(value=str(getattr(parent.settings, name)))
-                self.vars[name] = var
+                if name not in self.vars:
+                    self.vars[name] = tk.StringVar(value=str(getattr(parent.settings, name)))
+                var = self.vars[name]
                 if name == "ocr_language":
                     widget = ttk.Combobox(group, textvariable=var, values=self.OCR_LANGUAGES, state="normal", width=23)
                     widget.bind("<<ComboboxSelected>>", lambda _e: self._refresh_sort_choices())
@@ -1658,6 +1659,14 @@ class SettingsDialog(tk.Toplevel):
 
     def save(self, *, close: bool = True, show_errors: bool = True) -> bool:
         try:
+            previous_language = str(getattr(self.parent.settings, "ocr_language", "") or "")
+            previous_backend = {
+                name: getattr(self.parent.settings, name, None)
+                for name in (
+                    "paddle_language", "tesseract_language",
+                    "paddle_tesseract_psm", "paddle_use_textline_orientation",
+                )
+            }
             for name, var in self.vars.items():
                 value = var.get()
                 if name in self._casts:
@@ -1676,6 +1685,19 @@ class SettingsDialog(tk.Toplevel):
                     self.parent.settings.headword_custom_fold_accents = bool(value)
                 else:
                     setattr(self.parent.settings, name, bool(value))
+            current_language = str(getattr(self.parent.settings, "ocr_language", "") or "")
+            if current_language != previous_language:
+                derived = language_effective_settings(
+                    current_language, self.parent.settings.layout_writing_mode,
+                )
+                for name, value in derived.items():
+                    if not hasattr(self.parent.settings, name):
+                        continue
+                    # Respect an explicit advanced backend override made in this
+                    # dialog; only stale values inherited from the old language
+                    # are replaced automatically.
+                    if name not in previous_backend or getattr(self.parent.settings, name) == previous_backend[name]:
+                        setattr(self.parent.settings, name, value)
             self.parent.settings.main_entry_font_family = str(self.parent.settings.main_entry_font_family).strip() or "DengXian"
             self.parent.settings.main_entry_font_size = max(5, int(self.parent.settings.main_entry_font_size))
             self.parent.settings.main_entry_width_chars = max(4, int(self.parent.settings.main_entry_width_chars))
