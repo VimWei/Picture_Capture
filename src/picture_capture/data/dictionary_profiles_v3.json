@@ -314,7 +314,7 @@
       "prefix_regex": "^\\s*\\d{1,4}(?:\\s*[.．]\\s*|\\s+)",
       "prefix_required": true,
       "display_name": "编号前缀词头",
-      "description": "以一至两位数字前缀作为强词条提示，适用于日文及其他编号词典。",
+      "description": "以 1–4 位数字加点号或空格作为强词条提示，适用于日文及其他编号词典。",
       "family": "numbered_prefix",
       "validated_examples": [
         "RUIGO"
