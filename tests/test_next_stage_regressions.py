@@ -362,3 +362,4 @@ def test_vertical_proxy_binding_and_alignment_use_horizontal_rtl_only():
     assert "vertical_ocr_menu_layout(" in text
     assert "vertical_overlay_layout(" in text
     assert "vertical_popup_anchor" in text
+    assert "vertical_index_item" not in text
