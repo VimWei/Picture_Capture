@@ -12,9 +12,11 @@ from picture_capture.app import (
 from picture_capture.dictionary_profile import effective_project_profile_id, load_dictionary_profile
 from picture_capture.models import AppSettings, Entry, ProjectState
 from picture_capture.layout_transform import LayoutTransform
+from picture_capture.layout_detection import _analysis_ink_mask
 from picture_capture.paddle_headwords import (
-    OCRLine, OCRRecord, _compile_patterns, _repair_multiline_headword_state_machine,
-    parse_headword_text, prepare_ocr_band, run_paddle_band,
+    OCRLine, OCRRecord, _cache_signature, _compile_patterns,
+    _repair_multiline_headword_state_machine, parse_headword_text,
+    prepare_ocr_band, run_paddle_band,
 )
 from picture_capture.project_storage import profile_path, settings_path
 from picture_capture.recent_projects import (
@@ -227,3 +229,103 @@ def test_ocr_resize_coordinates_round_trip():
     assert prepared.size == (700, 1400) and scale == .5
     records = run_paddle_band(band, AppSettings(paddle_max_input_side=1400), Engine())
     assert records == [OCRRecord("word", .9, (200, 400, 600, 800))]
+
+
+
+def test_raw_ocr_cache_signature_tracks_pixels_and_inference_settings():
+    class PathStub:
+        points = [(10, 20), (10, 200)]
+
+    geometry = SimpleNamespace(
+        transform=SimpleNamespace(kind="identity"),
+        column_paths=[PathStub()],
+    )
+    image = Image.new("RGB", (64, 64), "white")
+    base = AppSettings(
+        paddle_preprocessing="original",
+        paddle_max_input_side=2800,
+        paddle_use_textline_orientation=False,
+    )
+    sig = _cache_signature(image, geometry, base)
+    assert _cache_signature(image, geometry, replace(base, paddle_preprocessing="binary")) != sig
+    assert _cache_signature(image, geometry, replace(base, paddle_max_input_side=1400)) != sig
+    assert _cache_signature(image, geometry, replace(base, paddle_use_textline_orientation=True)) != sig
+
+    changed = image.copy()
+    changed.putpixel((32, 32), (0, 0, 0))
+    assert _cache_signature(changed, geometry, base) != sig
+
+    # Candidate/parser-only settings deliberately do not invalidate raw OCR.
+    assert _cache_signature(image, geometry, replace(base, paddle_min_candidate_score=9.0)) == sig
+    assert _cache_signature(image, geometry, replace(base, paddle_headword_regex=r"^foo")) == sig
+
+
+def test_analysis_threshold_modes_are_effective():
+    import numpy as np
+
+    gray = np.array([
+        [40, 80, 140, 220],
+        [50, 90, 150, 230],
+        [60, 100, 160, 240],
+        [70, 110, 170, 250],
+    ], dtype=np.uint8)
+    fixed = _analysis_ink_mask(gray, AppSettings(analysis_threshold_mode="fixed", darkness_threshold=300))
+    # RGB-sum threshold 300 corresponds to grayscale threshold 100.
+    assert fixed[0, 0] and fixed[1, 1]
+    assert not fixed[2, 1] and not fixed[0, 2]
+
+    auto = _analysis_ink_mask(gray, AppSettings(analysis_threshold_mode="auto"))
+    otsu = _analysis_ink_mask(gray, AppSettings(analysis_threshold_mode="otsu"))
+    assert np.array_equal(auto, otsu)
+    adaptive = _analysis_ink_mask(gray, AppSettings(analysis_threshold_mode="adaptive"))
+    assert adaptive.shape == gray.shape and adaptive.dtype == bool
+
+
+def test_sidecar_only_v3_project_restores_components(tmp_path):
+    root = tmp_path / "sidecar"
+    root.mkdir()
+    Image.new("RGB", (8, 8), "white").save(root / "1.jpg")
+    # First opening creates the managed storage; remove settings to emulate a
+    # sidecar-only migration project.
+    ProjectState.open(root)
+    settings_path(root).unlink(missing_ok=True)
+    profile_path(root).write_text(
+        '{"format":"dictionary-profile-v3","preset":"cjk_bracket_display",'
+        '"layout":{"writing_mode":"vertical-rl","text_direction":"rtl","columns":3,'
+        '"columns_policy":"fixed","column_separator":"absent","analysis_threshold_mode":"fixed"},'
+        '"ocr":{"semantic_language":"jpn","paddle_language":"japan",'
+        '"tesseract_language":"jpn","use_textline_orientation":true}}',
+        encoding="utf-8",
+    )
+    restored = ProjectState.open(root).settings
+    assert restored.layout_writing_mode == "vertical-rl"
+    assert restored.layout_text_direction == "rtl"
+    assert restored.layout_transform == "rotate_ccw90"
+    assert restored.columns == 3
+    assert restored.layout_columns_policy == "fixed"
+    assert restored.layout_column_separator_mode == "absent"
+    assert restored.analysis_threshold_mode == "fixed"
+    assert restored.ocr_language == "jpn"
+    assert restored.tesseract_language == "jpn"
+    assert restored.paddle_use_textline_orientation is True
+
+
+def test_numbered_profile_accepts_three_and_four_digit_prefixes():
+    profile = load_dictionary_profile(preset="numbered_headword_prefix", language="eng")
+    settings = AppSettings(ocr_language="eng")
+    for text, expected in (
+        ("100. anniversary", "anniversary"),
+        ("1234. word", "word"),
+        ("100 word", "word"),
+    ):
+        parsed = parse_headword_text(text, settings, profile=profile)
+        assert parsed is not None and parsed.normalized == expected
+
+
+def test_vertical_proxy_binding_and_alignment_use_horizontal_rtl_only():
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    assert 'self.canvas.tag_bind(proxy_box_item, "<Button-1>", open_vertical_editor)' in text
+    assert 'if rtl:\n            editor.configure(justify="right")' in text
+    assert "vertical_ocr_menu_item" in text
+    assert "new_box[2] + 3, new_box[1]" in text
