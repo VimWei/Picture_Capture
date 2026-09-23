@@ -3258,14 +3258,12 @@ def filter_headword_records(
 
 
 def _image_cache_fingerprint(image: Image.Image) -> str:
-    """Return a cheap content hash so same-size edited scans invalidate OCR cache."""
-    preview = ImageOps.grayscale(normalize_page_rgb(image))
-    preview.thumbnail((96, 96), Image.Resampling.BILINEAR)
-    payload = (
-        f"{image.width}x{image.height}|{preview.width}x{preview.height}|".encode("ascii")
-        + preview.tobytes()
-    )
-    return hashlib.sha256(payload).hexdigest()
+    """Return an exact normalized-pixel hash for raw OCR cache invalidation."""
+    rgb = normalize_page_rgb(image)
+    digest = hashlib.sha256()
+    digest.update(f"{rgb.width}x{rgb.height}|RGB|".encode("ascii"))
+    digest.update(rgb.tobytes())
+    return digest.hexdigest()
 
 
 def _cache_signature(image: Image.Image, geometry: "Geometry", settings: AppSettings) -> str:
