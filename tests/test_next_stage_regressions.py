@@ -157,7 +157,7 @@ def test_horizontal_ui_uses_shared_layout_and_keeps_arabic_semantics():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
     start = text.index("        horizontal = self.settings.layout_writing_mode == \"horizontal-tb\"")
-    end = text.index("        vertical = self.settings.layout_writing_mode != \"horizontal-tb\"", start)
+    end = text.index("        vertical_box: tuple[int, int, int, int] | None = None", start)
     rtl_branch = text[start:end]
     assert "horizontal_overlay_layout(" in rtl_branch
     assert "line_box(" not in rtl_branch
