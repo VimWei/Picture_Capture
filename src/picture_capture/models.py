@@ -540,6 +540,14 @@ class ProjectState:
             settings = AppSettings.from_legacy(legacy_settings)
         else:
             settings = AppSettings()
+            # A v3 profile sidecar can bootstrap a project that predates
+            # settings.json.  Never apply this over an existing modern/legacy
+            # settings file: those remain authoritative.
+            try:
+                from .dictionary_profile import apply_project_profile_components
+                apply_project_profile_components(active_profile_path(root), settings)
+            except Exception:
+                pass
         # settings.json is authoritative for mutable project state.  The profile
         # sidecar is only a compatibility fallback for projects that do not yet
         # have settings.json; it must never overwrite a user's newer selection.

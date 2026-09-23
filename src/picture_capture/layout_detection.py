@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 from .models import AppSettings
 from .image_utils import normalize_page_rgb
@@ -515,6 +515,27 @@ def _otsu_threshold(gray: np.ndarray) -> int:
     return int(min(235, max(80, int(np.argmax(score)))))
 
 
+def _analysis_ink_mask(gray: np.ndarray, settings: AppSettings) -> np.ndarray:
+    """Build the layout-analysis foreground mask from the configured threshold mode."""
+    mode = str(getattr(settings, "analysis_threshold_mode", "auto") or "auto").strip().lower()
+    if mode == "fixed":
+        # Legacy darkness_threshold is an RGB-channel sum; grayscale is per-channel.
+        threshold = int(round(float(getattr(settings, "darkness_threshold", 600)) / 3.0))
+        threshold = min(255, max(0, threshold))
+        return gray < threshold
+    if mode == "adaptive":
+        # Local background estimate for uneven/yellowed scans. Keep this deterministic
+        # and dependency-free; a modest box blur is enough for layout projections.
+        radius = max(3, round(min(gray.shape[:2]) * 0.008))
+        local = np.asarray(
+            Image.fromarray(gray, mode="L").filter(ImageFilter.BoxBlur(radius=radius)),
+            dtype=np.int16,
+        )
+        return gray.astype(np.int16) < (local - 10)
+    # "auto" and explicit "otsu" intentionally share the conservative Otsu path.
+    return gray < _otsu_threshold(gray)
+
+
 def _projection_layout_estimate(source: Image.Image, settings: AppSettings) -> LayoutEstimate:
     """OCR-free fallback based on dark-pixel projections.
 
@@ -534,8 +555,7 @@ def _projection_layout_estimate(source: Image.Image, settings: AppSettings) -> L
         work = source
     gray = np.asarray(ImageOps.grayscale(work), dtype=np.uint8)
     h, w = gray.shape
-    threshold = _otsu_threshold(gray)
-    ink = gray < threshold
+    ink = _analysis_ink_mask(gray, settings)
 
     # Ignore a narrow outer rim where scanner shadows/page borders live.
     mx = max(1, round(w * 0.015)); my = max(1, round(h * 0.01))
@@ -731,7 +751,7 @@ def detect_layout_parameters(image: Image.Image, settings: AppSettings) -> Layou
                     boxes,
                     analysis.size,
                     display_scale=parameter_scale(analysis, settings),
-                    ink_mask=source_gray < _otsu_threshold(source_gray),
+                    ink_mask=_analysis_ink_mask(source_gray, settings),
                     columns_policy=settings.layout_columns_policy,
                     fixed_columns=settings.columns,
                     column_separator_mode=settings.layout_column_separator_mode,
@@ -773,7 +793,7 @@ def detect_layout_consistency(image: Image.Image, settings: AppSettings) -> Layo
         Image.Resampling.BILINEAR,
     ) if scale < 1.0 else source
     gray = np.asarray(ImageOps.grayscale(work), dtype=np.uint8)
-    ink = gray < _otsu_threshold(gray)
+    ink = _analysis_ink_mask(gray, settings)
     active_rows = int(np.count_nonzero(ink.mean(axis=1) > 0.002))
     active_columns = int(np.count_nonzero(ink.mean(axis=0) > 0.002))
     is_blank = float(ink.mean()) < 0.0008 or active_rows < 6 or active_columns < 12

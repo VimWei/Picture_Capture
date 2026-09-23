@@ -1405,7 +1405,7 @@ class DictionaryProfileV2Tests(unittest.TestCase):
         self.assertEqual(vertical["paddle_tesseract_psm"], 5)
         self.assertTrue(vertical["paddle_use_textline_orientation"])
         ruigo = dictionary_profile_preset("jpn_numbered_headword_2col")
-        self.assertEqual(ruigo.headword["prefix_regex"], r"^\s*\d{1,2}\s*")
+        self.assertEqual(ruigo.headword["prefix_regex"], r"^\s*\d{1,4}(?:\s*[.．]\s*|\s+)")
         self.assertTrue(ruigo.headword["prefix_required"])
         hzy = load_dictionary_profile(preset="cjk_etymology_large_head_2col")
         self.assertIn("【本义】", hzy.internal_leading_symbols)

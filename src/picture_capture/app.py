@@ -833,6 +833,8 @@ class SettingsDialog(tk.Toplevel):
         ("PaddleOCR 语言", "paddle_language", str),
         ("PaddleOCR 设备", "paddle_device", str),
         ("PaddleOCR 模型版本", "paddle_ocr_version", str),
+        ("OCR图像预处理", "paddle_preprocessing", str),
+        ("OCR输入最大长边（px）", "paddle_max_input_side", int),
         ("候选带宽比例（%）", "paddle_band_width_ratio", int),
         ("候选带左侧余量", "paddle_band_left_margin", int),
         ("AI 左缘容差", "paddle_left_tolerance", int),
@@ -918,7 +920,8 @@ class SettingsDialog(tk.Toplevel):
         ("列跟踪", ["column_track_radius", "column_track_block_height", "column_track_max_step"]),
         ("插图识别", ["illustration_detect_padding", "illustration_detect_right_padding"]),
         ("OCR 基础", [
-            "ocr_executable", "paddle_device", "paddle_ocr_version", "batch_interval",
+            "ocr_executable", "paddle_device", "paddle_ocr_version",
+            "paddle_preprocessing", "paddle_max_input_side", "batch_interval",
         ]),
         ("PaddleOCR 候选与版面（高级）", [
             "paddle_rec_score_threshold", "paddle_line_merge_y_ratio",
@@ -1052,13 +1055,20 @@ class SettingsDialog(tk.Toplevel):
                 row = index // 2
                 column = (index % 2) * 2
                 ttk.Label(group, text=label).grid(row=row, column=column, sticky="e", padx=(0, 7), pady=3)
-                var = tk.StringVar(value=str(getattr(parent.settings, name)))
-                self.vars[name] = var
+                if name not in self.vars:
+                    self.vars[name] = tk.StringVar(value=str(getattr(parent.settings, name)))
+                var = self.vars[name]
                 if name == "ocr_language":
                     widget = ttk.Combobox(group, textvariable=var, values=self.OCR_LANGUAGES, state="normal", width=23)
                     widget.bind("<<ComboboxSelected>>", lambda _e: self._refresh_sort_choices())
                     widget.bind("<FocusOut>", lambda _e: self._refresh_sort_choices())
                     var.trace_add("write", lambda *_args: self.after_idle(self._refresh_sort_choices))
+                elif name == "paddle_preprocessing":
+                    widget = ttk.Combobox(
+                        group, textvariable=var,
+                        values=("original", "grayscale", "auto_contrast", "binary"),
+                        state="readonly", width=23,
+                    )
                 elif name in {"main_entry_font_family", "review_entry_font_family"}:
                     families = tuple(sorted(set(font.families()), key=str.casefold))
                     widget = ttk.Combobox(group, textvariable=var, values=families, state="normal", width=23)
@@ -1649,6 +1659,14 @@ class SettingsDialog(tk.Toplevel):
 
     def save(self, *, close: bool = True, show_errors: bool = True) -> bool:
         try:
+            previous_language = str(getattr(self.parent.settings, "ocr_language", "") or "")
+            previous_backend = {
+                name: getattr(self.parent.settings, name, None)
+                for name in (
+                    "paddle_language", "tesseract_language",
+                    "paddle_tesseract_psm", "paddle_use_textline_orientation",
+                )
+            }
             for name, var in self.vars.items():
                 value = var.get()
                 if name in self._casts:
@@ -1667,6 +1685,19 @@ class SettingsDialog(tk.Toplevel):
                     self.parent.settings.headword_custom_fold_accents = bool(value)
                 else:
                     setattr(self.parent.settings, name, bool(value))
+            current_language = str(getattr(self.parent.settings, "ocr_language", "") or "")
+            if current_language != previous_language:
+                derived = language_effective_settings(
+                    current_language, self.parent.settings.layout_writing_mode,
+                )
+                for name, value in derived.items():
+                    if not hasattr(self.parent.settings, name):
+                        continue
+                    # Respect an explicit advanced backend override made in this
+                    # dialog; only stale values inherited from the old language
+                    # are replaced automatically.
+                    if name not in previous_backend or getattr(self.parent.settings, name) == previous_backend[name]:
+                        setattr(self.parent.settings, name, value)
             self.parent.settings.main_entry_font_family = str(self.parent.settings.main_entry_font_family).strip() or "DengXian"
             self.parent.settings.main_entry_font_size = max(5, int(self.parent.settings.main_entry_font_size))
             self.parent.settings.main_entry_width_chars = max(4, int(self.parent.settings.main_entry_width_chars))
@@ -1680,6 +1711,12 @@ class SettingsDialog(tk.Toplevel):
                 raise ValueError("切图并行进程数必须为 0–8；0 表示自动，1 表示串行。")
             if not 1 <= int(self.parent.settings.paddle_band_width_ratio) <= 100:
                 raise ValueError("候选带宽比例必须在 1–100 之间；100 即原候选带宽。")
+            if int(self.parent.settings.paddle_max_input_side) < 256:
+                raise ValueError("OCR输入最大长边必须至少为 256 px。")
+            if str(self.parent.settings.paddle_preprocessing) not in {
+                "original", "grayscale", "auto_contrast", "binary",
+            }:
+                raise ValueError("OCR图像预处理必须为 original/grayscale/auto_contrast/binary 之一。")
             if not 10 <= int(self.parent.settings.paddle_separator_roi_width_ratio) <= 100:
                 raise ValueError("Y精修横向分析范围必须在 10–100% 之间。")
             if not 1 <= float(self.parent.settings.right_ratio) <= 100:
@@ -6239,6 +6276,7 @@ class PictureCaptureApp(tk.Tk):
             self.status_var.set("批量任务运行中，参数修改将在任务结束后再进行。")
             return False
         try:
+            previous_ocr_language = str(getattr(self.settings, "ocr_language", "") or "")
             for name, var in self.quick_vars.items():
                 value = self.quick_field_casts[name](var.get())
                 if name == "paddle_band_width_ratio" and not 1 <= int(value) <= 100:
@@ -6258,6 +6296,13 @@ class PictureCaptureApp(tk.Tk):
                 if name == "illustration_label_font_size" and not 5 <= int(value) <= 200:
                     raise ValueError("插图标签字号必须在 5–200 之间。")
                 setattr(self.settings, name, value)
+            current_ocr_language = str(getattr(self.settings, "ocr_language", "") or "")
+            if current_ocr_language != previous_ocr_language:
+                for setting_name, setting_value in language_effective_settings(
+                    current_ocr_language, self.settings.layout_writing_mode,
+                ).items():
+                    if hasattr(self.settings, setting_name):
+                        setattr(self.settings, setting_name, setting_value)
             for name, var in self.quick_bool_vars.items(): setattr(self.settings, name, bool(var.get()))
             for name, var in getattr(self, "quick_color_vars", {}).items():
                 value = str(var.get()).strip()
@@ -7416,8 +7461,12 @@ class PictureCaptureApp(tk.Tk):
                 "既有项目", "此目录已经包含 Picture Capture 项目资料。是否作为既有项目打开？", parent=self,
             ):
                 return
-            requested_suffix = self._normalize_suffix(self.image_suffix_var.get()) if hasattr(self, "image_suffix_var") else None
-            self._load_project(Path(chosen), requested_suffix=requested_suffix)
+            root = Path(chosen)
+            existing_project = is_managed_project(root) or has_legacy_project_data(root)
+            requested_suffix = None
+            if not existing_project and hasattr(self, "image_suffix_var"):
+                requested_suffix = self._normalize_suffix(self.image_suffix_var.get())
+            self._load_project(root, requested_suffix=requested_suffix)
         except Exception as exc:
             self.show_error("无法打开项目", exc)
 
@@ -7852,12 +7901,14 @@ class PictureCaptureApp(tk.Tk):
                 float(self.settings.main_entry_x_ratio), geometry.source_size, self.view_scale,
             )
         
-        if self.settings.layout_text_direction == "rtl":
+        if rtl:
             editor.configure(justify="right")
         
         vertical = self.settings.layout_writing_mode != "horizontal-tb"
         vertical_box: tuple[int, int, int, int] | None = None
         vertical_index_item: list[int | None] = [None]
+        vertical_ocr_menu_item: list[int | None] = [None]
+        vertical_ocr_menu_width: list[int] = [0]
         if vertical:
             # Tk Entry cannot render vertical text.  Keep it detached until the
             # user clicks the source-oriented canvas label, then show a short-
@@ -7903,6 +7954,12 @@ class PictureCaptureApp(tk.Tk):
                 )
                 if vertical_index_item[0] is not None:
                     self.canvas.coords(vertical_index_item[0], *vertical_index_anchor(new_box))
+                if vertical_ocr_menu_item[0] is not None:
+                    ocr_x = new_box[2] + 3
+                    menu_width = max(1, vertical_ocr_menu_width[0])
+                    if ocr_x + menu_width > size[0] - 2:
+                        ocr_x = max(0, size[0] - menu_width - 2)
+                    self.canvas.coords(vertical_ocr_menu_item[0], ocr_x, new_box[1])
                 if popup_item[0] is not None:
                     self.canvas.delete(popup_item[0])
                     popup_item[0] = None
@@ -7921,6 +7978,7 @@ class PictureCaptureApp(tk.Tk):
             editor.bind("<FocusOut>", close_vertical_editor)
             editor.bind("<Return>", lambda _event: (close_vertical_editor(), "break")[-1])
             self.canvas.tag_bind(label_item, "<Button-1>", open_vertical_editor)
+            self.canvas.tag_bind(proxy_box_item, "<Button-1>", open_vertical_editor)
         else:
             item = self.canvas.create_window(
                 editor_x, editor_y,
@@ -7964,6 +8022,9 @@ class PictureCaptureApp(tk.Tk):
                 window=ocr_menu,
                 anchor=ocr_anchor,
             )
+            if vertical:
+                vertical_ocr_menu_item[0] = item
+                vertical_ocr_menu_width[0] = menu_req_width
             record["canvas_items"].append(item)
 
         # 编号位置与 OCR 菜单无关，必须放在 if ocr_menu is not None 外面。
