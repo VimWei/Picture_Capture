@@ -3257,13 +3257,25 @@ def filter_headword_records(
     return [entry for _, entry in deduplicated], diagnostics
 
 
+def _image_cache_fingerprint(image: Image.Image) -> str:
+    """Return a cheap content hash so same-size edited scans invalidate OCR cache."""
+    preview = ImageOps.grayscale(normalize_page_rgb(image))
+    preview.thumbnail((96, 96), Image.Resampling.BILINEAR)
+    payload = (
+        f"{image.width}x{image.height}|{preview.width}x{preview.height}|".encode("ascii")
+        + preview.tobytes()
+    )
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _cache_signature(image: Image.Image, geometry: "Geometry", settings: AppSettings) -> str:
     # Only OCR-input-affecting settings belong here. Candidate rules are
     # intentionally omitted so users can tune regex/weights and reuse cached
     # raw OCR without re-running the model.
     data = {
-        "version": 1,
+        "version": 2,
         "image_size": list(image.size),
+        "image_fingerprint": _image_cache_fingerprint(image),
         "layout_transform": geometry.transform.kind,
         "parameter_display_width": settings.parameter_display_width,
         "paths": [path.points for path in geometry.column_paths],
@@ -3273,6 +3285,9 @@ def _cache_signature(image: Image.Image, geometry: "Geometry", settings: AppSett
         "language": _paddle_language(settings),
         "device": settings.paddle_device,
         "ocr_version": settings.paddle_ocr_version,
+        "preprocessing": str(getattr(settings, "paddle_preprocessing", "original")),
+        "max_input_side": int(getattr(settings, "paddle_max_input_side", 2800)),
+        "use_textline_orientation": bool(getattr(settings, "paddle_use_textline_orientation", False)),
         "raw_rec_threshold": _RAW_OCR_THRESHOLD,
         "use_paddleocr": bool(getattr(settings, "paddle_use_paddleocr", True)),
     }
