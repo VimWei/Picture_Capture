@@ -6,9 +6,8 @@ from PIL import Image
 
 from picture_capture.app import (
     PictureCaptureApp, binary_preview_image, effective_main_overlay_font_size,
-    ReviewWindow, horizontal_ocr_menu_layout, horizontal_overlay_layout, transformed_entry_anchor,
-    vertical_entry_label_text, vertical_index_anchor, vertical_ocr_menu_layout,
-    vertical_overlay_layout,
+    ReviewWindow, VerticalWordText, horizontal_ocr_menu_layout, horizontal_overlay_layout,
+    transformed_entry_anchor, vertical_ocr_menu_layout, vertical_overlay_layout,
 )
 from picture_capture.dictionary_profile import effective_project_profile_id, load_dictionary_profile
 from picture_capture.models import AppSettings, Entry, ProjectState
@@ -86,26 +85,23 @@ def test_binary_preview_and_font_scaling_are_display_only():
     assert effective_main_overlay_font_size(4200, 1 / 3, settings) == 32
 
 
-def test_vertical_overlay_anchors_and_blank_entry_hit_target():
-    # x_ratio is applied in canonical space. Rotating that point produces the
-    # source-space marker anchor.
+def test_vertical_overlay_anchor_uses_canonical_offset():
+    # x_ratio is applied in canonical space before the rotated widget is placed.
     editor = transformed_entry_anchor(
         LayoutTransform("rotate_ccw90"), 100, 200, 600, .5, (1400, 2200), .5,
     )
     assert editor == (599.5, 200)
-    assert vertical_index_anchor((590, 195, 625, 320)) == (628, 195)
-    assert vertical_entry_label_text("漢字") == "漢\n字"
-    assert vertical_entry_label_text("") == "□"
-    assert vertical_entry_label_text("一二三四", 3) == "一\n二\n…"
+    assert VerticalWordText._entry_index(0) == "1.0"
+    assert VerticalWordText._entry_index("end") == "end-1c"
 
 
 def test_vertical_entry_boxes_have_fixed_length_and_mirror_marker_side():
-    # The horizontal Entry width becomes the fixed vertical proxy length.
+    # Real vertical Text widgets use the same fixed requested size for every word.
     rl_box, rl_popup, rl_anchor, rl_index, rl_index_anchor = vertical_overlay_layout(
-        600, 200, editor_width=180, editor_height=28, writing_mode="vertical-rl", gap=4,
+        600, 200, editor_width=28, editor_height=180, writing_mode="vertical-rl", gap=4,
     )
     lr_box, lr_popup, lr_anchor, lr_index, lr_index_anchor = vertical_overlay_layout(
-        600, 200, editor_width=180, editor_height=28, writing_mode="vertical-lr", gap=4,
+        600, 200, editor_width=28, editor_height=180, writing_mode="vertical-lr", gap=4,
     )
 
     assert rl_box == (568, 200, 596, 380)
@@ -354,25 +350,24 @@ def test_numbered_profile_accepts_three_and_four_digit_prefixes():
         assert parsed is not None and parsed.normalized == expected
 
 
-def test_vertical_proxy_click_is_consumed_before_canvas_adds_a_new_entry():
-    fake = SimpleNamespace(_suppress_next_canvas_left_click=True)
-    result = PictureCaptureApp.canvas_left_click(fake, SimpleNamespace())
-    assert result == "break"
-    assert "_suppress_next_canvas_left_click" not in fake.__dict__
-
-
-def test_vertical_proxy_binding_and_alignment_use_horizontal_rtl_only():
+def test_vertical_main_editor_is_a_real_text_widget_not_a_canvas_proxy():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
-    assert 'self.canvas.tag_bind(proxy_box_item, "<Button-1>", open_vertical_editor)' in text
-    assert 'if rtl:\n            editor.configure(justify="right")' in text
-    assert "vertical_ocr_menu_layout(" in text
-    assert "vertical_overlay_layout(" in text
-    assert "vertical_popup_anchor" in text
-    assert "vertical_index_item" not in text
-    assert "self.after_idle(_focus_vertical_editor)" in text
-    assert 'editor.configure(state="normal")' in text
-    assert "opening_vertical_editor" in text
-    assert 'return "break"' in text
-    assert "self._suppress_next_canvas_left_click = True" in text
-    assert 'cursor="xterm"' in text
+    start = text.index("    def _draw_entry_overlay(")
+    end = text.index("    def _remove_entry_overlay(", start)
+    block = text[start:end]
+
+    assert "VerticalWordText(" in block
+    assert 'cursor="xterm"' in block
+    assert "window=editor" in block
+    assert "width=vertical_box[2] - vertical_box[0]" in block
+    assert "height=vertical_box[3] - vertical_box[1]" in block
+    assert "vertical_ocr_menu_layout(" in block
+    assert "vertical_overlay_layout(" in block
+
+    # The old non-editable proxy/popup architecture must not return.
+    assert "proxy_box_item" not in block
+    assert "label_item" not in block
+    assert "open_vertical_editor" not in block
+    assert "_suppress_next_canvas_left_click" not in text
+    assert 'if rtl:\n            editor.configure(justify="right")' in block
