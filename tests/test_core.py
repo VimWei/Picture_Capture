@@ -6187,7 +6187,7 @@ def test_review_height_controls_use_percent_of_source_image_height():
     )
 
     image = Image.new("RGB", (900, 2000), "white")
-    assert _review_height_pixels_to_percent(image, 40) == pytest.approx(2.0)
+    assert _review_height_pixels_to_percent(image, 40) == 2.0
     assert _review_height_percent_to_pixels(image, 2.0) == 40
     assert _review_height_percent_to_pixels(image, 1.25) == 25
 
