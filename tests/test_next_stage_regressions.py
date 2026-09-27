@@ -300,6 +300,10 @@ def test_settings_center_uses_context_help_units_and_user_facing_modes():
 
     assert '"bottom_y", int' in settings
     assert '"bottom_y": "正文结束 Y"' in settings
+    common_start = settings.index("    COMMON_FIELDS = (")
+    common_end = settings.index("\n    NORMAL_COMMON_FIELDS", common_start)
+    common_fields = settings[common_start:common_end]
+    assert '"bottom_y"' not in common_fields
     assert '"columns": "正文栏数"' in settings
     assert '"manual_x": "第一栏左缘 X"' in settings
     assert '"paddle_band_width_ratio": "%"' in settings
@@ -434,7 +438,7 @@ def test_project_toolbar_and_profile_scroll_layout_are_wired():
     project_bar = text[project_bar_start:project_bar_end]
     expected = (
         '("项目中心", self.open_recent_project)',
-        '("初始Profile", self.open_project_profile)',
+        '("项目Profile", self.open_project_profile)',
         '("设置中心", self.open_settings)',
         '("帮助中心", self.show_help_dialog)',
     )
@@ -509,7 +513,7 @@ def test_bottom_important_actions_follow_scheme_a_groups():
     project_bar = text[project_bar_start:project_bar_end]
     for label, command in (
         ("项目中心", "self.open_recent_project"),
-        ("初始Profile", "self.open_project_profile"),
+        ("项目Profile", "self.open_project_profile"),
         ("设置中心", "self.open_settings"),
         ("帮助中心", "self.show_help_dialog"),
     ):
@@ -589,8 +593,13 @@ def test_main_workspace_modern_styles_are_scoped_and_dense():
     assert 'style="PC.Treeview"' in ui
     assert 'style="PC.Footer.TFrame"' in ui
     assert '"一、版面参数"' in text
-    assert '"二、OCR画线（推荐默认）"' in text
+    assert '"二、显示设置"' in text
+    assert '"三、OCR画线参数（默认）"' in text
+    assert text.index('"二、显示设置"') < text.index('"三、OCR画线参数（默认）"')
     assert 'text="普通画线设置（备用）…"' in text
+    assert 'text="显示标尺"' in text
+    assert '"ruler_color": tk.StringVar(value=self.settings.ruler_color)' in text
+    assert 'command=lambda: self._apply_overlay_visibility_toggle("show_rulers", ruler_var)' in text
     assert 'ttk.Separator(size_row, orient="vertical")' in ui
     assert 'relief="sunken"' not in ui
     assert 'relief="ridge"' not in ui
@@ -1047,6 +1056,27 @@ def test_page_template_alternating_ab_side_widths_are_independent():
     assert entry_allowed_by_page_template(7, 30, image.size, settings, 0)
     assert not entry_allowed_by_page_template(90, 30, image.size, settings, 1)
     assert entry_allowed_by_page_template(84, 30, image.size, settings, 1)
+
+
+def test_main_canvas_percentage_rulers_are_display_only_and_draggable():
+    root = Path(__file__).resolve().parents[1]
+    app = (root / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
+    models = (root / "src" / "picture_capture" / "models.py").read_text(encoding="utf-8")
+
+    assert "show_rulers: bool = False" in models
+    assert 'ruler_color: str = "#1976d2"' in models
+    assert "ruler_horizontal_y_ratio: float = 0.0" in models
+    assert "ruler_vertical_x_ratio: float = 0.0" in models
+    assert "for half_percent in range(201):" in app
+    assert "pct = half_percent * 0.5" in app
+    assert "for value in range(10, 101, 10):" in app
+    assert 'tags=("measurement-ruler", "ruler-horizontal")' in app
+    assert 'tags=("measurement-ruler", "ruler-vertical")' in app
+    assert 'self.canvas.move("ruler-horizontal", 0, canvas_y - last_y)' in app
+    assert 'self.canvas.move("ruler-vertical", canvas_x - last_x, 0)' in app
+    assert "self.settings.ruler_horizontal_y_ratio" in app
+    assert "self.settings.ruler_vertical_x_ratio" in app
+    assert "build_page_crop_plan" not in app[app.index("    def _draw_bidirectional_rulers"):app.index("    def redraw(", app.index("    def _draw_bidirectional_rulers"))]
 
 
 def test_page_template_auto_footer_uses_full_page_height_not_legacy_bottom_y():
