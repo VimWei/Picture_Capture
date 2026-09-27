@@ -456,6 +456,13 @@ def test_project_toolbar_and_profile_scroll_layout_are_wired():
     assert 'uniform="project-footer-columns"' in project_bar
     assert 'project_row.columnconfigure(col, weight=1, uniform="project-footer-columns")' in project_bar
     assert 'role="project"' in project_bar
+    for tooltip in (
+        "打开最近项目与项目管理；可从这里新建或切换词典项目。",
+        "配置词典信息、阅读方向、页面模板和词头结构，并用代表页测试。",
+        "按常用、OCR画线、普通画线、显示/校对、切图等任务调整项目参数。",
+        "查看新版推荐流程、主界面说明、快捷操作与常见排错。",
+    ):
+        assert tooltip in project_bar
     assert 'text="图片后缀："' not in text
     assert "self.image_suffix_var" not in text
 
@@ -487,6 +494,11 @@ def test_project_toolbar_and_profile_scroll_layout_are_wired():
     assert '("词条切图", self.split_entries_selected_scope)' in post
     assert '("插图切图", self.split_illustrations_selected_scope)' in post
     assert post.rindex('("导出训练标记包", self.export_training_package)') > post.index('("PicDic制作", self.build_picdic)')
+    for tooltip_key in (
+        '"词条切图":', '"插图切图":', '"项目详情":',
+        '"导出PicDic索引":', '"PicDic制作":', '"导出训练标记包":',
+    ):
+        assert tooltip_key in post
 
     profile_start = text.index("    def _build_profile_tab(")
     profile_end = text.index("    def _build_profile_choice_labels(", profile_start)
@@ -567,6 +579,11 @@ def test_usage_guide_is_modern_task_oriented_and_centered():
     assert "普通画线降为备用" in guide
     assert "默认先用 OCR画线验证代表页" in guide
     assert "wraplength=158" in guide
+    assert 'header.bind("<Configure>", resize_header, add="+")' in guide
+    assert "新建项目】或【已有项目" not in guide
+    assert "一、普通版面参数" not in guide
+    assert "所选页面 ≥2 时，数值字段使用**稳健中位数**" not in guide
+    assert "数值参数采用稳健中位数" in guide
     assert 'self.bind("<Escape>", lambda _event: self.destroy())' in guide
 
     show_start = text.index("    def show_help_dialog(self) -> None:")
@@ -577,7 +594,7 @@ def test_usage_guide_is_modern_task_oriented_and_centered():
     assert "messagebox.showinfo" not in show
     assert "show_help_popup" not in text
     assert "OCR_USAGE_HELP" not in text
-    assert "打开帮助中心：推荐流程、各功能用途、快捷操作与常见排错。" in text
+    assert "查看新版推荐流程、主界面说明、快捷操作与常见排错。" in text
 
 
 def test_main_workspace_modern_styles_are_scoped_and_dense():
@@ -619,6 +636,12 @@ def test_main_workspace_modern_styles_are_scoped_and_dense():
     assert actions.index('("运行普通画线（备用）", self.run_normal_draw_action)') < actions.index('("运行OCR画线（推荐）", self.run_ocr_draw_action)')
     assert '("填充词条", self.fill_existing_headwords)' in actions
     assert '("修复排序", self.repair_pdic_order_selected_scope)' in actions
+    for tooltip_key in (
+        '"清除画线":', '"清除文本":', '"精修画线":', '"新旧比较":',
+        '"词条校对":', '"填充词条":', '"备份PDIC":', '"恢复PDIC":',
+        '"插图识别":', '"编辑插图":', '"保存当前页":',
+    ):
+        assert tooltip_key in actions
     assert '("恢复PDIC", self.restore_from_pdic_backup)' in actions
     assert '"success" if text == "保存当前页"' in actions
     assert '"primary" if text == "词条校对"' in actions
