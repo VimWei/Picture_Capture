@@ -330,6 +330,8 @@ def test_settings_center_uses_context_help_units_and_user_facing_modes():
     assert 'panes.add(right, weight=2)' in settings
     assert 'panes.sashpos(0, int(width * 0.60))' in settings
     assert "def _bind_responsive_labels(" in settings
+    assert "label_width = int(label.winfo_width())" in settings
+    assert "available = max(48, label_width - 12)" in settings
     assert "label.configure(wraplength=wraplength)" in settings
     assert "control.columnconfigure(0, weight=1)" in settings
     assert 'widget.grid(row=0, column=0, sticky="ew")' in settings
@@ -584,6 +586,10 @@ def test_usage_guide_is_modern_task_oriented_and_centered():
     assert "默认先用 OCR画线验证代表页" in guide
     assert "wraplength=158" in guide
     assert 'header.bind("<Configure>", resize_header, add="+")' in guide
+    assert "def _register_wrapped_label(" in guide
+    assert "self.after_idle(self._refresh_wrapped_labels)" in guide
+    assert "wraplength=660" not in guide
+    assert "wraplength=620" not in guide
     assert "新建项目】或【已有项目" not in guide
     assert "一、普通版面参数" not in guide
     assert "所选页面 ≥2 时，数值字段使用**稳健中位数**" not in guide

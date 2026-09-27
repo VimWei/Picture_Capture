@@ -1553,7 +1553,7 @@ class UsageGuideWindow(tk.Toplevel):
 
         self._page_map = {item[0]: item for item in self.PAGES}
         self._nav_buttons: dict[str, tk.Button] = {}
-        self._wrap_labels: list[tk.Label] = []
+        self._wrap_labels: list[tuple[tk.Label, int]] = []
         self._current_page = "quick"
         self._build()
         self._show_page("quick")
@@ -1778,6 +1778,47 @@ class UsageGuideWindow(tk.Toplevel):
         self._wrap_labels.clear()
         self._canvas.yview_moveto(0.0)
 
+    def _register_wrapped_label(
+        self,
+        label: tk.Label,
+        *,
+        safety: int = 10,
+    ) -> None:
+        """Wrap against the label's real allocated width, with a glyph-safe margin."""
+        self._wrap_labels.append((label, max(0, int(safety))))
+
+        def refresh(event=None) -> None:
+            try:
+                width = int(event.width) if event is not None else int(label.winfo_width())
+                if width <= 20:
+                    width = int(label.master.winfo_width())
+                if width <= 20:
+                    return
+                wraplength = max(60, width - max(0, int(safety)))
+                if int(float(label.cget("wraplength"))) != wraplength:
+                    label.configure(wraplength=wraplength)
+            except (tk.TclError, TypeError, ValueError):
+                return
+
+        label.bind("<Configure>", refresh, add="+")
+        self.after_idle(refresh)
+
+    def _refresh_wrapped_labels(self) -> None:
+        for label, safety in tuple(self._wrap_labels):
+            try:
+                if not label.winfo_exists():
+                    continue
+                width = int(label.winfo_width())
+                if width <= 20:
+                    width = int(label.master.winfo_width())
+                if width <= 20:
+                    continue
+                wraplength = max(60, width - safety)
+                if int(float(label.cget("wraplength"))) != wraplength:
+                    label.configure(wraplength=wraplength)
+            except (tk.TclError, TypeError, ValueError):
+                continue
+
     def _show_page(self, key: str) -> None:
         page = self._page_map.get(key)
         if page is None:
@@ -1826,10 +1867,10 @@ class UsageGuideWindow(tk.Toplevel):
         ).pack(anchor="w")
         label = tk.Label(
             holder, text=subtitle, bg=colors["surface"], fg=colors["muted"],
-            anchor="w", justify="left", wraplength=660,
+            anchor="w", justify="left",
         )
         label.pack(fill="x", pady=(5, 0))
-        self._wrap_labels.append(label)
+        self._register_wrapped_label(label, safety=8)
 
     def _add_callout(self, title: str, body: str) -> None:
         colors = self._colors
@@ -1843,10 +1884,10 @@ class UsageGuideWindow(tk.Toplevel):
         ).pack(fill="x", padx=14, pady=(11, 3))
         label = tk.Label(
             card, text=body, bg="#f1f6fb", fg=colors["text"],
-            justify="left", anchor="w", wraplength=660,
+            justify="left", anchor="w",
         )
         label.pack(fill="x", padx=14, pady=(0, 12))
-        self._wrap_labels.append(label)
+        self._register_wrapped_label(label, safety=10)
 
     def _add_card(self, badge: str, title: str, body: str) -> None:
         colors = self._colors
@@ -1869,20 +1910,19 @@ class UsageGuideWindow(tk.Toplevel):
 
         label = tk.Label(
             card, text=body, bg=colors["surface"], fg=colors["muted"],
-            justify="left", anchor="w", wraplength=620,
+            justify="left", anchor="w",
         )
         label.grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=(0, 13))
-        self._wrap_labels.append(label)
+        self._register_wrapped_label(label, safety=10)
 
     def _resize_content(self, event: tk.Event) -> None:
         width = max(420, int(event.width) - 2)
         self._canvas.itemconfigure(self._content_window, width=width)
-        wrap = max(360, width - 105)
-        for label in self._wrap_labels:
-            try:
-                label.configure(wraplength=wrap)
-            except tk.TclError:
-                pass
+        # Labels are created/recreated after canvas Configure events when the
+        # user changes help pages. Recalculate from each label's actual width
+        # after Tk has completed that layout pass instead of reusing one global
+        # wraplength for every card.
+        self.after_idle(self._refresh_wrapped_labels)
 
     def _mousewheel(self, event: tk.Event) -> str | None:
         delta = int(getattr(event, "delta", 0) or 0)
@@ -2543,25 +2583,47 @@ class SettingsDialog(tk.Toplevel):
         horizontal_padding: int = 12,
         min_wrap: int = 120,
     ) -> None:
-        """Wrap descriptive text to the width it actually receives on screen."""
+        """Wrap using each label's allocated width, leaving room for full CJK glyphs."""
+        pending = {"job": None}
 
-        def refresh(event=None) -> None:
+        def refresh() -> None:
+            pending["job"] = None
             try:
-                width = int(event.width) if event is not None else int(container.winfo_width())
+                container_width = int(container.winfo_width())
             except (AttributeError, tk.TclError, TypeError, ValueError):
                 return
-            if width <= 1:
+            if container_width <= 1:
                 return
-            wraplength = max(min_wrap, width - horizontal_padding)
             for label in labels:
                 try:
-                    label.configure(wraplength=wraplength)
-                except tk.TclError:
-                    pass
+                    label_width = int(label.winfo_width())
+                    if label_width <= 20:
+                        label_width = max(1, container_width - horizontal_padding)
+                    # Never let a historical minimum exceed the space Tk
+                    # actually allocated to the label. The small right margin
+                    # avoids half-glyph clipping on Windows/high-DPI CJK fonts.
+                    available = max(48, label_width - 12)
+                    wraplength = min(max(48, int(min_wrap)), available)
+                    if available > min_wrap:
+                        wraplength = available
+                    if int(float(label.cget("wraplength"))) != wraplength:
+                        label.configure(wraplength=wraplength)
+                except (tk.TclError, TypeError, ValueError):
+                    continue
+
+        def schedule(_event=None) -> None:
+            try:
+                if pending["job"] is not None:
+                    self.after_cancel(pending["job"])
+                pending["job"] = self.after_idle(refresh)
+            except tk.TclError:
+                return
 
         try:
-            container.bind("<Configure>", refresh, add="+")
-            self.after_idle(refresh)
+            container.bind("<Configure>", schedule, add="+")
+            for label in labels:
+                label.bind("<Configure>", schedule, add="+")
+            schedule()
         except tk.TclError:
             pass
 
@@ -2905,14 +2967,14 @@ class SettingsDialog(tk.Toplevel):
             font=("TkDefaultFont", 10, "bold"),
             justify="left",
         )
-        help_title.pack(anchor="w", fill="x")
+        help_title.pack(anchor="w", fill="x", padx=(0, 6))
         help_body = ttk.Label(
             help_box,
             textvariable=self._settings_help_body_var,
             foreground="#555b63",
             justify="left",
         )
-        help_body.pack(anchor="w", fill="x", pady=(7, 0))
+        help_body.pack(anchor="w", fill="x", padx=(0, 6), pady=(7, 0))
         help_image = ttk.Label(help_box, anchor="center")
         help_separator = ttk.Separator(help_box, orient="horizontal")
         help_separator.pack(fill="x", pady=(14, 10))
@@ -2926,7 +2988,7 @@ class SettingsDialog(tk.Toplevel):
             foreground="#7a8088",
             justify="left",
         )
-        help_hint.pack(anchor="w", fill="x")
+        help_hint.pack(anchor="w", fill="x", padx=(0, 6))
         self._bind_responsive_labels(
             help_box,
             help_title,
