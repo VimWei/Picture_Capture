@@ -1068,7 +1068,7 @@ def test_main_canvas_percentage_rulers_are_fixed_display_only_overlays():
     app = (root / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
     models = (root / "src" / "picture_capture" / "models.py").read_text(encoding="utf-8")
 
-    assert "show_rulers: bool = False" in models
+    assert "show_rulers: bool = True" in models
     assert 'ruler_color: str = "#1976d2"' in models
     assert "ruler_top_y_ratio" not in models
     assert "ruler_bottom_y_ratio" not in models
@@ -1117,6 +1117,12 @@ def test_layout_percentage_helpers_preserve_pixel_backend_contract():
         assert label not in quick
     assert quick.index('"单栏宽%："') > quick.index('"首栏X%："')
     assert quick.index('"栏间空%："') > quick.index('"单栏宽%："')
+    assert '"若所选页面数量≥2，参数为均值"' in quick
+    detect_start = text.index("    def detect_layout_current(self) -> None:")
+    detect_end = text.index("\n    def detect_layout_consistency_selected", detect_start)
+    detect = text[detect_start:detect_end]
+    assert 'numeric_summary="mean"' in detect
+    assert "多页数值参数将取算术均值" in detect
     assert '"start_y": "% 图高"' in text
     assert '"manual_x": "% 图宽"' in text
 
