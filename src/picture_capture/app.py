@@ -14635,139 +14635,138 @@ class PictureCaptureApp(tk.Tk):
         )
         return bool(visible) and not bool(self.hide_var.get())
 
-    def _ruler_source_positions(self, geometry=None) -> tuple[float, float]:
-        """Return source-image Y/X positions for the horizontal/vertical rulers."""
+    def _ruler_source_positions(self) -> dict[str, float]:
+        """Return source-image positions for the four draggable edge rulers."""
         if self.image is None:
-            return 0.0, 0.0
-        width = max(1, int(self.image.width))
-        height = max(1, int(self.image.height))
+            return {"top": 0.0, "bottom": 0.0, "left": 0.0, "right": 0.0}
+        max_x = float(max(1, self.image.width - 1))
+        max_y = float(max(1, self.image.height - 1))
 
-        try:
-            horizontal_ratio = float(getattr(self.settings, "ruler_horizontal_y_ratio", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            horizontal_ratio = 0.0
-        if 0.0 < horizontal_ratio < 1.0:
-            horizontal_y = horizontal_ratio * height
-        else:
-            effective = self._current_effective_profile_settings()
-            start_y = max(0, int(getattr(effective, "start_y", getattr(self.settings, "start_y", 0)) or 0))
-            line_height = max(1, int(getattr(effective, "character_height", getattr(self.settings, "character_height", 1)) or 1))
-            horizontal_y = start_y - max(6.0, line_height * 0.55)
-            if horizontal_y <= 1:
-                horizontal_y = height * 0.04
-
-        try:
-            vertical_ratio = float(getattr(self.settings, "ruler_vertical_x_ratio", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            vertical_ratio = 0.0
-        if 0.0 < vertical_ratio < 1.0:
-            vertical_x = vertical_ratio * width
-        else:
-            vertical_x = width * 0.5
+        def ratio(name: str, default: float) -> float:
             try:
-                geometry = geometry or self._get_cached_display_geometry()
-                if len(geometry.column_starts) >= 2 and len(geometry.column_widths) >= 1:
-                    mid_v = (float(geometry.top) + float(geometry.bottom)) / 2.0
-                    first_right = float(geometry.x_at(0, mid_v)) + float(geometry.column_widths[0])
-                    second_left = float(geometry.x_at(1, mid_v))
-                    first_source = geometry.canonical_to_source(first_right, mid_v)
-                    second_source = geometry.canonical_to_source(second_left, mid_v)
-                    vertical_x = (float(first_source[0]) + float(second_source[0])) / 2.0
-            except Exception:
-                vertical_x = width * 0.5
+                value = float(getattr(self.settings, name, default))
+            except (TypeError, ValueError):
+                value = default
+            return max(0.0, min(1.0, value))
 
-        horizontal_y = max(2.0, min(height - 2.0, float(horizontal_y)))
-        vertical_x = max(2.0, min(width - 2.0, float(vertical_x)))
-        return horizontal_y, vertical_x
+        return {
+            "top": ratio("ruler_top_y_ratio", 0.0) * max_y,
+            "bottom": ratio("ruler_bottom_y_ratio", 1.0) * max_y,
+            "left": ratio("ruler_left_x_ratio", 0.0) * max_x,
+            "right": ratio("ruler_right_x_ratio", 1.0) * max_x,
+        }
 
     def _draw_bidirectional_rulers(self, geometry=None) -> None:
-        """Draw draggable 0.5%/1% bidirectional percentage rulers on the page."""
+        """Draw four draggable percentage rulers at the page edges.
+
+        Geometry is accepted for call-site compatibility but rulers are defined
+        only by the source image dimensions.  Labels use one normal 0–100
+        direction: left-to-right for horizontal rulers and top-to-bottom for
+        vertical rulers.
+        """
+        _ = geometry
         if not self._rulers_visible() or self.image is None:
             return
-        display_width = float(self.image.width) * self.view_scale
-        display_height = float(self.image.height) * self.view_scale
-        if display_width <= 1 or display_height <= 1:
-            return
-        horizontal_y, vertical_x = self._ruler_source_positions(geometry)
-        horizontal_y *= self.view_scale
-        vertical_x *= self.view_scale
+        display_width = float(max(1, self.image.width - 1)) * self.view_scale
+        display_height = float(max(1, self.image.height - 1)) * self.view_scale
+        positions = self._ruler_source_positions()
         color = str(getattr(self.settings, "ruler_color", "#1976d2") or "#1976d2")
         major_tick = 7
         minor_tick = 4
+        label_gap = major_tick + 2
         font_spec = ("TkDefaultFont", 8)
 
-        self.canvas.create_line(
-            0, horizontal_y, display_width, horizontal_y,
-            fill=color, width=1, tags=("measurement-ruler", "ruler-horizontal"),
+        horizontal = (
+            ("top", positions["top"] * self.view_scale),
+            ("bottom", positions["bottom"] * self.view_scale),
         )
-        for half_percent in range(201):
-            pct = half_percent * 0.5
-            x = display_width * pct / 100.0
-            tick = major_tick if half_percent % 2 == 0 else minor_tick
+        for ruler_id, y in horizontal:
+            tag = f"ruler-{ruler_id}"
+            tags = ("measurement-ruler", "ruler-horizontal", tag)
             self.canvas.create_line(
-                x, horizontal_y - tick, x, horizontal_y,
-                fill=color, width=1, tags=("measurement-ruler", "ruler-horizontal"),
+                0, y, display_width, y,
+                fill=color, width=1, tags=tags,
             )
-            self.canvas.create_line(
-                x, horizontal_y, x, horizontal_y + tick,
-                fill=color, width=1, tags=("measurement-ruler", "ruler-horizontal"),
-            )
-        for value in range(10, 101, 10):
-            top_x = display_width * value / 100.0
-            bottom_x = display_width * (100 - value) / 100.0
-            self.canvas.create_text(
-                top_x, horizontal_y - major_tick - 2, text=str(value), fill=color,
-                anchor="se" if value == 100 else "s", font=font_spec,
-                tags=("measurement-ruler", "ruler-horizontal"),
-            )
-            self.canvas.create_text(
-                bottom_x, horizontal_y + major_tick + 2, text=str(value), fill=color,
-                anchor="nw" if value == 100 else "n", font=font_spec,
-                tags=("measurement-ruler", "ruler-horizontal"),
-            )
+            for half_percent in range(201):
+                pct = half_percent * 0.5
+                x = display_width * pct / 100.0
+                tick = major_tick if half_percent % 2 == 0 else minor_tick
+                self.canvas.create_line(
+                    x, y - tick, x, y + tick,
+                    fill=color, width=1, tags=tags,
+                )
+            for value in range(0, 101, 5):
+                x = display_width * value / 100.0
+                anchor = "nw" if value == 0 else ("ne" if value == 100 else "n")
+                self.canvas.create_text(
+                    x, y + label_gap, text=str(value), fill=color,
+                    anchor=anchor, font=font_spec, tags=tags,
+                )
 
-        self.canvas.create_line(
-            vertical_x, 0, vertical_x, display_height,
-            fill=color, width=1, tags=("measurement-ruler", "ruler-vertical"),
+        vertical = (
+            ("left", positions["left"] * self.view_scale),
+            ("right", positions["right"] * self.view_scale),
         )
-        for half_percent in range(201):
-            pct = half_percent * 0.5
-            y = display_height * pct / 100.0
-            tick = major_tick if half_percent % 2 == 0 else minor_tick
+        for ruler_id, x in vertical:
+            tag = f"ruler-{ruler_id}"
+            tags = ("measurement-ruler", "ruler-vertical", tag)
             self.canvas.create_line(
-                vertical_x - tick, y, vertical_x, y,
-                fill=color, width=1, tags=("measurement-ruler", "ruler-vertical"),
+                x, 0, x, display_height,
+                fill=color, width=1, tags=tags,
             )
-            self.canvas.create_line(
-                vertical_x, y, vertical_x + tick, y,
-                fill=color, width=1, tags=("measurement-ruler", "ruler-vertical"),
-            )
-        for value in range(10, 101, 10):
-            left_y = display_height * value / 100.0
-            right_y = display_height * (100 - value) / 100.0
-            self.canvas.create_text(
-                vertical_x - major_tick - 2, left_y, text=str(value), fill=color,
-                anchor="se" if value == 100 else "e", font=font_spec,
-                tags=("measurement-ruler", "ruler-vertical"),
-            )
-            self.canvas.create_text(
-                vertical_x + major_tick + 2, right_y, text=str(value), fill=color,
-                anchor="ne" if value == 100 else "w", font=font_spec,
-                tags=("measurement-ruler", "ruler-vertical"),
-            )
+            for half_percent in range(201):
+                pct = half_percent * 0.5
+                y = display_height * pct / 100.0
+                tick = major_tick if half_percent % 2 == 0 else minor_tick
+                self.canvas.create_line(
+                    x - tick, y, x + tick, y,
+                    fill=color, width=1, tags=tags,
+                )
+            for value in range(0, 101, 5):
+                y = display_height * value / 100.0
+                anchor = "nw" if value == 0 else ("sw" if value == 100 else "w")
+                self.canvas.create_text(
+                    x + label_gap, y, text=str(value), fill=color,
+                    anchor=anchor, font=font_spec, tags=tags,
+                )
 
-    def _ruler_hit_axis(self, source_x: float, source_y: float) -> str | None:
+    def _ruler_hit_id(self, source_x: float, source_y: float) -> str | None:
         if not self._rulers_visible() or self.image is None:
             return None
-        horizontal_y, vertical_x = self._ruler_source_positions()
+        positions = self._ruler_source_positions()
         tolerance = max(3.0, 8.0 / max(0.05, float(self.view_scale)))
-        dy = abs(float(source_y) - horizontal_y)
-        dx = abs(float(source_x) - vertical_x)
-        if dy > tolerance and dx > tolerance:
-            return None
-        if dy <= tolerance and dx <= tolerance:
-            return "horizontal" if dy <= dx else "vertical"
-        return "horizontal" if dy <= tolerance else "vertical"
+        distances = {
+            "top": abs(float(source_y) - positions["top"]),
+            "bottom": abs(float(source_y) - positions["bottom"]),
+            "left": abs(float(source_x) - positions["left"]),
+            "right": abs(float(source_x) - positions["right"]),
+        }
+        ruler_id, distance = min(distances.items(), key=lambda item: item[1])
+        return ruler_id if distance <= tolerance else None
+
+    def _hide_ruler_hint(self) -> None:
+        popup = getattr(self, "_ruler_hint", None)
+        if popup is not None:
+            try:
+                popup.destroy()
+            except tk.TclError:
+                pass
+        self._ruler_hint = None
+
+    def _show_ruler_hint(self, event: tk.Event) -> None:
+        text = "标尺可以帮助版面参数的手动填写，允许拖动。"
+        popup = getattr(self, "_ruler_hint", None)
+        if popup is None:
+            popup = tk.Toplevel(self.canvas)
+            popup.wm_overrideredirect(True)
+            ttk.Label(
+                popup, text=text, padding=(7, 4), relief="solid",
+            ).pack()
+            self._ruler_hint = popup
+        try:
+            popup.wm_geometry(f"+{event.x_root + 14}+{event.y_root + 18}")
+        except tk.TclError:
+            self._ruler_hint = None
 
     def redraw(self) -> None:
         self._sync_polygon_label_texts()
