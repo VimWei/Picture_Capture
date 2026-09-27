@@ -6232,9 +6232,17 @@ def test_v21122_hotfix2_review_ui_exposes_shared_and_single_height_plus_main_ocr
     end = text.index("class OCRConflictReviewDialog", start)
     review = text[start:end]
     assert '"单行高："' in review
-    assert 'textvariable=self.review_line_height_var' in review
     assert '"单字行高："' in review
-    assert 'textvariable=self.review_single_cjk_line_height_var' in review
+    assert '"单行高：", self.review_line_height_var, self.review_line_height_px_var' in review
+    assert '"行间空：",' in review
+    assert 'self.review_row_padding_var,' in review
+    assert 'self.review_row_padding_px_var,' in review
+    assert '"普通词条行切图高：",' in review
+    assert 'self.review_regular_crop_height_var,' in review
+    assert 'self.review_regular_crop_height_px_var,' in review
+    assert '"单字行高：",' in review
+    assert 'self.review_single_cjk_line_height_var,' in review
+    assert 'self.review_single_cjk_line_height_px_var,' in review
     height_controls = review[
         review.index("        def add_review_height_control("):
         review.index("        zoom_row = ttk.Frame(")
