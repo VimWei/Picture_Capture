@@ -2183,9 +2183,9 @@ class SettingsDialog(tk.Toplevel):
 
     SETTING_UNITS = {
         "columns": "栏",
-        "start_y": "原图px", "bottom_y": "原图px", "manual_x": "原图px",
-        "column_width": "原图px", "gutter": "原图px", "body_indent": "原图px",
-        "character_height": "原图px", "row_padding": "原图px", "horizontal_tolerance": "原图px",
+        "start_y": "% 图高", "bottom_y": "原图px", "manual_x": "% 图宽",
+        "column_width": "% 图宽", "gutter": "% 图宽", "body_indent": "% 图宽",
+        "character_height": "% 图高", "row_padding": "% 图高", "horizontal_tolerance": "% 图宽",
         "darkness_threshold": "RGB 和", "dark_area_percent": "%",
         "ordinary_right_divisor": "1/x", "white_threshold_high": "0–1000",
         "white_threshold_low": "0–1000", "whitespace_adjustment": "原图px",
@@ -2204,11 +2204,11 @@ class SettingsDialog(tk.Toplevel):
     }
     SETTING_SPIN = {
         "columns": (1, 12, 1),
-        "start_y": (0, 50000, 1), "bottom_y": (0, 50000, 1),
-        "manual_x": (0, 50000, 1), "column_width": (1, 50000, 1),
-        "gutter": (0, 10000, 1), "body_indent": (0, 10000, 1),
-        "character_height": (1, 2000, 1), "row_padding": (0, 1000, 1),
-        "horizontal_tolerance": (0, 5000, 1), "darkness_threshold": (0, 765, 1),
+        "start_y": (0.0, 100.0, 0.05), "bottom_y": (0, 50000, 1),
+        "manual_x": (0.0, 100.0, 0.05), "column_width": (0.01, 100.0, 0.05),
+        "gutter": (0.0, 100.0, 0.05), "body_indent": (0.0, 100.0, 0.05),
+        "character_height": (0.01, 100.0, 0.05), "row_padding": (0.0, 100.0, 0.05),
+        "horizontal_tolerance": (0.0, 100.0, 0.05), "darkness_threshold": (0, 765, 1),
         "dark_area_percent": (1, 100, 1), "ordinary_right_divisor": (1.0, 5.0, 0.1),
         "white_threshold_high": (0, 1000, 1), "white_threshold_low": (0, 1000, 1),
         "whitespace_adjustment": (0, 30, 1), "upward_ratio": (0.1, 10.0, 0.1),
@@ -2475,14 +2475,20 @@ class SettingsDialog(tk.Toplevel):
     def _setting_var(self, name: str) -> tk.Variable:
         if name in self.vars:
             return self.vars[name]
-        # Settings Center edits persisted project values. Layout geometry is
-        # therefore shown in canonical reference-page pixels; the main workspace
-        # separately shows current-page/source equivalents where appropriate.
         raw = getattr(self.parent.settings, name)
         choices = self.SETTING_CHOICES.get(name)
         if choices:
             reverse = {value: label for label, value in choices.items()}
             value = reverse.get(str(raw), str(raw))
+        elif name in LAYOUT_PERCENT_AXES and self.parent.image is not None:
+            source_value = (
+                self.parent._quick_geometry_value(name)
+                if hasattr(self.parent, "_quick_geometry_value")
+                else raw
+            )
+            value = _format_layout_percent(
+                _layout_pixels_to_percent(self.parent.image, name, source_value)
+            )
         else:
             value = str(raw)
         var = tk.StringVar(value=value)
@@ -4220,7 +4226,16 @@ class SettingsDialog(tk.Toplevel):
                     cast = self._casts.get(name, str)
                     setattr(self.parent.settings, name, cast(raw_value))
                 elif name in self._casts:
-                    setattr(self.parent.settings, name, self._casts[name](value))
+                    if name in LAYOUT_PERCENT_AXES and self.parent.image is not None:
+                        percent = float(value)
+                        if not 0.0 <= percent <= 100.0:
+                            raise ValueError(f"{self.SETTING_LABELS.get(name, name)} 必须在 0–100% 之间。")
+                        pixel_value = _layout_percent_to_pixels(
+                            self.parent.image, name, percent
+                        )
+                        setattr(self.parent.settings, name, int(pixel_value))
+                    else:
+                        setattr(self.parent.settings, name, self._casts[name](value))
                 elif name == "detection_method":
                     self.parent.settings.detection_method = DETECTION_VALUES[str(value)]
                 elif name == "ocr_engine":
