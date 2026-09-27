@@ -147,12 +147,14 @@ class AppSettings:
     guide_color: str = "#1976d2"
     page_section_color: str = "#1976d2"
     page_section_width: int = 2
-    # Optional bidirectional percentage rulers are display-only overlays.
-    # A zero position ratio means "auto-place from the current page geometry".
+    # Optional four-edge percentage rulers are display-only overlays.
+    # Ratios are relative to the source image and persist user drag positions.
     show_rulers: bool = False
     ruler_color: str = "#1976d2"
-    ruler_horizontal_y_ratio: float = 0.0
-    ruler_vertical_x_ratio: float = 0.0
+    ruler_top_y_ratio: float = 0.0
+    ruler_bottom_y_ratio: float = 1.0
+    ruler_left_x_ratio: float = 0.0
+    ruler_right_x_ratio: float = 1.0
     headword_marker_color: str = "#ff0000"
     illustration_outline_color: str = "#1976d2"
     illustration_outline_width: int = 2
