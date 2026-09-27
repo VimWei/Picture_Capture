@@ -11663,6 +11663,8 @@ class PictureCaptureApp(tk.Tk):
         new value, then persist through the normal quick-settings path.
         """
         setattr(self.settings, setting_name, bool(variable.get()))
+        if setting_name == "show_rulers" and not bool(variable.get()):
+            self._hide_ruler_hint()
         self._quick_parameter_changed(immediate=True)
         self.redraw()
 
@@ -14790,7 +14792,10 @@ class PictureCaptureApp(tk.Tk):
             crop_geometry = self._get_cached_display_geometry()
             self._draw_page_sections(crop_geometry)
             self._draw_bidirectional_rulers(crop_geometry)
-            self.canvas.configure(scrollregion=(0, 0, size[0], size[1]))
+            ruler_margin = 28 if self._rulers_visible() else 0
+            self.canvas.configure(
+                scrollregion=(0, 0, size[0] + ruler_margin, size[1] + ruler_margin)
+            )
             if self.cursor_canvas_xy is not None:
                 self.draw_cursor_guides(*self.cursor_canvas_xy)
             return
@@ -14969,7 +14974,10 @@ class PictureCaptureApp(tk.Tk):
                 for px, py in self.new_polygon:
                     cx, cy = px * self.view_scale, py * self.view_scale
                     self.canvas.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, fill="#ffffff", outline="#00aa55", width=2, tags=("ppp-overlay",))
-        self.canvas.configure(scrollregion=(0, 0, size[0], size[1]))
+        ruler_margin = 28 if self._rulers_visible() else 0
+        self.canvas.configure(
+            scrollregion=(0, 0, size[0] + ruler_margin, size[1] + ruler_margin)
+        )
         if self.cursor_canvas_xy is not None:
             self.draw_cursor_guides(*self.cursor_canvas_xy)
 
