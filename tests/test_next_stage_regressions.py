@@ -7,6 +7,7 @@ from PIL import Image, ImageDraw
 
 from picture_capture.app import (
     PictureCaptureApp, SettingsDialog, binary_preview_image, effective_main_overlay_font_size,
+    _layout_pixels_to_percent, _layout_percent_to_pixels,
     ReviewWindow, VerticalWordText, entry_index_label_layout,
     horizontal_ocr_menu_layout, horizontal_overlay_layout,
     transformed_entry_anchor, vertical_marker_contact_gap, vertical_ocr_menu_layout,
@@ -306,6 +307,10 @@ def test_settings_center_uses_context_help_units_and_user_facing_modes():
     assert '"bottom_y"' not in common_fields
     assert '"columns": "正文栏数"' in settings
     assert '"manual_x": "第一栏左缘 X"' in settings
+    assert '"start_y": "% 图高"' in settings
+    assert '"manual_x": "% 图宽"' in settings
+    assert '"column_width": "% 图宽"' in settings
+    assert '"character_height": "% 图高"' in settings
     assert '"paddle_band_width_ratio": "%"' in settings
     assert '"paddle_left_tolerance": "原图px"' in settings
     assert '"paddle_separator_safety_px": "原图px"' in settings
@@ -1065,18 +1070,46 @@ def test_main_canvas_percentage_rulers_are_display_only_and_draggable():
 
     assert "show_rulers: bool = False" in models
     assert 'ruler_color: str = "#1976d2"' in models
-    assert "ruler_horizontal_y_ratio: float = 0.0" in models
-    assert "ruler_vertical_x_ratio: float = 0.0" in models
+    assert "ruler_top_y_ratio: float = 0.0" in models
+    assert "ruler_bottom_y_ratio: float = 1.0" in models
+    assert "ruler_left_x_ratio: float = 0.0" in models
+    assert "ruler_right_x_ratio: float = 1.0" in models
     assert "for half_percent in range(201):" in app
     assert "pct = half_percent * 0.5" in app
-    assert "for value in range(10, 101, 10):" in app
-    assert 'tags=("measurement-ruler", "ruler-horizontal")' in app
-    assert 'tags=("measurement-ruler", "ruler-vertical")' in app
-    assert 'self.canvas.move("ruler-horizontal", 0, canvas_y - last_y)' in app
-    assert 'self.canvas.move("ruler-vertical", canvas_x - last_x, 0)' in app
-    assert "self.settings.ruler_horizontal_y_ratio" in app
-    assert "self.settings.ruler_vertical_x_ratio" in app
-    assert "build_page_crop_plan" not in app[app.index("    def _draw_bidirectional_rulers"):app.index("    def redraw(", app.index("    def _draw_bidirectional_rulers"))]
+    assert "for value in range(0, 101, 5):" in app
+    for ruler_id in ("top", "bottom", "left", "right"):
+        assert f'f"ruler-{{ruler_id}}"' in app
+    assert 'self.canvas.move(tag, 0, canvas_y - last_y)' in app
+    assert 'self.canvas.move(tag, canvas_x - last_x, 0)' in app
+    assert 'setattr(self.settings, f"ruler_{ruler_id}_y_ratio", ratio)' in app
+    assert 'setattr(self.settings, f"ruler_{ruler_id}_x_ratio", ratio)' in app
+    assert "标尺可以帮助版面参数的手动填写，允许拖动。" in app
+    assert "build_page_crop_plan" not in app[
+        app.index("    def _draw_bidirectional_rulers"):
+        app.index("    def redraw(", app.index("    def _draw_bidirectional_rulers"))
+    ]
+
+
+def test_layout_percentage_helpers_preserve_pixel_backend_contract():
+    image = Image.new("RGB", (1000, 2000), "white")
+    assert _layout_pixels_to_percent(image, "manual_x", 125) == 12.5
+    assert _layout_pixels_to_percent(image, "start_y", 200) == 10.0
+    assert _layout_percent_to_pixels(image, "column_width", 25.0) == 250
+    assert _layout_percent_to_pixels(image, "character_height", 1.5) == 30
+
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    assert '"start_y": "height"' in text
+    assert '"manual_x": "width"' in text
+    assert '"body_indent": "width"' in text
+    assert '"horizontal_tolerance": "width"' in text
+    for label in (
+        "正文起始Y%：", "首栏X%：", "单栏宽%：", "栏间空%：",
+        "单行高%：", "行间空%：", "正文缩进%：", "微调判距%：",
+    ):
+        assert label in text
+    assert '"start_y": "% 图高"' in text
+    assert '"manual_x": "% 图宽"' in text
 
 
 def test_page_template_auto_footer_uses_full_page_height_not_legacy_bottom_y():
