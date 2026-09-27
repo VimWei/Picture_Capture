@@ -144,6 +144,7 @@ LENS_MODE_LABELS = {
 }
 LENS_MODE_VALUES = {label: value for value, label in LENS_MODE_LABELS.items()}
 SESSION_STATE_FILENAME = "session_state.json"
+SIDEBAR_SECTION_DEFAULTS_VERSION = 1
 
 # ISO 639-1 codes for project metadata. Common dictionary languages are kept at
 # the front of the readonly selectors; the rest remain alphabetized.
@@ -9330,16 +9331,29 @@ class PictureCaptureApp(tk.Tk):
         self._configure_global_appearance()
         self.section_expanded = {
             "normal": True,
-            "ocr": True,
-            "aux": True,
-            "actions": True,
+            "aux": False,
+            "ocr": False,
+            "actions": False,
             "postproduction": False,
             "pages": True,
         }
         stored_sections = self._last_session.get("section_expanded", {})
+        try:
+            stored_section_defaults_version = int(
+                self._last_session.get("sidebar_section_defaults_version", 0) or 0
+            )
+        except (TypeError, ValueError):
+            stored_section_defaults_version = 0
         if isinstance(stored_sections, dict):
             for key in tuple(self.section_expanded):
-                if key in stored_sections:
+                # v1 changes the default workspace to keep sections 2–5 folded.
+                # Preserve prior page-list / layout-section choices, but reset
+                # the four affected sections once so existing sessions actually
+                # receive the new default. Later user choices are persisted.
+                if (
+                    stored_section_defaults_version >= SIDEBAR_SECTION_DEFAULTS_VERSION
+                    or key in {"normal", "pages"}
+                ) and key in stored_sections:
                     self.section_expanded[key] = bool(stored_sections[key])
         self._collapsible_sections: dict[str, ttk.LabelFrame] = {}
         self.section_title_font = font.nametofont("TkDefaultFont").copy()
@@ -10056,6 +10070,7 @@ class PictureCaptureApp(tk.Tk):
                 "page_range_spec": self.page_range_spec_var.get() if hasattr(self, "page_range_spec_var") else "",
                 "view_zoom_percent": round(self.view_scale * 100),
                 "appearance_mode": self.appearance_mode,
+                "sidebar_section_defaults_version": SIDEBAR_SECTION_DEFAULTS_VERSION,
                 "section_expanded": dict(self.section_expanded),
             }
             tmp = self._session_path.with_suffix(".tmp")
@@ -11277,10 +11292,15 @@ class PictureCaptureApp(tk.Tk):
         add_field(normal, 1, 2, "栏间空%：", "gutter", float)
 
         row = ttk.Frame(normal); row.grid(row=2, column=0, columnspan=8, sticky="ew", pady=(4, 0))
-        ttk.Button(
+        detect_layout_button = ttk.Button(
             row, text="检测版面参数", command=self.detect_layout_current,
             style="PC.Compact.TButton",
-        ).pack(side="left", fill="x", expand=True)
+        )
+        detect_layout_button.pack(side="left", fill="x", expand=True)
+        self._attach_tooltip(
+            detect_layout_button,
+            "若所选页面数量≥2，参数为均值",
+        )
         ttk.Button(
             row, text="检测版面一致性", command=self.detect_layout_consistency_selected,
             style="PC.Compact.TButton",
@@ -12160,7 +12180,8 @@ class PictureCaptureApp(tk.Tk):
             "选择检测页面范围",
             f"将按页面列表上方当前选择的范围检测 {len(indices)} 页。\n"
             f"范围：{names[0]}" + (f" ～ {names[-1]}" if len(names) > 1 else "") +
-            "\n\n多页结果将取稳健汇总并填充分栏/起始Y/首栏X/栏宽/栏间空/行高等版面参数；"
+            "\n\n多页数值参数将取算术均值；分栏数按多数页面的栏数确定。"
+            "检测结果会填充分栏/起始Y/首栏X/栏宽/栏间空/行高/行间空；"
             "页底不再作为手工参数写入。是否继续？",
             parent=self,
         ):
@@ -12180,6 +12201,7 @@ class PictureCaptureApp(tk.Tk):
                 results,
                 columns_policy=self.settings.layout_columns_policy,
                 fixed_columns=self.settings.columns,
+                numeric_summary="mean",
             )
             for name, value in values.items():
                 if name == "bottom_y":
@@ -12187,7 +12209,8 @@ class PictureCaptureApp(tk.Tk):
                 setattr(self.settings, name, value)
             self.sync_quick_settings(); self.save_settings(); self.redraw()
             suffix = "（任务提前停止，按已完成页面计算）" if stopped else ""
-            self.status_var.set(f"版面参数检测完成：{consistency}；其余参数使用稳健中位数{suffix}")
+            summary = "均值" if len(results) >= 2 else "单页检测值"
+            self.status_var.set(f"版面参数检测完成：{consistency}；数值参数使用{summary}{suffix}")
 
         self._start_batch_task("检测版面参数", indices, worker, done, item_label=lambda i: pages[i].name)
 
