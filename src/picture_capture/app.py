@@ -36,7 +36,7 @@ from .appearance import (
 )
 from .formats import pdic_path, read_pdic, read_ppp, write_pdic, write_ppp, write_text_atomic, read_picdic_index_records
 from .models import (
-    AppSettings, Entry as WordEntry, PolygonRegion, ProjectState,
+    AppSettings, Entry as WordEntry, PolygonRegion, ProjectState, project_page_images,
     natural_text_key, read_noncomment_lines, resolve_wordslist_path, resolved_tesseract_language,
 )
 from .paddle_headwords import (
@@ -9992,7 +9992,7 @@ class PictureCaptureApp(tk.Tk):
                 "last_project": str(self.project.root) if self.project else "",
                 "last_page": self.current_page.name if self.current_page else "",
                 "last_page_index": self.current_index,
-                "image_suffix": self.settings.image_suffix if self.project else self.image_suffix_var.get().strip(),
+                "image_suffix": self.settings.image_suffix,
                 "page_range": self.page_range_var.get() if hasattr(self, "page_range_var") else "current",
                 "page_range_spec": self.page_range_spec_var.get() if hasattr(self, "page_range_spec_var") else "",
                 "view_zoom_percent": round(self.view_scale * 100),
@@ -10319,22 +10319,6 @@ class PictureCaptureApp(tk.Tk):
             "illustrations": tk.BooleanVar(value=bool(getattr(self.settings, "page_list_show_illustrations", True))),
         }
         self._apply_page_list_display_columns(save=False)
-
-        suffix_row = ttk.Frame(self.project_action_bar, style="PC.Footer.TFrame")
-        suffix_row.pack(fill="x", pady=(0, 4))
-        suffix_row.columnconfigure(1, weight=1)
-        ttk.Label(suffix_row, text="图片后缀：", style="PC.Footer.TLabel").grid(
-            row=0, column=0, sticky="w", padx=(0, 4)
-        )
-        self.image_suffix_var = tk.StringVar(value=self.settings.image_suffix)
-        ttk.Entry(
-            suffix_row,
-            textvariable=self.image_suffix_var,
-            width=9,
-            justify="left",
-            style="PC.Footer.TEntry",
-        ).grid(row=0, column=1, sticky="w")
-        self.image_suffix_var.trace_add("write", lambda *_args: self._quick_parameter_changed())
 
         project_row = ttk.Frame(self.project_action_bar, style="PC.Footer.TFrame")
         project_row.pack(fill="x")
@@ -11703,8 +11687,6 @@ class PictureCaptureApp(tk.Tk):
                         self.settings.paddle_lens_mode, LENS_MODE_LABELS["off"]
                     )
                 )
-            if hasattr(self, "image_suffix_var"):
-                self.image_suffix_var.set(self.settings.image_suffix)
         finally:
             self._quick_syncing = False
 
@@ -11804,8 +11786,6 @@ class PictureCaptureApp(tk.Tk):
             if not (self.settings.paddle_use_paddleocr or self.settings.paddle_compare_tesseract or self.settings.paddle_enable_lens):
                 raise ValueError("OCR引擎至少需要勾选一个。")
             self.settings.paddle_lens_mode = LENS_MODE_VALUES.get(self.lens_mode_var.get(), self.settings.paddle_lens_mode)
-            suffix = self.image_suffix_var.get().strip() if hasattr(self, "image_suffix_var") else self.settings.image_suffix
-            if suffix: self.settings.image_suffix = suffix if suffix.startswith(".") else f".{suffix}"
             self.settings.hide_overlays = bool(self.hide_var.get())
             self.settings.polygon_mode = bool(self.polygon_var.get())
             if persist: self.save_settings()
@@ -13433,6 +13413,49 @@ class PictureCaptureApp(tk.Tk):
         widget.bind("<Leave>", hide, add="+")
         widget.bind("<Destroy>", hide, add="+")
 
+    def _choose_new_project_image_suffix(self, root: Path) -> str | None:
+        """Choose the scan-image extension once when creating a project.
+
+        The native directory chooser cannot filter by file extension.  After the
+        user selects a folder, inspect its actual page images instead: one
+        detected extension is accepted automatically; multiple extensions ask
+        the user which set belongs to this project.
+        """
+        pages = project_page_images(root)
+        if not pages:
+            raise ValueError("所选目录中没有 tif/tiff/png/jpg/jpeg/bmp 扫描图片。")
+
+        counts: dict[str, int] = {}
+        for page in pages:
+            suffix = page.suffix.lower()
+            counts[suffix] = counts.get(suffix, 0) + 1
+        suffixes = sorted(counts, key=lambda item: (-counts[item], item))
+        if len(suffixes) == 1:
+            return suffixes[0]
+
+        choices = "，".join(f"{suffix}（{counts[suffix]} 张）" for suffix in suffixes)
+        initial = suffixes[0]
+        while True:
+            value = simpledialog.askstring(
+                "选择扫描图片格式",
+                "检测到该文件夹包含多种扫描图片格式：\n"
+                f"{choices}\n\n"
+                "请输入本项目要使用的图片后缀（例如 .png 或 .tif）：",
+                initialvalue=initial,
+                parent=self,
+            )
+            if value is None:
+                return None
+            suffix = self._normalize_suffix(value)
+            if suffix in counts:
+                return suffix
+            messagebox.showerror(
+                "图片格式不存在",
+                f"该文件夹中没有 {suffix} 扫描图片。\n可选格式：{', '.join(suffixes)}",
+                parent=self,
+            )
+            initial = suffix
+
     def open_project(self) -> None:
         chosen = filedialog.askdirectory(title="选择词典扫描项目目录")
         if not chosen:
@@ -13445,8 +13468,10 @@ class PictureCaptureApp(tk.Tk):
             root = Path(chosen)
             existing_project = is_managed_project(root) or has_legacy_project_data(root)
             requested_suffix = None
-            if not existing_project and hasattr(self, "image_suffix_var"):
-                requested_suffix = self._normalize_suffix(self.image_suffix_var.get())
+            if not existing_project:
+                requested_suffix = self._choose_new_project_image_suffix(root)
+                if requested_suffix is None:
+                    return
             self._load_project(
                 root,
                 requested_suffix=requested_suffix,
