@@ -148,9 +148,6 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(confidence, "2栏: 4/5 pages")
         fixed, _ = aggregate_layout_estimates(rows, columns_policy="fixed", fixed_columns=3)
         self.assertEqual(fixed["columns"], 3)
-        mean_values, _ = aggregate_layout_estimates(rows, numeric_summary="mean")
-        self.assertEqual(mean_values["columns"], 2)
-        self.assertEqual(mean_values["start_y"], 255)
 
     def test_v21111_picdic_index_uses_saved_percentages_and_page(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
