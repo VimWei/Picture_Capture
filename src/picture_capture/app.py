@@ -11299,7 +11299,7 @@ class PictureCaptureApp(tk.Tk):
         detect_layout_button.pack(side="left", fill="x", expand=True)
         self._attach_tooltip(
             detect_layout_button,
-            "若所选页面数量≥2，参数为均值",
+            "若所选页面数量≥2，参数为稳健中位数",
         )
         ttk.Button(
             row, text="检测版面一致性", command=self.detect_layout_consistency_selected,
@@ -12180,7 +12180,7 @@ class PictureCaptureApp(tk.Tk):
             "选择检测页面范围",
             f"将按页面列表上方当前选择的范围检测 {len(indices)} 页。\n"
             f"范围：{names[0]}" + (f" ～ {names[-1]}" if len(names) > 1 else "") +
-            "\n\n多页数值参数将取算术均值；分栏数按多数页面的栏数确定。"
+            "\n\n多页数值参数将取稳健中位数；分栏数按多数页面的栏数确定。"
             "检测结果会填充分栏/起始Y/首栏X/栏宽/栏间空/行高/行间空；"
             "页底不再作为手工参数写入。是否继续？",
             parent=self,
@@ -12201,7 +12201,6 @@ class PictureCaptureApp(tk.Tk):
                 results,
                 columns_policy=self.settings.layout_columns_policy,
                 fixed_columns=self.settings.columns,
-                numeric_summary="mean",
             )
             for name, value in values.items():
                 if name == "bottom_y":
@@ -12209,7 +12208,7 @@ class PictureCaptureApp(tk.Tk):
                 setattr(self.settings, name, value)
             self.sync_quick_settings(); self.save_settings(); self.redraw()
             suffix = "（任务提前停止，按已完成页面计算）" if stopped else ""
-            summary = "均值" if len(results) >= 2 else "单页检测值"
+            summary = "稳健中位数" if len(results) >= 2 else "单页检测值"
             self.status_var.set(f"版面参数检测完成：{consistency}；数值参数使用{summary}{suffix}")
 
         self._start_batch_task("检测版面参数", indices, worker, done, item_label=lambda i: pages[i].name)
