@@ -14609,7 +14609,7 @@ class PictureCaptureApp(tk.Tk):
         )
         return bool(visible) and not bool(self.hide_var.get())
 
-    def _draw_bidirectional_rulers(self, geometry=None) -> None:
+    def _draw_percentage_rulers(self, geometry=None) -> None:
         """Draw four fixed percentage rulers on the page edges."""
         _ = geometry
         if not self._rulers_visible() or self.image is None:
@@ -14725,7 +14725,7 @@ class PictureCaptureApp(tk.Tk):
             self._draw_crop_plan_preview()
             crop_geometry = self._get_cached_display_geometry()
             self._draw_page_sections(crop_geometry)
-            self._draw_bidirectional_rulers(crop_geometry)
+            self._draw_percentage_rulers(crop_geometry)
             ruler_margin = 28 if self._rulers_visible() else 0
             self.canvas.configure(
                 scrollregion=(-ruler_margin, 0, size[0] + ruler_margin, size[1] + ruler_margin)
@@ -14755,7 +14755,7 @@ class PictureCaptureApp(tk.Tk):
                             smooth=True,
                         )
             self._draw_page_sections(geometry)
-            self._draw_bidirectional_rulers(geometry)
+            self._draw_percentage_rulers(geometry)
             processing_readonly = self._foreground_batch_state(self.current_index) == "processing"
             for index, entry in enumerate(self._ordered_entries_reading_order()):
                 self._draw_entry_overlay(
