@@ -148,6 +148,9 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(confidence, "2栏: 4/5 pages")
         fixed, _ = aggregate_layout_estimates(rows, columns_policy="fixed", fixed_columns=3)
         self.assertEqual(fixed["columns"], 3)
+        mean_values, _ = aggregate_layout_estimates(rows, numeric_summary="mean")
+        self.assertEqual(mean_values["columns"], 2)
+        self.assertEqual(mean_values["start_y"], 255)
 
     def test_v21111_picdic_index_uses_saved_percentages_and_page(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5332,9 +5335,19 @@ def test_project_details_are_persisted_in_project_settings(tmp_path):
     assert restored.dictionary_body_page_range == "1-1250"
 
 
-def test_sidebar_has_collapsed_postproduction_section_and_project_details():
+def test_sidebar_defaults_fold_sections_two_through_five_and_keep_project_details():
     app_text = (Path(__file__).parents[1] / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
-    assert '"postproduction": False' in app_text
+    defaults_start = app_text.index("        self.section_expanded = {")
+    defaults_end = app_text.index("\n        stored_sections =", defaults_start)
+    defaults = app_text[defaults_start:defaults_end]
+    assert '"normal": True' in defaults
+    assert '"aux": False' in defaults
+    assert '"ocr": False' in defaults
+    assert '"actions": False' in defaults
+    assert '"postproduction": False' in defaults
+    assert '"pages": True' in defaults
+    assert "SIDEBAR_SECTION_DEFAULTS_VERSION = 1" in app_text
+    assert '"sidebar_section_defaults_version": SIDEBAR_SECTION_DEFAULTS_VERSION' in app_text
     assert 'parent, "五、后期词典制作", padding=5, section_key="postproduction"' in app_text
     assert 'self._section_frame(parent, "四、画线与校对"' in app_text
     assert 'self._section_frame(sidebar, "六、页面列表"' in app_text
@@ -5352,6 +5365,7 @@ def test_sidebar_has_collapsed_postproduction_section_and_project_details():
 
 def test_auxiliary_overlay_defaults_and_label_style_controls():
     settings = AppSettings()
+    assert settings.show_rulers is True
     assert settings.guide_color == "#1976d2"
     assert settings.page_section_color == "#1976d2"
     assert settings.headword_marker_color == "#ff0000"
