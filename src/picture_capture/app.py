@@ -4948,6 +4948,11 @@ class ReviewWindow(tk.Toplevel):
         self.filter_batch_var = tk.StringVar(value="")
         self._filter_scan_serial = 0
         self._filter_render_serial = 0
+        self._filter_scan_complete = True
+        # Filter-mode render cache stores PIL crops only. Tk/ImageTk objects are
+        # still created on the UI thread when a batch becomes visible.
+        self._filter_batch_render_cache: dict[tuple[int, tuple], tuple] = {}
+        self._filter_prefetch_key: tuple[int, tuple] | None = None
         self._filter_current_batch_targets: list[dict] = []
         self._filter_pending_changes: dict[int, dict[tuple[int, int], dict]] = {}
         self._filter_save_job: str | None = None
@@ -5775,6 +5780,10 @@ class ReviewWindow(tk.Toplevel):
         self.parent._invalidate_ui_worker(f"focused-filter-scan-{id(self)}")
         self.parent._invalidate_ui_worker(f"focused-filter-scan-rest-{id(self)}")
         self.parent._invalidate_ui_worker(f"focused-filter-render-{id(self)}")
+        self.parent._invalidate_ui_worker(f"focused-filter-prefetch-{id(self)}")
+        self._filter_batch_render_cache.clear()
+        self._filter_prefetch_key = None
+        self._filter_scan_complete = True
         self._request_render_rows(focus_index=0, reset_scroll=True)
 
     def _set_filter_navigation(self, active: bool) -> None:
@@ -5834,7 +5843,7 @@ class ReviewWindow(tk.Toplevel):
             self.rows.columnconfigure(0, weight=1)
 
     def run_focused_filter(self) -> None:
-        """Render the first filtered batch early, then finish scanning in back."""
+        """Render the first batch early, then stream and pre-render later batches."""
         project = self.parent.project
         if project is None:
             return
@@ -5870,6 +5879,13 @@ class ReviewWindow(tk.Toplevel):
         self._set_filter_navigation(True)
         self.parent._invalidate_ui_worker(self._review_render_worker_key)
         self.parent._invalidate_ui_worker(f"focused-filter-scan-rest-{id(self)}")
+        self.parent._invalidate_ui_worker(f"focused-filter-render-{id(self)}")
+        self.parent._invalidate_ui_worker(f"focused-filter-prefetch-{id(self)}")
+        self._filter_batch_render_cache.clear()
+        self._filter_prefetch_key = None
+        self._filter_scan_complete = False
+        self.filtered_targets = []
+        self.filtered_batch_index = 0
         self._clear_review_workspace("正在快速筛选首批…")
         self.filter_batch_var.set("正在筛选首批…")
         self._filter_scan_serial += 1
@@ -5973,7 +5989,7 @@ class ReviewWindow(tk.Toplevel):
                 targets.extend(page_targets)
                 pages_without_ocr += int(missing_ocr)
                 # Stop at a page boundary as soon as one complete UI batch is
-                # available. The remaining pages continue in a second worker.
+                # available. Later pages are streamed in batch-sized chunks.
                 if len(targets) >= first_batch_size:
                     next_position = position + 1
                     break
@@ -5983,24 +5999,38 @@ class ReviewWindow(tk.Toplevel):
             start_position: int, pages_without_ocr: int, initial_count: int,
         ) -> None:
             if start_position >= len(indices):
+                self._filter_scan_complete = True
+                self._update_filter_batch_indicator()
                 extra = (
                     f"；{pages_without_ocr} 页无 OCR 缓存"
                     if include_mismatch and pages_without_ocr else ""
                 )
                 self.parent.status_var.set(
-                    f"筛选完成：{len(indices)} 页共 {initial_count} 条{extra}"
+                    f"筛选完成：{len(indices)} 页共 {len(self.filtered_targets)} 条{extra}"
                 )
                 self._update_title()
+                self._schedule_filter_next_batch_preload()
                 return
+
+            # If the previous page crossed a batch boundary, keep its overflow.
+            # Scan only until the next complete batch is available, then hand
+            # that batch back to the UI immediately so its crops can pre-render.
+            remainder = int(initial_count) % first_batch_size
+            needed_for_next = first_batch_size - remainder if remainder else first_batch_size
 
             def remaining_worker():
                 additions: list[dict] = []
                 missing_total = pages_without_ocr
-                for page_index in indices[start_position:]:
+                next_position = len(indices)
+                for position in range(start_position, len(indices)):
+                    page_index = indices[position]
                     page_targets, missing_ocr = scan_page(page_index)
                     additions.extend(page_targets)
                     missing_total += int(missing_ocr)
-                return additions, missing_total
+                    if len(additions) >= needed_for_next:
+                        next_position = position + 1
+                        break
+                return additions, missing_total, next_position
 
             def remaining_done(payload) -> None:
                 if (
@@ -6008,22 +6038,38 @@ class ReviewWindow(tk.Toplevel):
                     or not getattr(self, "_filter_rows_active", False)
                 ):
                     return
-                additions, missing_total = payload
-                had_targets = bool(self.filtered_targets)
+                additions, missing_total, next_position = payload
+                had_available = self._filter_available_target_count()
                 self.filtered_targets.extend(additions)
-                extra = (
-                    f"；{missing_total} 页无 OCR 缓存"
-                    if include_mismatch and missing_total else ""
-                )
-                self.parent.status_var.set(
-                    f"筛选完成：{len(indices)} 页共 {len(self.filtered_targets)} 条{extra}"
-                )
+                self._filter_scan_complete = next_position >= len(indices)
+                available_now = self._filter_available_target_count()
+                self._update_filter_batch_indicator()
                 self._update_title()
-                if not had_targets and self.filtered_targets:
+
+                if self._filter_scan_complete:
+                    extra = (
+                        f"；{missing_total} 页无 OCR 缓存"
+                        if include_mismatch and missing_total else ""
+                    )
+                    self.parent.status_var.set(
+                        f"筛选完成：{len(indices)} 页共 {len(self.filtered_targets)} 条{extra}"
+                    )
+                else:
+                    self.parent.status_var.set(
+                        f"后台筛选中：已扫描 {next_position}/{len(indices)} 页，"
+                        f"当前命中 {len(self.filtered_targets)} 条"
+                    )
+
+                if had_available <= 0 < available_now:
                     self.filtered_batch_index = 0
                     self._request_filter_batch_render()
-                elif not self.filtered_targets:
-                    self._request_filter_batch_render()
+                else:
+                    self._schedule_filter_next_batch_preload()
+
+                if not self._filter_scan_complete:
+                    start_remaining_scan(
+                        next_position, missing_total, len(self.filtered_targets)
+                    )
 
             def remaining_failed(exc, detail) -> None:
                 if detail:
@@ -6046,23 +6092,40 @@ class ReviewWindow(tk.Toplevel):
             targets, pages_without_ocr, next_position = payload
             self.filtered_targets = list(targets)
             self.filtered_batch_index = 0
+            self._filter_scan_complete = next_position >= len(indices)
+            self._update_title()
+
             if self.filtered_targets:
-                self.parent.status_var.set(
-                    f"首批已就绪：已扫描 {next_position}/{len(indices)} 页，"
-                    f"当前命中 {len(self.filtered_targets)} 条；后台继续筛选…"
-                )
+                if self._filter_scan_complete:
+                    extra = (
+                        f"；{pages_without_ocr} 页无 OCR 缓存"
+                        if include_mismatch and pages_without_ocr else ""
+                    )
+                    self.parent.status_var.set(
+                        f"筛选完成：{len(indices)} 页共 {len(self.filtered_targets)} 条{extra}"
+                    )
+                else:
+                    self.parent.status_var.set(
+                        f"首批已就绪：已扫描 {next_position}/{len(indices)} 页，"
+                        f"当前命中 {len(self.filtered_targets)} 条；后台准备下一批…"
+                    )
+                self._request_filter_batch_render()
+            elif self._filter_scan_complete:
                 self._request_filter_batch_render()
             else:
                 self._clear_review_workspace("首段暂无命中，正在继续筛选…")
-            start_remaining_scan(
-                next_position, pages_without_ocr, len(self.filtered_targets)
-            )
+
+            if not self._filter_scan_complete:
+                start_remaining_scan(
+                    next_position, pages_without_ocr, len(self.filtered_targets)
+                )
 
         def failed(exc, detail) -> None:
             if detail:
                 print(detail)
             if serial != self._filter_scan_serial:
                 return
+            self._filter_scan_complete = True
             self.filter_batch_var.set("筛选失败")
             self._clear_review_workspace(f"筛选失败：{exc}")
             messagebox.showerror("重点筛选失败", str(exc), parent=self)
@@ -6077,13 +6140,255 @@ class ReviewWindow(tk.Toplevel):
         except ValueError:
             return 40
 
+    def _filter_available_target_count(self) -> int:
+        """Expose only complete batches while the background scan is unfinished."""
+        total = len(self.filtered_targets)
+        if self._filter_scan_complete:
+            return total
+        batch_size = self._focused_batch_size()
+        return (total // batch_size) * batch_size
+
+    def _update_filter_batch_indicator(self) -> None:
+        available_total = self._filter_available_target_count()
+        if available_total <= 0:
+            self.filter_batch_var.set(
+                "0 / 0" if self._filter_scan_complete else "正在准备下一批…"
+            )
+            return
+        batch_size = self._focused_batch_size()
+        batch_count = max(1, (available_total + batch_size - 1) // batch_size)
+        batch_index = max(0, min(batch_count - 1, int(self.filtered_batch_index)))
+        start = batch_index * batch_size
+        end = min(available_total, start + batch_size)
+        total_text = str(available_total) if self._filter_scan_complete else f"{available_total}+"
+        self.filter_batch_var.set(
+            f"第 {batch_index + 1}/{batch_count} 批 · "
+            f"{start + 1}-{end} / {total_text}"
+        )
+
+    def _filter_batch_snapshot(self, batch_index: int):
+        """Capture all Tk-derived values before a filter-batch worker starts."""
+        project = self.parent.project
+        if project is None:
+            return None
+        available_total = self._filter_available_target_count()
+        batch_size = self._focused_batch_size()
+        start = int(batch_index) * batch_size
+        if start < 0 or start >= available_total:
+            return None
+        end = min(available_total, start + batch_size)
+        targets = [dict(target) for target in self.filtered_targets[start:end]]
+        pages = list(project.images)
+        settings = replace(self.parent.settings)
+        viewer_width = max(1, int(self.parent.canvas.winfo_width()))
+        available_width = max(240, self._review_image_area_width())
+        review_zoom_auto = bool(self.review_zoom_auto)
+        review_zoom = max(0.01, float(self.review_zoom))
+        target_signature = tuple(
+            (
+                int(target["page_index"]),
+                int(target["x"]),
+                int(target["y"]),
+                str(target.get("original_word") or ""),
+            )
+            for target in targets
+        )
+        render_signature = (
+            target_signature,
+            repr(settings),
+            viewer_width,
+            available_width,
+            review_zoom_auto,
+            None if review_zoom_auto else round(review_zoom, 6),
+        )
+        cache_key = (int(batch_index), render_signature)
+        return (
+            cache_key, targets, pages, settings, viewer_width, available_width,
+            review_zoom, review_zoom_auto,
+        )
+
+    @staticmethod
+    def _prepare_filter_batch_payload(
+        targets: list[dict], pages: list[Path], settings: AppSettings,
+        viewer_width: int, available_width: int, review_zoom: float,
+        review_zoom_auto: bool,
+    ) -> tuple[list[Image.Image], float, list[tuple[int, int]]]:
+        """Build filter crops off Tk so a prefetched batch can display immediately."""
+        raw_crops: list[Image.Image] = []
+        display_meta: list[tuple[int, int]] = []
+        page_cache: dict[int, tuple[Image.Image, object, list[WordEntry]]] = {}
+        for target in targets:
+            page_index = int(target["page_index"])
+            if page_index not in page_cache:
+                page = pages[page_index]
+                with Image.open(page) as opened:
+                    image = normalize_page_rgb(opened)
+                review_settings, geometry = _review_crop_context(
+                    image, settings, viewer_width, page_index,
+                )
+                ordered = sort_entries_reading_order(
+                    read_pdic(pdic_path(page)), geometry, read_page_sections(page)
+                )
+                page_cache[page_index] = (image, (review_settings, geometry), ordered)
+            image, context, ordered = page_cache[page_index]
+            review_settings, geometry = context
+            matches = [
+                i for i, entry in enumerate(ordered)
+                if int(entry.x) == int(target["x"])
+                and int(entry.y) == int(target["y"])
+            ]
+            if len(matches) > 1:
+                preferred = [
+                    i for i in matches
+                    if str(ordered[i].word) == str(target.get("original_word") or "")
+                ]
+                matches = preferred or matches
+            if len(matches) != 1:
+                raw_crops.append(
+                    Image.new("RGB", (max(40, available_width // 2), 36), "white")
+                )
+                display_meta.append((
+                    int(target.get("column_number", 1) or 1),
+                    int(target.get("sequence_number", 0) or 0),
+                ))
+                continue
+            row = matches[0]
+            entry = ordered[row]
+            try:
+                column_number = column_index(
+                    int(entry.x), geometry, int(entry.y)
+                ) + 1
+            except Exception:
+                column_number = 1
+            display_meta.append((int(column_number), int(row + 1)))
+            next_entry = ordered[row + 1] if row + 1 < len(ordered) else None
+            box = _review_line_box(
+                entry, geometry, image, review_settings, next_entry
+            )
+            raw_crops.append(image.crop(box).convert("RGB"))
+
+        effective_zoom = max(0.01, float(review_zoom))
+        if review_zoom_auto and raw_crops:
+            widest = max(crop.width for crop in raw_crops)
+            effective_zoom = review_auto_fit_zoom(
+                widest, available_width, 0.99
+            )
+        crops = [
+            crop.resize(
+                (
+                    max(1, round(crop.width * effective_zoom)),
+                    max(1, round(crop.height * effective_zoom)),
+                ),
+                Image.Resampling.LANCZOS,
+            )
+            for crop in raw_crops
+        ]
+        return crops, effective_zoom, display_meta
+
+    def _cache_filter_batch_payload(self, cache_key: tuple[int, tuple], payload: tuple) -> None:
+        self._filter_batch_render_cache.pop(cache_key, None)
+        self._filter_batch_render_cache[cache_key] = payload
+        while len(self._filter_batch_render_cache) > 4:
+            oldest = next(iter(self._filter_batch_render_cache))
+            self._filter_batch_render_cache.pop(oldest, None)
+
+    def _apply_filter_batch_payload(
+        self, batch_index: int, cache_key: tuple[int, tuple], payload: tuple,
+    ) -> bool:
+        if (
+            not getattr(self, "_filter_rows_active", False)
+            or int(self.filtered_batch_index) != int(batch_index)
+        ):
+            return False
+        snapshot = self._filter_batch_snapshot(batch_index)
+        if snapshot is None or snapshot[0] != cache_key:
+            return False
+        _key, _targets_copy, _pages, _settings, _viewer_width, _available_width, _zoom, _auto = snapshot
+        batch_size = self._focused_batch_size()
+        start = int(batch_index) * batch_size
+        end = min(self._filter_available_target_count(), start + batch_size)
+        targets = self.filtered_targets[start:end]
+
+        crops, effective_zoom, display_meta = payload
+        if len(crops) != len(targets) or len(display_meta) != len(targets):
+            return False
+        for target, (column_number, sequence_number) in zip(targets, display_meta):
+            target["column_number"] = int(column_number)
+            target["sequence_number"] = int(sequence_number)
+        if self.review_zoom_auto:
+            self.review_zoom = max(0.01, float(effective_zoom))
+            self.review_zoom_var.set(f"自动 {round(self.review_zoom * 100):d}%")
+        self._update_filter_batch_indicator()
+        self._render_filter_batch(targets, crops)
+        self._reset_rows_scroll_top()
+        self._schedule_filter_next_batch_preload()
+        return True
+
+    def _schedule_filter_next_batch_preload(self) -> None:
+        """Prepare N+1 while the user proofreads N."""
+        if not getattr(self, "_filter_rows_active", False):
+            return
+        next_index = int(self.filtered_batch_index) + 1
+        snapshot = self._filter_batch_snapshot(next_index)
+        if snapshot is None:
+            return
+        (
+            cache_key, targets, pages, settings, viewer_width, available_width,
+            review_zoom, review_zoom_auto,
+        ) = snapshot
+        if cache_key in self._filter_batch_render_cache:
+            return
+        if self._filter_prefetch_key == cache_key:
+            return
+        self._filter_prefetch_key = cache_key
+        worker_key = f"focused-filter-prefetch-{id(self)}"
+
+        def worker(
+            local_targets=targets, local_pages=pages, local_settings=settings,
+            local_viewer_width=viewer_width, local_available_width=available_width,
+            local_review_zoom=review_zoom, local_review_zoom_auto=review_zoom_auto,
+        ):
+            return ReviewWindow._prepare_filter_batch_payload(
+                local_targets, local_pages, local_settings,
+                local_viewer_width, local_available_width,
+                local_review_zoom, local_review_zoom_auto,
+            )
+
+        def done(payload, local_key=cache_key, local_index=next_index) -> None:
+            if self._filter_prefetch_key == local_key:
+                self._filter_prefetch_key = None
+            if not getattr(self, "_filter_rows_active", False):
+                return
+            self._cache_filter_batch_payload(local_key, payload)
+            # If the user clicked 【下一批】 while this worker was still running,
+            # complete that navigation immediately from the freshly built cache.
+            if int(self.filtered_batch_index) == int(local_index):
+                self._apply_filter_batch_payload(local_index, local_key, payload)
+
+        def failed(exc, detail, local_key=cache_key) -> None:
+            if detail:
+                print(detail)
+            if self._filter_prefetch_key == local_key:
+                self._filter_prefetch_key = None
+
+        self.parent._start_ui_worker(
+            worker_key, worker, done, failed,
+        )
+
     def change_filter_batch(self, delta: int) -> None:
         if not self._filter_rows_active or not self.filtered_targets:
             return
+        available_total = self._filter_available_target_count()
+        if available_total <= 0:
+            return
         batch_size = self._focused_batch_size()
-        batch_count = max(1, (len(self.filtered_targets) + batch_size - 1) // batch_size)
-        target = max(0, min(batch_count - 1, self.filtered_batch_index + int(delta)))
+        batch_count = max(1, (available_total + batch_size - 1) // batch_size)
+        requested = self.filtered_batch_index + int(delta)
+        target = max(0, min(batch_count - 1, requested))
         if target == self.filtered_batch_index:
+            if int(delta) > 0 and not self._filter_scan_complete:
+                self.parent.status_var.set("下一批仍在后台筛选与预生成，请继续校对当前批次。")
+                self._schedule_filter_next_batch_preload()
             return
         self._flush_focused_changes_now()
         self.filtered_batch_index = target
@@ -6092,118 +6397,65 @@ class ReviewWindow(tk.Toplevel):
     def _request_filter_batch_render(self) -> None:
         if not getattr(self, "_filter_rows_active", False):
             return
-        total = len(self.filtered_targets)
-        if total <= 0:
-            self.filter_batch_var.set("0 / 0")
-            self._clear_review_workspace("当前条件没有筛选出词条。")
+        available_total = self._filter_available_target_count()
+        if available_total <= 0:
+            if self._filter_scan_complete:
+                self.filter_batch_var.set("0 / 0")
+                self._clear_review_workspace("当前条件没有筛选出词条。")
+            else:
+                self.filter_batch_var.set("正在准备下一批…")
+                self._clear_review_workspace("正在后台筛选下一批…")
             return
+
         batch_size = self._focused_batch_size()
-        batch_count = max(1, (total + batch_size - 1) // batch_size)
+        batch_count = max(1, (available_total + batch_size - 1) // batch_size)
         self.filtered_batch_index = max(
             0, min(batch_count - 1, int(self.filtered_batch_index))
         )
-        start = self.filtered_batch_index * batch_size
-        end = min(total, start + batch_size)
-        targets = self.filtered_targets[start:end]
-        self.filter_batch_var.set(
-            f"第 {self.filtered_batch_index + 1}/{batch_count} 批 · "
-            f"{start + 1}-{end} / {total}"
-        )
-        self._clear_review_workspace("正在异步生成本批切词行…")
+        self._update_filter_batch_indicator()
         self._set_filter_navigation(True)
+        snapshot = self._filter_batch_snapshot(self.filtered_batch_index)
+        if snapshot is None:
+            return
+        (
+            cache_key, targets, pages, settings, viewer_width, available_width,
+            review_zoom, review_zoom_auto,
+        ) = snapshot
+
         self._filter_render_serial += 1
         serial = self._filter_render_serial
-
-        project = self.parent.project
-        if project is None:
+        cached = self._filter_batch_render_cache.get(cache_key)
+        if cached is not None:
+            self._apply_filter_batch_payload(
+                self.filtered_batch_index, cache_key, cached
+            )
             return
-        pages = list(project.images)
-        settings = replace(self.parent.settings)
-        viewer_width = max(1, int(self.parent.canvas.winfo_width()))
-        available_width = max(240, self._review_image_area_width())
 
-        def worker():
-            raw_crops: list[Image.Image] = []
-            display_meta: list[tuple[int, int]] = []
-            page_cache: dict[int, tuple[Image.Image, object, list[WordEntry]]] = {}
-            for target in targets:
-                page_index = int(target["page_index"])
-                if page_index not in page_cache:
-                    page = pages[page_index]
-                    with Image.open(page) as opened:
-                        image = normalize_page_rgb(opened)
-                    review_settings, geometry = _review_crop_context(
-                        image, settings, viewer_width, page_index,
-                    )
-                    ordered = sort_entries_reading_order(
-                        read_pdic(pdic_path(page)), geometry, read_page_sections(page)
-                    )
-                    page_cache[page_index] = (image, (review_settings, geometry), ordered)
-                image, context, ordered = page_cache[page_index]
-                review_settings, geometry = context
-                matches = [
-                    i for i, entry in enumerate(ordered)
-                    if int(entry.x) == int(target["x"])
-                    and int(entry.y) == int(target["y"])
-                ]
-                if len(matches) > 1:
-                    preferred = [
-                        i for i in matches
-                        if str(ordered[i].word) == str(target.get("original_word") or "")
-                    ]
-                    matches = preferred or matches
-                if len(matches) != 1:
-                    raw_crops.append(Image.new("RGB", (max(40, available_width // 2), 36), "white"))
-                    display_meta.append((
-                        int(target.get("column_number", 1) or 1),
-                        int(target.get("sequence_number", 0) or 0),
-                    ))
-                    continue
-                row = matches[0]
-                entry = ordered[row]
-                try:
-                    column_number = column_index(
-                        int(entry.x), geometry, int(entry.y)
-                    ) + 1
-                except Exception:
-                    column_number = 1
-                display_meta.append((int(column_number), int(row + 1)))
-                next_entry = ordered[row + 1] if row + 1 < len(ordered) else None
-                box = _review_line_box(
-                    entry, geometry, image, review_settings, next_entry
-                )
-                raw_crops.append(image.crop(box).convert("RGB"))
+        if self._filter_prefetch_key == cache_key:
+            self._clear_review_workspace("下一批已在后台预生成，即将显示…")
+            return
 
-            effective_zoom = max(0.01, float(self.review_zoom))
-            if self.review_zoom_auto and raw_crops:
-                widest = max(crop.width for crop in raw_crops)
-                effective_zoom = review_auto_fit_zoom(
-                    widest, available_width, 0.99
-                )
-            crops = [
-                crop.resize(
-                    (
-                        max(1, round(crop.width * effective_zoom)),
-                        max(1, round(crop.height * effective_zoom)),
-                    ),
-                    Image.Resampling.LANCZOS,
-                )
-                for crop in raw_crops
-            ]
-            return crops, effective_zoom, display_meta
+        self._clear_review_workspace("正在异步生成本批切词行…")
 
-        def done(payload) -> None:
-            if serial != self._filter_render_serial or not getattr(self, "_filter_rows_active", False):
+        def worker(
+            local_targets=targets, local_pages=pages, local_settings=settings,
+            local_viewer_width=viewer_width, local_available_width=available_width,
+            local_review_zoom=review_zoom, local_review_zoom_auto=review_zoom_auto,
+        ):
+            return ReviewWindow._prepare_filter_batch_payload(
+                local_targets, local_pages, local_settings,
+                local_viewer_width, local_available_width,
+                local_review_zoom, local_review_zoom_auto,
+            )
+
+        def done(payload, local_index=int(self.filtered_batch_index), local_key=cache_key) -> None:
+            if (
+                serial != self._filter_render_serial
+                or not getattr(self, "_filter_rows_active", False)
+            ):
                 return
-            crops, effective_zoom, display_meta = payload
-            for target, (column_number, sequence_number) in zip(targets, display_meta):
-                target["column_number"] = int(column_number)
-                target["sequence_number"] = int(sequence_number)
-            if self.review_zoom_auto:
-                self.review_zoom = max(0.01, float(effective_zoom))
-                self.review_zoom_var.set(f"自动 {round(self.review_zoom * 100):d}%")
-            self._render_filter_batch(targets, crops)
-            self._reset_rows_scroll_top()
+            self._cache_filter_batch_payload(local_key, payload)
+            self._apply_filter_batch_payload(local_index, local_key, payload)
 
         def failed(exc, detail) -> None:
             if detail:
@@ -6660,6 +6912,9 @@ class ReviewWindow(tk.Toplevel):
         self.parent._invalidate_ui_worker(f"focused-filter-scan-{id(self)}")
         self.parent._invalidate_ui_worker(f"focused-filter-scan-rest-{id(self)}")
         self.parent._invalidate_ui_worker(f"focused-filter-render-{id(self)}")
+        self.parent._invalidate_ui_worker(f"focused-filter-prefetch-{id(self)}")
+        self._filter_batch_render_cache.clear()
+        self._filter_prefetch_key = None
         if self._filter_save_job is not None:
             try:
                 self.after_cancel(self._filter_save_job)
