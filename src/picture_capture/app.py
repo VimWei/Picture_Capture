@@ -144,7 +144,6 @@ LENS_MODE_LABELS = {
 }
 LENS_MODE_VALUES = {label: value for value, label in LENS_MODE_LABELS.items()}
 SESSION_STATE_FILENAME = "session_state.json"
-SIDEBAR_SECTION_DEFAULTS_VERSION = 1
 
 # ISO 639-1 codes for project metadata. Common dictionary languages are kept at
 # the front of the readonly selectors; the rest remain alphabetized.
@@ -1269,13 +1268,67 @@ class UsageGuideWindow(tk.Toplevel):
                 ),
                 (
                     "05", "正式切图前一定先预览",
-                    "进入【设置中心 → 切图设置】确认上下边界、左右留白和插图关系，再在主界面选择“切图预览”检查完整 Crop Plan。"
+                    "进入【设置中心 → 切图】确认上下边界、左右留白和插图关系，再在主界面选择“切图预览”检查完整 Crop Plan。"
                     "确认无误后再执行【词条切图】或【插图切图】。"
                 ),
                 (
                     "06", "最后生成索引、PicDic 或训练资料",
                     "完成校对和切图后，再使用【导出PicDic索引】、【PicDic制作】或【导出训练标记包】。"
                     "需要阶段性留档时可用【备份PDIC】。"
+                ),
+            ),
+        ),
+        (
+            "profile",
+            "项目Profile",
+            "项目Profile 是新项目的配置入口：先描述词典与页面结构，再用代表页验证，而不是先从高级阈值开始调。",
+            (
+                (
+                    "01", "四步完成基础配置",
+                    "依次完成【1 词典与阅读 / 2 页面模板 / 3 词头结构 / 4 测试确认】。"
+                    "词典名称、语言和正文页码范围属于项目资料；阅读方向、页面模板和词头结构会直接影响后续版面与 OCR 解释。"
+                ),
+                (
+                    "02", "页面模板先解决整页结构",
+                    "页眉、页尾、固定页边内容、A/B 页交替和栏数应先在页面模板中确定。右侧始终显示当前代表页，"
+                    "栏左线可逐像素微调；如果整页都偏，不要先去改 OCR 候选阈值。"
+                ),
+                (
+                    "03", "词头结构按“词头前—本体—词头后”描述",
+                    "可分别描述普通左缘词、编号前缀、固定符号、括号词、大字单字以及 POS/词形/变体/发音等词后证据。"
+                    "特殊词典可配置固定符号集，并从真实扫描页采集视觉标记样本。"
+                ),
+                (
+                    "04", "代表页测试通过后再确认",
+                    "在【4 测试确认】用多张代表页检查漏检、误检和结构覆盖；修改 Profile 后应重新测试。"
+                    "确认并使用后，设置保存为当前项目的 Profile，不会改写内置预设。"
+                ),
+            ),
+        ),
+        (
+            "layout",
+            "版面与Section",
+            "版面参数解决整页几何；Section 解决同一页内一个或多个独立阅读区域。两者都应先于批量 OCR 和切图确认。",
+            (
+                (
+                    "01", "多页检测使用稳健汇总",
+                    "【检测版面参数】读取主界面页面范围：单页直接采用检测值，2 页及以上时数值参数取稳健中位数，"
+                    "分栏数按多数页面确定。检测后仍应在代表页上目视确认。"
+                ),
+                (
+                    "02", "百分比只是界面读数",
+                    "主界面的正文起始Y、首栏X、单栏宽和栏间空以百分比显示，后台仍使用原图像素。"
+                    "四边百分比标尺默认开启，只辅助人工读数和填写，不参与 OCR、画线、Section 或切图计算。"
+                ),
+                (
+                    "03", "特殊页面用 Section",
+                    "双击页面列表的 Section 单元格可设置 0–10：0 表示普通页；1 可作为单个特殊页面的上下有效范围；"
+                    "2–10 表示多个独立阅读区。设置后拖动蓝色虚线上下边界，再次双击同一单元格结束编辑。"
+                ),
+                (
+                    "04", "Section 会统一影响阅读区域",
+                    "Section 边界会共同约束手工新增词条、OCR、阅读顺序和整词条切图；Section 之间的空白不参与这些流程。"
+                    "Section=0 时，切图继续使用【设置中心 → 切图】中的一般页边界。"
                 ),
             ),
         ),
@@ -1333,7 +1386,7 @@ class UsageGuideWindow(tk.Toplevel):
                 ),
                 (
                     "03", "繁简与网络核验是辅助证据",
-                    "简体栏使用 OpenCC 生成初始结果，人工修改后会独立保存。CC-CEDICT、萌典、维基词典和网络搜索用于快速核验，"
+                    "【简体化词条】使用 OpenCC 生成初始结果，人工修改后会独立保存；【重新简体化】可按当前页重新生成。CC-CEDICT、萌典、维基词典和网络搜索用于快速核验，"
                     "其中“未检出”只表示当前来源没有精确命中，不等于词条不存在。"
                 ),
                 (
@@ -1345,6 +1398,11 @@ class UsageGuideWindow(tk.Toplevel):
                     "05", "完成一段后再做顺序检查",
                     "词头顺序核对会根据 OCR 语言选择相应排序预设，也支持 Unicode 和自定义多字符排序单元。"
                     "顺序异常更适合用于发现跳词、误识别或重复词，而不是自动删除候选。"
+                ),
+                (
+                    "06", "重点筛选用于集中处理高风险词条",
+                    "【重点筛选校对】可按 OCR 不匹配、指定字符等条件快速聚合需要复核的词条；筛选范围直接复用主界面【指定】范围。"
+                    "【与OCR比较】决定当前不匹配来源；需要时可直接填充所选 OCR 结果。"
                 ),
             ),
         ),
@@ -1364,8 +1422,9 @@ class UsageGuideWindow(tk.Toplevel):
                     "关联是否正确会直接影响后续词条切图与独立插图导出。"
                 ),
                 (
-                    "03", "先用【切图设置】统一边界",
-                    "词条切图和插图切图共用切图上/下边界、外扩和特殊页面覆盖。注意：切图边界和 OCR 的页眉/正文边界是两套独立参数。"
+                    "03", "先在【设置中心 → 切图】统一边界",
+                    "词条切图和插图切图共用一般页上下边界、左右留白和插图外扩。Section>0 的特殊页面由主界面 Section 边界接管；"
+                    "切图边界和 OCR 的页眉/正文边界仍是两套独立参数。"
                 ),
                 (
                     "04", "用“切图预览”检查最终关系",
@@ -1505,7 +1564,7 @@ class UsageGuideWindow(tk.Toplevel):
         ).pack(anchor="w")
         header_subtitle = tk.Label(
             header,
-            text="按当前版本真实工作流组织：从项目Profile、版面参数、画线和校对，到切图、PicDic 与常见排错。",
+            text="按当前版本真实工作流组织：从项目Profile、版面/Section、画线和校对，到切图、PicDic 与常见排错。",
             bg=colors["bg"], fg=colors["muted"], anchor="w", justify="left",
         )
         header_subtitle.pack(anchor="w", fill="x", pady=(4, 0))
@@ -1729,7 +1788,7 @@ class UsageGuideWindow(tk.Toplevel):
         if not matches:
             self._add_callout(
                 "没有找到匹配内容",
-                "可以尝试更短的关键词，例如“OCR”“校对”“切图”“插图”“PicDic”“缓存”或“版面”。",
+                "可以尝试更短的关键词，例如“Profile”“Section”“OCR”“校对”“切图”“插图”“PicDic”或“缓存”。",
             )
             self.parent_app._apply_current_appearance(self)
             return
@@ -2919,7 +2978,7 @@ class SettingsDialog(tk.Toplevel):
         _build_modern_dialog_heading(
             outer,
             "设置中心",
-            "按工作任务整理：第一次使用优先看“常用 / OCR画线（推荐）”；"
+            "按工作任务整理：第一次使用优先看“常用 / OCR画线”；"
             "普通画线是备用方案，底层阈值、正则和后端参数集中在高级区，不确定时无需修改。",
         )
         self._configure_settings_appearance_styles()
@@ -2939,11 +2998,11 @@ class SettingsDialog(tk.Toplevel):
         rules_tab = ttk.Frame(notebook)
         for tab, label in (
             (common_tab, "常用"),
-            (ocr_tab, "OCR画线（推荐）"),
-            (normal_tab, "普通画线（备用）"),
-            (display_tab, "显示 / 校对"),
-            (project_tab, "项目 / 批量"),
-            (crop_tab, "切图设置"),
+            (ocr_tab, "OCR画线"),
+            (normal_tab, "普通画线"),
+            (display_tab, "显示/校对"),
+            (project_tab, "项目/批量"),
+            (crop_tab, "切图"),
             (advanced_tab, "高级"),
             (sort_tab, "排序"),
             (rules_tab, "过滤规则"),
@@ -3202,18 +3261,20 @@ class SettingsDialog(tk.Toplevel):
             variable=self.parent.dark_mode_var,
             command=self.parent._toggle_dark_mode,
         ).pack(anchor="w")
-        ttk.Label(
+        appearance_help = ttk.Label(
             appearance_group,
             text="同步主界面、校对/Profile/设置窗口，并对扫描图做仅显示层的夜间转换；"
                  "不会修改原图、OCR 输入、PDIC/PPP、切图或导出文件。",
-            wraplength=720,
             justify="left",
-        ).pack(anchor="w", fill="x", pady=(4, 0))
+        )
+        appearance_help.pack(anchor="w", fill="x", pady=(4, 0))
+        self._bind_responsive_labels(
+            appearance_group, appearance_help, horizontal_padding=24, min_wrap=160
+        )
         self._add_setting_group(
             display,
             "界面与校对",
             self.DISPLAY_FIELDS,
-            single_line_labels=True,
         )
         self._add_check_group(
             display,
@@ -3289,7 +3350,7 @@ class SettingsDialog(tk.Toplevel):
             advanced,
             "高级 / 专家参数",
             "这里保留版面语义、OCR 后端和正则规则等底层控制。"
-            "如果只是想提高某本词典的识别率，请优先回到“OCR画线（推荐）”页或【项目Profile】；"
+            "如果只是想提高某本词典的识别率，请优先回到“OCR画线”页或【项目Profile】；"
             "只有左缘高度规则的简单版式才优先考虑“普通画线（备用）”。",
         )
         ttk.Button(
@@ -9366,22 +9427,9 @@ class PictureCaptureApp(tk.Tk):
             "pages": True,
         }
         stored_sections = self._last_session.get("section_expanded", {})
-        try:
-            stored_section_defaults_version = int(
-                self._last_session.get("sidebar_section_defaults_version", 0) or 0
-            )
-        except (TypeError, ValueError):
-            stored_section_defaults_version = 0
         if isinstance(stored_sections, dict):
             for key in tuple(self.section_expanded):
-                # v1 changes the default workspace to keep sections 2–5 folded.
-                # Preserve prior page-list / layout-section choices, but reset
-                # the four affected sections once so existing sessions actually
-                # receive the new default. Later user choices are persisted.
-                if (
-                    stored_section_defaults_version >= SIDEBAR_SECTION_DEFAULTS_VERSION
-                    or key in {"normal", "pages"}
-                ) and key in stored_sections:
+                if key in stored_sections:
                     self.section_expanded[key] = bool(stored_sections[key])
         self._collapsible_sections: dict[str, ttk.LabelFrame] = {}
         self.section_title_font = font.nametofont("TkDefaultFont").copy()
@@ -10070,6 +10118,22 @@ class PictureCaptureApp(tk.Tk):
         for key, section in self._collapsible_sections.items():
             self._set_section_expanded(section, bool(self.section_expanded.get(key, True)), persist=False)
 
+    def _apply_new_project_sidebar_defaults(self) -> None:
+        """Apply the release workspace layout only to a newly created project."""
+        defaults = {
+            "normal": True,
+            "aux": False,
+            "ocr": False,
+            "actions": False,
+            "postproduction": False,
+            "pages": True,
+        }
+        for key, expanded in defaults.items():
+            self.section_expanded[key] = expanded
+            section = self._collapsible_sections.get(key)
+            if section is not None:
+                self._set_section_expanded(section, expanded, persist=False)
+
     @staticmethod
     def _default_session_state_path() -> Path:
         return user_config_root() / SESSION_STATE_FILENAME
@@ -10098,7 +10162,6 @@ class PictureCaptureApp(tk.Tk):
                 "page_range_spec": self.page_range_spec_var.get() if hasattr(self, "page_range_spec_var") else "",
                 "view_zoom_percent": round(self.view_scale * 100),
                 "appearance_mode": self.appearance_mode,
-                "sidebar_section_defaults_version": SIDEBAR_SECTION_DEFAULTS_VERSION,
                 "section_expanded": dict(self.section_expanded),
             }
             tmp = self._session_path.with_suffix(".tmp")
@@ -11676,7 +11739,7 @@ class PictureCaptureApp(tk.Tk):
         )
         postproduction.pack(fill="x", pady=(4, 0))
         production_tooltips = {
-            "词条切图": "按所选页面范围和【设置中心 → 切图设置】生成完整词条切图。",
+            "词条切图": "按所选页面范围和【设置中心 → 切图】生成完整词条切图。",
             "插图切图": "按所选范围导出需要独立输出的 PPP 插图。",
             "项目详情": "编辑词典名称、语言、正文页码范围等项目级元数据。",
             "导出PicDic索引": "从项目已保存 PDIC 导出“词条 / X% / Y% / 页码”文本索引。",
@@ -12304,10 +12367,24 @@ class PictureCaptureApp(tk.Tk):
                 columns_policy=self.settings.layout_columns_policy,
                 fixed_columns=self.settings.columns,
             )
+            old_character_height = max(1, int(self.settings.character_height))
+            body_indent_was_auto = int(self.settings.body_indent) == old_character_height
+            horizontal_tolerance_was_auto = (
+                int(self.settings.horizontal_tolerance)
+                == max(1, round(old_character_height / 2.0))
+            )
             for name, value in values.items():
                 if name == "bottom_y":
                     continue
                 setattr(self.settings, name, value)
+            if "character_height" in values:
+                new_character_height = max(1, int(self.settings.character_height))
+                if body_indent_was_auto:
+                    self.settings.body_indent = new_character_height
+                if horizontal_tolerance_was_auto:
+                    self.settings.horizontal_tolerance = max(
+                        1, round(new_character_height / 2.0)
+                    )
             self.sync_quick_settings(); self.save_settings(); self.redraw()
             suffix = "（任务提前停止，按已完成页面计算）" if stopped else ""
             summary = "稳健中位数" if len(results) >= 2 else "单页检测值"
@@ -13875,6 +13952,11 @@ class PictureCaptureApp(tk.Tk):
             self._set_page_list_selection(selected_index, ensure_visible=True)
             self.load_page(selected_index, preloaded=payload, skip_current_save=True)
             self._save_session_state()
+            if launch_profile_setup:
+                # A new project starts from the documented release workspace even
+                # when the previous project/session left other sections expanded.
+                # Existing projects still restore the user's remembered session.
+                self._apply_new_project_sidebar_defaults()
             storage_hint = f"｜数据目录 {STORAGE_DIRNAME}" if is_managed_project(project.root) else "｜旧版目录结构"
             prefix = f"{migration_detail}｜" if migration_detail else ""
             self.status_var.set(
