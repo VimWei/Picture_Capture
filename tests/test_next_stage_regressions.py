@@ -547,7 +547,7 @@ def test_usage_guide_is_modern_task_oriented_and_centered():
     guide = text[guide_start:guide_end]
 
     assert '"快速开始"' in guide
-    assert 'self.title("Picture Capture · 使用指南")' in guide
+    assert 'self.title("Picture Capture · 帮助中心")' in guide
     assert "work_x, work_y, work_w, work_h = _screen_work_area(self)" in guide
     assert "x = work_x + max(0, (work_w - width) // 2)" in guide
     assert "y = work_y + max(0, (work_h - height) // 2)" in guide
@@ -1117,12 +1117,12 @@ def test_layout_percentage_helpers_preserve_pixel_backend_contract():
         assert label not in quick
     assert quick.index('"单栏宽%："') > quick.index('"首栏X%："')
     assert quick.index('"栏间空%："') > quick.index('"单栏宽%："')
-    assert '"若所选页面数量≥2，参数为均值"' in quick
+    assert '"若所选页面数量≥2，参数为稳健中位数"' in quick
     detect_start = text.index("    def detect_layout_current(self) -> None:")
     detect_end = text.index("\n    def detect_layout_consistency_selected", detect_start)
     detect = text[detect_start:detect_end]
-    assert 'numeric_summary="mean"' in detect
-    assert "多页数值参数将取算术均值" in detect
+    assert 'numeric_summary="mean"' not in detect
+    assert "多页数值参数将取稳健中位数" in detect
     assert '"start_y": "% 图高"' in text
     assert '"manual_x": "% 图宽"' in text
 
@@ -1271,10 +1271,10 @@ def test_project_profile_wizard_uses_analysis_as_a_setup_aid_then_stable_columns
     assert 's.layout_columns_policy = "fixed"' in text
     assert "设置已修改，需要重新测试" in text
 
-    assert '"1 词典信息与阅读方式"' in text
+    assert '"1 词典与阅读"' in text
     assert '"2 页面模板"' in text
     assert '"3 词头结构"' in text
-    assert '"4 测试与确认"' in text
+    assert '"4 测试确认"' in text
     assert '"4 语言与 OCR"' not in text
     assert "self._build_language_section(tab, row=4)" in text
     assert 'text="词典项目详情"' in text
@@ -2075,7 +2075,8 @@ def test_main_ocr_drawing_defaults_to_cache_reuse_and_paddle_only():
 
 def test_vb_ordinary_defaults_are_not_replaced_by_scale_heuristics():
     settings = AppSettings()
-    assert settings.horizontal_tolerance == 5
+    assert settings.body_indent == settings.character_height == 26
+    assert settings.horizontal_tolerance == settings.character_height // 2 == 13
     assert settings.ordinary_right_divisor == 1.0
     assert settings.white_threshold_high == 999
     assert settings.white_threshold_low == 700
