@@ -7,6 +7,7 @@ from PIL import Image, ImageDraw
 
 from picture_capture.app import (
     PictureCaptureApp, SettingsDialog, binary_preview_image, effective_main_overlay_font_size,
+    _layout_pixels_to_percent, _layout_percent_to_pixels,
     ReviewWindow, VerticalWordText, entry_index_label_layout,
     horizontal_ocr_menu_layout, horizontal_overlay_layout,
     transformed_entry_anchor, vertical_marker_contact_gap, vertical_ocr_menu_layout,
@@ -300,8 +301,16 @@ def test_settings_center_uses_context_help_units_and_user_facing_modes():
 
     assert '"bottom_y", int' in settings
     assert '"bottom_y": "正文结束 Y"' in settings
+    common_start = settings.index("    COMMON_FIELDS = (")
+    common_end = settings.index("\n    NORMAL_COMMON_FIELDS", common_start)
+    common_fields = settings[common_start:common_end]
+    assert '"bottom_y"' not in common_fields
     assert '"columns": "正文栏数"' in settings
     assert '"manual_x": "第一栏左缘 X"' in settings
+    assert '"start_y": "% 图高"' in settings
+    assert '"manual_x": "% 图宽"' in settings
+    assert '"column_width": "% 图宽"' in settings
+    assert '"character_height": "% 图高"' in settings
     assert '"paddle_band_width_ratio": "%"' in settings
     assert '"paddle_left_tolerance": "原图px"' in settings
     assert '"paddle_separator_safety_px": "原图px"' in settings
@@ -434,7 +443,7 @@ def test_project_toolbar_and_profile_scroll_layout_are_wired():
     project_bar = text[project_bar_start:project_bar_end]
     expected = (
         '("项目中心", self.open_recent_project)',
-        '("初始Profile", self.open_project_profile)',
+        '("项目Profile", self.open_project_profile)',
         '("设置中心", self.open_settings)',
         '("帮助中心", self.show_help_dialog)',
     )
@@ -447,6 +456,30 @@ def test_project_toolbar_and_profile_scroll_layout_are_wired():
     assert 'uniform="project-footer-columns"' in project_bar
     assert 'project_row.columnconfigure(col, weight=1, uniform="project-footer-columns")' in project_bar
     assert 'role="project"' in project_bar
+    for tooltip in (
+        "打开最近项目与项目管理；可从这里新建或切换词典项目。",
+        "配置词典信息、阅读方向、页面模板和词头结构，并用代表页测试。",
+        "按常用、OCR画线、普通画线、显示/校对、切图等任务调整项目参数。",
+        "查看新版推荐流程、主界面说明、快捷操作与常见排错。",
+    ):
+        assert tooltip in project_bar
+    assert 'text="图片后缀："' not in text
+    assert "self.image_suffix_var" not in text
+
+    suffix_choice_start = text.index("    def _choose_new_project_image_suffix(")
+    suffix_choice_end = text.index("\n    def open_project(", suffix_choice_start)
+    suffix_choice = text[suffix_choice_start:suffix_choice_end]
+    assert "project_page_images(root)" in suffix_choice
+    assert "if len(suffixes) == 1:" in suffix_choice
+    assert "simpledialog.askstring(" in suffix_choice
+    assert "if suffix in counts:" in suffix_choice
+
+    open_start = text.index("    def open_project(self) -> None:")
+    open_end = text.index("\n    def _load_project(", open_start)
+    open_project = text[open_start:open_end]
+    assert "if not existing_project:" in open_project
+    assert "self._choose_new_project_image_suffix(root)" in open_project
+    assert "if requested_suffix is None:" in open_project
 
     actions_start = text.index('        actions = self._section_frame(parent, "四、画线与校对"')
     actions_end = text.index("        postproduction = self._section_frame(", actions_start)
@@ -461,6 +494,11 @@ def test_project_toolbar_and_profile_scroll_layout_are_wired():
     assert '("词条切图", self.split_entries_selected_scope)' in post
     assert '("插图切图", self.split_illustrations_selected_scope)' in post
     assert post.rindex('("导出训练标记包", self.export_training_package)') > post.index('("PicDic制作", self.build_picdic)')
+    for tooltip_key in (
+        '"词条切图":', '"插图切图":', '"项目详情":',
+        '"导出PicDic索引":', '"PicDic制作":', '"导出训练标记包":',
+    ):
+        assert tooltip_key in post
 
     profile_start = text.index("    def _build_profile_tab(")
     profile_end = text.index("    def _build_profile_choice_labels(", profile_start)
@@ -492,7 +530,7 @@ def test_bottom_important_actions_follow_scheme_a_groups():
     project_bar = text[project_bar_start:project_bar_end]
     for label, command in (
         ("项目中心", "self.open_recent_project"),
-        ("初始Profile", "self.open_project_profile"),
+        ("项目Profile", "self.open_project_profile"),
         ("设置中心", "self.open_settings"),
         ("帮助中心", "self.show_help_dialog"),
     ):
@@ -521,7 +559,7 @@ def test_usage_guide_is_modern_task_oriented_and_centered():
     guide = text[guide_start:guide_end]
 
     assert '"快速开始"' in guide
-    assert 'self.title("Picture Capture · 使用指南")' in guide
+    assert 'self.title("Picture Capture · 帮助中心")' in guide
     assert "work_x, work_y, work_w, work_h = _screen_work_area(self)" in guide
     assert "x = work_x + max(0, (work_w - width) // 2)" in guide
     assert "y = work_y + max(0, (work_h - height) // 2)" in guide
@@ -541,6 +579,11 @@ def test_usage_guide_is_modern_task_oriented_and_centered():
     assert "普通画线降为备用" in guide
     assert "默认先用 OCR画线验证代表页" in guide
     assert "wraplength=158" in guide
+    assert 'header.bind("<Configure>", resize_header, add="+")' in guide
+    assert "新建项目】或【已有项目" not in guide
+    assert "一、普通版面参数" not in guide
+    assert "所选页面 ≥2 时，数值字段使用**稳健中位数**" not in guide
+    assert "数值参数采用稳健中位数" in guide
     assert 'self.bind("<Escape>", lambda _event: self.destroy())' in guide
 
     show_start = text.index("    def show_help_dialog(self) -> None:")
@@ -551,7 +594,7 @@ def test_usage_guide_is_modern_task_oriented_and_centered():
     assert "messagebox.showinfo" not in show
     assert "show_help_popup" not in text
     assert "OCR_USAGE_HELP" not in text
-    assert "打开帮助中心：推荐流程、各功能用途、快捷操作与常见排错。" in text
+    assert "查看新版推荐流程、主界面说明、快捷操作与常见排错。" in text
 
 
 def test_main_workspace_modern_styles_are_scoped_and_dense():
@@ -572,8 +615,13 @@ def test_main_workspace_modern_styles_are_scoped_and_dense():
     assert 'style="PC.Treeview"' in ui
     assert 'style="PC.Footer.TFrame"' in ui
     assert '"一、版面参数"' in text
-    assert '"二、OCR画线（推荐默认）"' in text
+    assert '"二、显示设置"' in text
+    assert '"三、OCR画线参数（默认）"' in text
+    assert text.index('"二、显示设置"') < text.index('"三、OCR画线参数（默认）"')
     assert 'text="普通画线设置（备用）…"' in text
+    assert 'text="显示标尺"' in text
+    assert '"ruler_color": tk.StringVar(value=self.settings.ruler_color)' in text
+    assert 'command=lambda: self._apply_overlay_visibility_toggle("show_rulers", ruler_var)' in text
     assert 'ttk.Separator(size_row, orient="vertical")' in ui
     assert 'relief="sunken"' not in ui
     assert 'relief="ridge"' not in ui
@@ -588,6 +636,12 @@ def test_main_workspace_modern_styles_are_scoped_and_dense():
     assert actions.index('("运行普通画线（备用）", self.run_normal_draw_action)') < actions.index('("运行OCR画线（推荐）", self.run_ocr_draw_action)')
     assert '("填充词条", self.fill_existing_headwords)' in actions
     assert '("修复排序", self.repair_pdic_order_selected_scope)' in actions
+    for tooltip_key in (
+        '"清除画线":', '"清除文本":', '"精修画线":', '"新旧比较":',
+        '"词条校对":', '"填充词条":', '"备份PDIC":', '"恢复PDIC":',
+        '"插图识别":', '"编辑插图":', '"保存当前页":',
+    ):
+        assert tooltip_key in actions
     assert '("恢复PDIC", self.restore_from_pdic_backup)' in actions
     assert '"success" if text == "保存当前页"' in actions
     assert '"primary" if text == "词条校对"' in actions
@@ -1032,6 +1086,70 @@ def test_page_template_alternating_ab_side_widths_are_independent():
     assert entry_allowed_by_page_template(84, 30, image.size, settings, 1)
 
 
+def test_main_canvas_percentage_rulers_are_fixed_display_only_overlays():
+    root = Path(__file__).resolve().parents[1]
+    app = (root / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
+    models = (root / "src" / "picture_capture" / "models.py").read_text(encoding="utf-8")
+
+    assert "show_rulers: bool = True" in models
+    assert 'ruler_color: str = "#1976d2"' in models
+    assert "ruler_top_y_ratio" not in models
+    assert "ruler_bottom_y_ratio" not in models
+    assert "ruler_left_x_ratio" not in models
+    assert "ruler_right_x_ratio" not in models
+    assert 'for ruler_id, y in (("top", 0.0), ("bottom", display_height)):' in app
+    assert 'for ruler_id, x in (("left", 0.0), ("right", display_width)):' in app
+    assert "for half_percent in range(201):" in app
+    assert "pct = half_percent * 0.5" in app
+    assert "for value in range(5, 100, 5):" in app
+    assert 'label_x = x - label_gap if ruler_id == "left" else x + label_gap' in app
+    assert 'anchor = "e" if ruler_id == "left" else "w"' in app
+    assert '"ruler_margin": "#f1f3f6"' in app
+    assert '"ruler_margin": "#20252b"' in app
+    assert 'tags=("ruler-margin",)' in app
+    assert 'fill=margin_color, outline=""' in app
+    assert "标尺可以帮助版面参数的手动填写。" in app
+    assert "_drag_ruler_id" not in app
+    assert "_ruler_drag_last_canvas" not in app
+    assert "self.canvas.move(tag" not in app
+    assert "build_page_crop_plan" not in app[
+        app.index("    def _draw_percentage_rulers"):
+        app.index("    def redraw(", app.index("    def _draw_percentage_rulers"))
+    ]
+
+
+def test_layout_percentage_helpers_preserve_pixel_backend_contract():
+    image = Image.new("RGB", (1000, 2000), "white")
+    assert _layout_pixels_to_percent(image, "manual_x", 125) == 12.5
+    assert _layout_pixels_to_percent(image, "start_y", 200) == 10.0
+    assert _layout_percent_to_pixels(image, "column_width", 25.0) == 250
+    assert _layout_percent_to_pixels(image, "character_height", 1.5) == 30
+
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    assert '"start_y": "height"' in text
+    assert '"manual_x": "width"' in text
+    assert '"body_indent": "width"' in text
+    assert '"horizontal_tolerance": "width"' in text
+    quick_start = text.index("    def _build_quick_settings(")
+    quick_end = text.index("\n    def ", quick_start + 10)
+    quick = text[quick_start:quick_end]
+    for label in ("正文起始Y%：", "首栏X%：", "单栏宽%：", "栏间空%："):
+        assert label in quick
+    for label in ("单行高%：", "行间空%：", "正文缩进%：", "微调判距%："):
+        assert label not in quick
+    assert quick.index('"单栏宽%："') > quick.index('"首栏X%："')
+    assert quick.index('"栏间空%："') > quick.index('"单栏宽%："')
+    assert '"若所选页面数量≥2，参数为稳健中位数"' in quick
+    detect_start = text.index("    def detect_layout_current(self) -> None:")
+    detect_end = text.index("\n    def detect_layout_consistency_selected", detect_start)
+    detect = text[detect_start:detect_end]
+    assert 'numeric_summary="mean"' not in detect
+    assert "多页数值参数将取稳健中位数" in detect
+    assert '"start_y": "% 图高"' in text
+    assert '"manual_x": "% 图宽"' in text
+
+
 def test_page_template_auto_footer_uses_full_page_height_not_legacy_bottom_y():
     settings = AppSettings(
         bottom_y=1800,
@@ -1176,10 +1294,10 @@ def test_project_profile_wizard_uses_analysis_as_a_setup_aid_then_stable_columns
     assert 's.layout_columns_policy = "fixed"' in text
     assert "设置已修改，需要重新测试" in text
 
-    assert '"1 词典信息与阅读方式"' in text
+    assert '"1 词典与阅读"' in text
     assert '"2 页面模板"' in text
     assert '"3 词头结构"' in text
-    assert '"4 测试与确认"' in text
+    assert '"4 测试确认"' in text
     assert '"4 语言与 OCR"' not in text
     assert "self._build_language_section(tab, row=4)" in text
     assert 'text="词典项目详情"' in text
@@ -1980,7 +2098,8 @@ def test_main_ocr_drawing_defaults_to_cache_reuse_and_paddle_only():
 
 def test_vb_ordinary_defaults_are_not_replaced_by_scale_heuristics():
     settings = AppSettings()
-    assert settings.horizontal_tolerance == 5
+    assert settings.body_indent == settings.character_height == 26
+    assert settings.horizontal_tolerance == settings.character_height // 2 == 13
     assert settings.ordinary_right_divisor == 1.0
     assert settings.white_threshold_high == 999
     assert settings.white_threshold_low == 700
@@ -2079,7 +2198,7 @@ def test_ordinary_drawing_auto_refine_y_is_shared_and_switchable(monkeypatch):
     assert refined_calls == len(refined)
 
 
-def test_auto_refine_y_is_exposed_as_shared_ordinary_drawing_control():
+def test_ordinary_only_controls_stay_out_of_main_layout_section():
     source = (
         Path(__file__).resolve().parents[1]
         / "src" / "picture_capture" / "app.py"
@@ -2093,13 +2212,16 @@ def test_auto_refine_y_is_exposed_as_shared_ordinary_drawing_control():
     normal_checks_end = settings_text.index("    OCR_COMMON_CHECKS = (", normal_checks_start)
     normal_checks = settings_text[normal_checks_start:normal_checks_end]
     assert '("自动精修横线 Y", "paddle_refine_separator_y")' in normal_checks
+    assert '("使用自动版面参数", "ordinary_auto_layout")' in normal_checks
 
     quick_start = source.index("    def _build_quick_settings(")
     quick_end = source.index("\n    def ", quick_start + 10)
     quick = source[quick_start:quick_end]
-    assert 'text="自动精修横线Y（通用）"' in quick
-    assert 'self.quick_bool_vars["paddle_refine_separator_y"] = refine_y_var' in quick
-    assert 'text="使用自动版面参数"' in quick
+    assert 'text="自动精修横线Y（通用）"' not in quick
+    assert 'self.quick_bool_vars["paddle_refine_separator_y"] = refine_y_var' not in quick
+    assert 'text="使用自动版面参数"' not in quick
+    for label in ("单行高%：", "行间空%：", "正文缩进%：", "微调判距%："):
+        assert label not in quick
     for name in (
         "ordinary_auto_columns", "ordinary_auto_start_y", "ordinary_auto_manual_x",
         "ordinary_auto_column_width", "ordinary_auto_gutter",

@@ -36,7 +36,7 @@ from .appearance import (
 )
 from .formats import pdic_path, read_pdic, read_ppp, write_pdic, write_ppp, write_text_atomic, read_picdic_index_records
 from .models import (
-    AppSettings, Entry as WordEntry, PolygonRegion, ProjectState,
+    AppSettings, Entry as WordEntry, PolygonRegion, ProjectState, project_page_images,
     natural_text_key, read_noncomment_lines, resolve_wordslist_path, resolved_tesseract_language,
 )
 from .paddle_headwords import (
@@ -144,6 +144,7 @@ LENS_MODE_LABELS = {
 }
 LENS_MODE_VALUES = {label: value for value, label in LENS_MODE_LABELS.items()}
 SESSION_STATE_FILENAME = "session_state.json"
+SIDEBAR_SECTION_DEFAULTS_VERSION = 1
 
 # ISO 639-1 codes for project metadata. Common dictionary languages are kept at
 # the front of the readonly selectors; the rest remain alphabetized.
@@ -240,6 +241,47 @@ OCR_REFRESH_LABELS = {
     "force": "强制重新识别",
 }
 OCR_REFRESH_VALUES = {label: value for value, label in OCR_REFRESH_LABELS.items()}
+
+# User-facing layout geometry is expressed as percentages of the current source
+# image. Algorithms and persisted legacy fields remain in source-image pixels.
+# Horizontal measurements use image width; vertical measurements use image height.
+LAYOUT_PERCENT_AXES = {
+    "start_y": "height",
+    "manual_x": "width",
+    "column_width": "width",
+    "gutter": "width",
+    "character_height": "height",
+    "row_padding": "height",
+    "body_indent": "width",
+    "horizontal_tolerance": "width",
+}
+
+
+def _layout_percent_denominator(image: Image.Image | None, name: str) -> float | None:
+    if image is None or name not in LAYOUT_PERCENT_AXES:
+        return None
+    axis = LAYOUT_PERCENT_AXES[name]
+    return float(max(1, image.width if axis == "width" else image.height))
+
+
+def _layout_pixels_to_percent(image: Image.Image | None, name: str, pixels: int | float) -> float:
+    denominator = _layout_percent_denominator(image, name)
+    if denominator is None:
+        return float(pixels)
+    return float(pixels) * 100.0 / denominator
+
+
+def _layout_percent_to_pixels(image: Image.Image | None, name: str, percent: int | float) -> int:
+    denominator = _layout_percent_denominator(image, name)
+    if denominator is None:
+        return int(round(float(percent)))
+    return int(round(float(percent) * denominator / 100.0))
+
+
+def _format_layout_percent(value: int | float) -> str:
+    rendered = f"{float(value):.2f}".rstrip("0").rstrip(".")
+    return rendered or "0"
+
 
 def _natural_text_key(value: object) -> tuple:
     """Natural, case-insensitive key used by the sortable page list.
@@ -1205,14 +1247,15 @@ class UsageGuideWindow(tk.Toplevel):
             "第一次使用时，按这条路径走最稳妥：先确定结构，再做代表页验证，最后批量处理。",
             (
                 (
-                    "01", "建立项目并完成【项目Profile】",
-                    "用【新建项目】或【已有项目】进入词典目录。新项目先完成词典信息、阅读方式、页面模板、"
-                    "词头结构和代表页测试。Project Profile 是配置入口，不建议一开始就逐个修改高级参数。"
+                    "01", "从【项目中心】建立项目并完成【项目Profile】",
+                    "在主界面【项目中心】中新建或打开词典目录。新项目会自动进入【项目Profile】，依次确认词典信息、"
+                    "阅读方式、页面模板、词头结构和代表页测试；若目录内有多种扫描图片格式，创建时只选择一次本项目使用的后缀。"
                 ),
                 (
-                    "02", "先检测版面，再看结果是否合理",
-                    "在【一、普通版面参数】选择有代表性的页面范围，运行【检测版面参数】。重点检查分栏数、"
-                    "页眉/页尾、首栏 X、单栏宽和栏间空；检测值应先通过肉眼确认，再进入批量画线。"
+                    "02", "先检测版面，再用百分比标尺核对",
+                    "在【一、版面参数】选择有代表性的页面范围，运行【检测版面参数】。选择 2 页及以上时，"
+                    "数值参数采用稳健中位数，分栏数按多数页面确定。主界面显示分栏数、正文起始Y%、首栏X%、单栏宽%和栏间空%；"
+                    "四边百分比标尺默认开启，可直接辅助人工核对和填写。"
                 ),
                 (
                     "03", "默认先用 OCR画线验证代表页",
@@ -1222,11 +1265,11 @@ class UsageGuideWindow(tk.Toplevel):
                 (
                     "04", "先校对误差模式，再决定是否调参",
                     "用【词条校对】检查漏检、误检、OCR 拼写和顺序。若只是少量个案，直接校对通常比继续调全局参数更安全；"
-                    "只有出现稳定、重复的错误模式时，再到【设置中心】针对性调整。"
+                    "只有出现稳定、重复的错误模式时，再到【设置中心】针对性调整。主界面【二～五】默认折叠，需要时点击标题展开。"
                 ),
                 (
                     "05", "正式切图前一定先预览",
-                    "进入【切图设置】确认上下边界、左右留白和插图关系，再使用“切图预览”检查完整 Crop Plan。"
+                    "进入【设置中心 → 切图设置】确认上下边界、左右留白和插图关系，再在主界面选择“切图预览”检查完整 Crop Plan。"
                     "确认无误后再执行【词条切图】或【插图切图】。"
                 ),
                 (
@@ -1264,7 +1307,7 @@ class UsageGuideWindow(tk.Toplevel):
                 (
                     "E", "主画布是最后的人工控制层",
                     "左键可手动增加词条线；Delete 或反引号键可删除当前词条。普通模式下右键进入下一页。"
-                    "鼠标滚轮纵向滚动，Shift + 滚轮横向滚动，Ctrl + 滚轮缩放。"
+                    "鼠标滚轮纵向滚动，Shift + 滚轮横向滚动，Ctrl + 滚轮缩放。四边标尺仅用于读数，不参与 OCR、画线或切图。"
                 ),
                 (
                     "F", "不要把高级参数当作第一步",
@@ -1373,7 +1416,7 @@ class UsageGuideWindow(tk.Toplevel):
                 ),
                 (
                     "1", "整页位置都偏：先查版面参数",
-                    "如果整页的栏位置、页眉、行距或切线整体偏移，优先重新检测/检查【普通版面参数】和 Project Profile 页面模板，"
+                    "如果整页的栏位置、页眉、行距或切线整体偏移，优先重新检测/检查【一、版面参数】和【项目Profile】页面模板，"
                     "不要先调候选置信度。"
                 ),
                 (
@@ -1403,7 +1446,7 @@ class UsageGuideWindow(tk.Toplevel):
     def __init__(self, parent: tk.Misc):
         super().__init__(parent)
         self.parent_app = parent
-        self.title("Picture Capture · 使用指南")
+        self.title("Picture Capture · 帮助中心")
         screen_w = max(900, self.winfo_screenwidth())
         screen_h = max(650, self.winfo_screenheight())
         work_x, work_y, work_w, work_h = _screen_work_area(self)
@@ -1457,19 +1500,31 @@ class UsageGuideWindow(tk.Toplevel):
         header = tk.Frame(shell, bg=colors["bg"])
         header.pack(fill="x", pady=(0, 14))
         tk.Label(
-            header, text="使用指南", bg=colors["bg"], fg=colors["text"],
+            header, text="帮助中心", bg=colors["bg"], fg=colors["text"],
             font=self._title_font, anchor="w",
         ).pack(anchor="w")
-        tk.Label(
+        header_subtitle = tk.Label(
             header,
-            text="按真实工作流组织：从 Project Profile、画线和校对，到切图、PicDic 与常见排错。",
+            text="按当前版本真实工作流组织：从项目Profile、版面参数、画线和校对，到切图、PicDic 与常见排错。",
             bg=colors["bg"], fg=colors["muted"], anchor="w", justify="left",
-        ).pack(anchor="w", pady=(4, 0))
+        )
+        header_subtitle.pack(anchor="w", fill="x", pady=(4, 0))
         self._context_var = tk.StringVar()
-        tk.Label(
+        context_label = tk.Label(
             header, textvariable=self._context_var, bg=colors["bg"], fg=colors["accent"],
-            font=self._meta_font, anchor="w",
-        ).pack(anchor="w", pady=(7, 0))
+            font=self._meta_font, anchor="w", justify="left",
+        )
+        context_label.pack(anchor="w", fill="x", pady=(7, 0))
+
+        def resize_header(event: tk.Event) -> None:
+            wrap = max(320, int(event.width) - 4)
+            try:
+                header_subtitle.configure(wraplength=wrap)
+                context_label.configure(wraplength=wrap)
+            except tk.TclError:
+                pass
+
+        header.bind("<Configure>", resize_header, add="+")
 
         body = tk.Frame(shell, bg=colors["bg"])
         body.pack(fill="both", expand=True)
@@ -1586,7 +1641,7 @@ class UsageGuideWindow(tk.Toplevel):
     def _refresh_context(self) -> None:
         project = getattr(self.parent_app, "project", None)
         if project is None:
-            self._context_var.set("当前：尚未打开项目 · 可先从主界面的【新建项目】或【已有项目】开始")
+            self._context_var.set("当前：尚未打开项目 · 可先从主界面的【项目中心】新建或打开项目")
             state = "disabled"
         else:
             settings = getattr(self.parent_app, "settings", None)
@@ -1669,7 +1724,7 @@ class UsageGuideWindow(tk.Toplevel):
         self._clear_content()
         self._add_page_heading(
             f"搜索：{self.search_var.get().strip()}",
-            f"在使用指南中找到 {len(matches)} 条匹配内容。",
+            f"在帮助中心中找到 {len(matches)} 条匹配内容。",
         )
         if not matches:
             self._add_callout(
@@ -1992,17 +2047,17 @@ class SettingsDialog(tk.Toplevel):
     }
 
     SETTING_HELP = {
-        "columns": "作用：正文栏数，是版面几何、阅读顺序、OCR 候选带和后续切图共同使用的基础参数。若【栏数策略】为自动检测，程序会在版面分析时估计栏数；若为固定，则这里的值是权威值。\n\n调整：栏数设错会让栏左缘、词条归栏、阅读顺序和切图边界整体错位。优先用【检测当前页版面参数】和 Project Profile 的代表页结果确认，不建议为修一个局部页面临时改全项目栏数。",
-        "gutter": "作用：相邻正文栏之间的典型空白宽度，单位为原图像素。它参与栏位置推导、栏间区域判断和部分切图边界计算；不会按页面宽度、窗口宽度或任何参考宽度自动缩放。\n\n调整：过小会让相邻栏靠得过近，过大则可能把正文有效区域压窄。通常应由版面检测或 Profile 代表页确定。",
-        "column_width": "作用：单栏正文的典型宽度，单位为原图像素。它决定栏几何的水平范围，并间接影响 OCR 候选带、词条矩形和相邻栏边界。该数值在运行时原样使用，不按页面宽度换算。\n\n调整：过小可能截掉长词头/释义并让切图偏窄；过大可能侵入栏间空白甚至邻栏。",
-        "start_y": "作用：正文起始 Y，单位为原图像素，原点在扫描图左上角，Y 向下。运行时直接使用该像素值，不按页面宽度或显示缩放换算。\n\n若 Project Profile 明确设置页眉模式/页眉比例，页面模板可以为当前页计算实际正文上界；最终保存/显示的坐标仍使用原图 X/Y。",
-        "bottom_y": "作用：正文结束 Y，单位为原图像素，用来限制版面分析和词头识别的有效正文区。运行时直接使用该像素值，不按页面宽度或显示缩放换算。\n\n调整：过小会漏掉页尾词条，过大可能把页码/脚注吸入正文。",
-        "manual_x": "作用：第一栏左缘 X，单位为原图像素，原点在扫描图左上角，X 向右。其余栏位置结合栏宽、栏间距推导；该值不会因窗口缩放或页面宽度而改变。\n\n镜像、RTL、竖排等阅读方向只影响内部读取顺序/临时变换，不改变这里保存的原图 X/Y 坐标语义。",
-        "body_indent": "作用：普通画线把它恢复为 VB.NET 原版的【正文缩进】先验。词头候选必须先在栏左【微调判距】内找到黑色锚点，然后才向右用正文缩进宽度做二维墨迹确认；正文从该缩进位置开始时，不会仅因为正文有墨迹就被当成新词头。它也参与栏左跟踪的局部搜索范围。\n\n调整：应接近释义正文相对词头栏左缘的真实缩进。过小会让二维确认范围不足；过大则会引入更多上下邻行墨迹，但候选锚点仍受【微调判距 < 正文缩进】约束。",
-        "character_height": "作用：项目的典型单行字高，单位为原图像素。普通画线用它估计行尺度；OCR画线的行距/空白判断、横线 Y 精修和部分 CJK 视觉逻辑也会以它作为尺度基准。\n\n调整：应接近正文常规印刷行高，而不是某个特别大的词头字高。",
-        "row_padding": "作用：典型行周围的额外留白尺度。它参与普通画线行盒、词条单行框高度以及 OCR 词头前空白/分隔位置等计算。\n\n调整：增大可给文字上下更多安全空间，但过大会让相邻行更容易重叠/合并；过小则可能让横线或单行切图贴字过紧。应和【典型行高】一起校准。",
+        "columns": "作用：正文栏数，是版面几何、阅读顺序、OCR 候选带和后续切图共同使用的基础参数。若【栏数策略】为自动检测，程序会在版面分析时估计栏数；若为固定，则这里的值是权威值。\n\n调整：栏数设错会让栏左缘、词条归栏、阅读顺序和切图边界整体错位。优先用【检测版面参数】和【项目Profile】的代表页结果确认，不建议为修一个局部页面临时改全项目栏数。",
+        "gutter": "作用：相邻正文栏之间的典型空白宽度。界面按原图宽度百分比显示和输入，保存/运行时自动换算为当前原图像素。\n\n调整：过小会让相邻栏靠得过近，过大则可能把正文有效区域压窄。通常应由版面检测或 Profile 代表页确定。",
+        "column_width": "作用：单栏正文的典型宽度。界面按原图宽度百分比显示和输入，后台在运行前换算为原图像素；它决定栏几何的水平范围，并间接影响 OCR 候选带、词条矩形和相邻栏边界。\n\n调整：过小可能截掉长词头/释义并让切图偏窄；过大可能侵入栏间空白甚至邻栏。",
+        "start_y": "作用：正文起始 Y。界面按原图高度百分比显示和输入，0% 为图片顶部、100% 为图片底部；后台自动换算为原图 Y 像素供版面分析与画线使用。\n\n若 Project Profile 明确设置页眉模式/页眉比例，页面模板仍可为当前页计算实际正文上界。",
+        "bottom_y": "兼容字段：普通页面不再把【正文结束 Y】作为常用手工参数。只有【项目Profile】明确设置页尾时，运行时才会为当前页解析有效正文下界；旧项目中的 bottom_y 仍可读取以保持兼容。最终切图下边界请在【切图设置】中调整。",
+        "manual_x": "作用：第一栏左缘 X。界面按原图宽度百分比显示和输入，0% 为图片左边、100% 为图片右边；后台自动换算为原图 X 像素。其余栏位置结合栏宽、栏间距推导。\n\n镜像、RTL、竖排等阅读方向只影响内部读取顺序/临时变换，不改变百分比相对于原图边界的定义。",
+        "body_indent": "作用：普通画线把它作为 VB.NET 原版【正文缩进】先验。界面按原图宽度百分比输入，后台换算为原图像素后用于二维墨迹确认和栏左跟踪。\n\n调整：应接近释义正文相对词头栏左缘的真实缩进。过小会让二维确认范围不足；过大则会引入更多上下邻行墨迹，但候选锚点仍受【微调判距 < 正文缩进】约束。",
+        "character_height": "作用：项目的典型单行字高。界面按原图高度百分比显示和输入，后台换算为原图像素；普通画线、OCR 行距/空白判断、横线 Y 精修和部分 CJK 视觉逻辑都以它作为尺度基准。\n\n调整：应接近正文常规印刷行高，而不是某个特别大的词头字高。",
+        "row_padding": "作用：典型行周围的额外留白尺度。界面按原图高度百分比输入，后台换算为原图像素后参与普通画线行盒、词条单行框高度以及 OCR 词头前空白/分隔位置等计算。\n\n调整：增大可给文字上下更多安全空间，但过大会让相邻行更容易重叠/合并；过小则可能让横线或单行切图贴字过紧。应和【典型行高】一起校准。",
         "right_ratio": "作用：词条单行矩形向右覆盖当前栏宽的百分比；当前实现会限制在 1%–100%。它主要影响词条矩形/单行切图的水平覆盖，不决定 OCR 是否把某行识别为词头。\n\n调整：减小可避免把过多释义或邻近内容纳入单行框；增大可保留更完整的同行上下文。它属于历史兼容参数，目前不在设置中心常用分组中，最终导出范围仍应以【切图设置】为准。",
-        "horizontal_tolerance": "作用：严格对应 VB.NET Draw_Auto 的【微调判距】。普通画线在每个原图 Y 上，从当前动态栏左 LX(y) 开始，向正文方向逐像素扫描到该距离；它不再被【正文缩进】人为截断。正文缩进只用于随后独立的 IsPoint 二维确认。\n\n调整：原 VB 默认 5；某些旧项目可根据实际栏左漂移设为 20 等更大值。太小会漏掉略微右移的真实词头，太大则会把正文起笔纳入锚点通道。",
+        "horizontal_tolerance": "作用：严格对应 VB.NET Draw_Auto 的【微调判距】。界面按原图宽度百分比输入，后台换算为原图像素；普通画线在每个原图 Y 上，从当前动态栏左 LX(y) 开始向正文方向扫描到该距离。\n\n调整：数值太小会漏掉略微右移的真实词头，太大则会把正文起笔纳入锚点通道。旧项目保存的像素值会在界面中按当前原图宽度自动换算为百分比。",
         "analysis_threshold_mode": "作用：控制版面检测、栏位分析和倾斜/弯曲跟踪时如何把灰度转成墨迹。普通画线的最终词头锚点为保持同一本词典跨页稳定，重新使用独立的【词头锚点黑度阈值】；因此 auto/Otsu/adaptive 不再替代这个锚点门槛。\n\n选择：版面底色正常时保持 auto；阴影或书脊亮度明显不均时可试 adaptive。它主要影响版面几何，不应再拿来补偿普通词头误检。",
         "darkness_threshold": "作用：普通画线恢复 VB.NET 的固定词头黑色锚点门槛。RGB 和低于该值的像素才有资格成为栏左词头起点；默认 300 相当于灰度约 100。这个门槛跨页固定，不随每页 Otsu 分布漂移。\n\n调整：提高可接受更浅的印刷，但也更容易让灰噪声成为锚点；降低更严格。它只负责找到词头起点，随后还必须通过二维【候选区域白度上限】确认。",
         "dark_area_percent": "作用：对应 VB.NET IsPoint。找到栏左黑色锚点后，在原图上检查向正文方向【正文缩进 × 2×正文缩进】的二维区域，按原 VB 分母规则计算平均亮度；高于该百分比就拒绝。默认 90%。\n\n这一步与栏左锚点是两个独立门：前者限制起点位置，IsPoint 再确认附近确实存在一块词头文字。",
@@ -2089,7 +2144,7 @@ class SettingsDialog(tk.Toplevel):
     }
 
     COMMON_FIELDS = (
-        "columns", "start_y", "bottom_y", "manual_x", "column_width", "gutter",
+        "columns", "start_y", "manual_x", "column_width", "gutter",
         "character_height", "row_padding", "ocr_language",
     )
     NORMAL_COMMON_FIELDS = (
@@ -2142,9 +2197,9 @@ class SettingsDialog(tk.Toplevel):
 
     SETTING_UNITS = {
         "columns": "栏",
-        "start_y": "原图px", "bottom_y": "原图px", "manual_x": "原图px",
-        "column_width": "原图px", "gutter": "原图px", "body_indent": "原图px",
-        "character_height": "原图px", "row_padding": "原图px", "horizontal_tolerance": "原图px",
+        "start_y": "% 图高", "bottom_y": "原图px", "manual_x": "% 图宽",
+        "column_width": "% 图宽", "gutter": "% 图宽", "body_indent": "% 图宽",
+        "character_height": "% 图高", "row_padding": "% 图高", "horizontal_tolerance": "% 图宽",
         "darkness_threshold": "RGB 和", "dark_area_percent": "%",
         "ordinary_right_divisor": "1/x", "white_threshold_high": "0–1000",
         "white_threshold_low": "0–1000", "whitespace_adjustment": "原图px",
@@ -2163,11 +2218,11 @@ class SettingsDialog(tk.Toplevel):
     }
     SETTING_SPIN = {
         "columns": (1, 12, 1),
-        "start_y": (0, 50000, 1), "bottom_y": (0, 50000, 1),
-        "manual_x": (0, 50000, 1), "column_width": (1, 50000, 1),
-        "gutter": (0, 10000, 1), "body_indent": (0, 10000, 1),
-        "character_height": (1, 2000, 1), "row_padding": (0, 1000, 1),
-        "horizontal_tolerance": (0, 5000, 1), "darkness_threshold": (0, 765, 1),
+        "start_y": (0.0, 100.0, 0.05), "bottom_y": (0, 50000, 1),
+        "manual_x": (0.0, 100.0, 0.05), "column_width": (0.01, 100.0, 0.05),
+        "gutter": (0.0, 100.0, 0.05), "body_indent": (0.0, 100.0, 0.05),
+        "character_height": (0.01, 100.0, 0.05), "row_padding": (0.0, 100.0, 0.05),
+        "horizontal_tolerance": (0.0, 100.0, 0.05), "darkness_threshold": (0, 765, 1),
         "dark_area_percent": (1, 100, 1), "ordinary_right_divisor": (1.0, 5.0, 0.1),
         "white_threshold_high": (0, 1000, 1), "white_threshold_low": (0, 1000, 1),
         "whitespace_adjustment": (0, 30, 1), "upward_ratio": (0.1, 10.0, 0.1),
@@ -2434,14 +2489,20 @@ class SettingsDialog(tk.Toplevel):
     def _setting_var(self, name: str) -> tk.Variable:
         if name in self.vars:
             return self.vars[name]
-        # Settings Center edits persisted project values. Layout geometry is
-        # therefore shown in canonical reference-page pixels; the main workspace
-        # separately shows current-page/source equivalents where appropriate.
         raw = getattr(self.parent.settings, name)
         choices = self.SETTING_CHOICES.get(name)
         if choices:
             reverse = {value: label for label, value in choices.items()}
             value = reverse.get(str(raw), str(raw))
+        elif name in LAYOUT_PERCENT_AXES and self.parent.image is not None:
+            source_value = (
+                self.parent._quick_geometry_value(name)
+                if hasattr(self.parent, "_quick_geometry_value")
+                else raw
+            )
+            value = _format_layout_percent(
+                _layout_pixels_to_percent(self.parent.image, name, source_value)
+            )
         else:
             value = str(raw)
         var = tk.StringVar(value=value)
@@ -2927,21 +2988,36 @@ class SettingsDialog(tk.Toplevel):
         self._settings_intro(
             common,
             "先确认版面，再用 OCR 画线完成代表页验证",
-            "推荐流程：项目 Profile → 检测版面参数 → 当前页运行 OCR 画线 → "
+            "推荐流程：项目Profile → 检测版面参数 → 代表页运行 OCR 画线 → "
             "确认无明显漏线/误线后再批量。OCR画线是默认推荐路径，会同时利用文字、位置和结构证据；"
             "普通画线保留为备用方案，主要用于左缘极稳定的简单版式或 OCR 暂不可用时。",
         )
         workflow = ttk.Frame(common)
         workflow.pack(fill="x", pady=(0, 10))
-        ttk.Button(
-            workflow, text="打开项目 Profile…", command=parent.open_project_profile
-        ).pack(side="left")
-        ttk.Button(
-            workflow, text="检测当前页版面参数", command=parent.detect_layout_current
-        ).pack(side="left", padx=(6, 0))
-        ttk.Button(
+        profile_button = ttk.Button(
+            workflow, text="打开项目Profile…", command=parent.open_project_profile
+        )
+        profile_button.pack(side="left")
+        parent._attach_tooltip(
+            profile_button,
+            "配置词典信息、阅读方向、页面模板和词头结构，并用代表页测试。",
+        )
+        layout_button = ttk.Button(
+            workflow, text="检测版面参数", command=parent.detect_layout_current
+        )
+        layout_button.pack(side="left", padx=(6, 0))
+        parent._attach_tooltip(
+            layout_button,
+            "按主界面当前页面范围检测；若页面数量≥2，数值参数取稳健中位数。",
+        )
+        environment_button = ttk.Button(
             workflow, text="环境中心", command=self.check_ocr_engines
-        ).pack(side="left", padx=(6, 0))
+        )
+        environment_button.pack(side="left", padx=(6, 0))
+        parent._attach_tooltip(
+            environment_button,
+            "检查 OCR、Tesseract、Lens、OpenCC 等运行环境。",
+        )
 
         mode_group = ttk.LabelFrame(common, text="默认画线方式", padding=(12, 9))
         mode_group.pack(fill="x", pady=(0, 10))
@@ -3213,11 +3289,11 @@ class SettingsDialog(tk.Toplevel):
             advanced,
             "高级 / 专家参数",
             "这里保留版面语义、OCR 后端和正则规则等底层控制。"
-            "如果只是想提高某本词典的识别率，请优先回到“OCR画线（推荐）”页或 Project Profile；"
+            "如果只是想提高某本词典的识别率，请优先回到“OCR画线（推荐）”页或【项目Profile】；"
             "只有左缘高度规则的简单版式才优先考虑“普通画线（备用）”。",
         )
         ttk.Button(
-            advanced, text="打开项目 Profile（推荐）…", command=parent.open_project_profile
+            advanced, text="打开项目Profile（推荐）…", command=parent.open_project_profile
         ).pack(anchor="w", pady=(0, 10))
         self._add_setting_group(advanced, "版面与后端", self.EXPERT_FIELDS)
 
@@ -4179,7 +4255,16 @@ class SettingsDialog(tk.Toplevel):
                     cast = self._casts.get(name, str)
                     setattr(self.parent.settings, name, cast(raw_value))
                 elif name in self._casts:
-                    setattr(self.parent.settings, name, self._casts[name](value))
+                    if name in LAYOUT_PERCENT_AXES and self.parent.image is not None:
+                        percent = float(value)
+                        if not 0.0 <= percent <= 100.0:
+                            raise ValueError(f"{self.SETTING_LABELS.get(name, name)} 必须在 0–100% 之间。")
+                        pixel_value = _layout_percent_to_pixels(
+                            self.parent.image, name, percent
+                        )
+                        setattr(self.parent.settings, name, int(pixel_value))
+                    else:
+                        setattr(self.parent.settings, name, self._casts[name](value))
                 elif name == "detection_method":
                     self.parent.settings.detection_method = DETECTION_VALUES[str(value)]
                 elif name == "ocr_engine":
@@ -9134,6 +9219,7 @@ class PictureCaptureApp(tk.Tk):
         self.page_sections: list[PageSection] = []
         self._section_editing = False
         self._drag_section_boundary: tuple[int, str] | None = None
+        self._ruler_hint: tk.Toplevel | None = None
         self._pending_section_editor_index: int | None = None
         self.new_polygon: list[tuple[int, int]] = []
         self.overlay_widgets: list[tk.Widget] = []
@@ -9273,16 +9359,29 @@ class PictureCaptureApp(tk.Tk):
         self._configure_global_appearance()
         self.section_expanded = {
             "normal": True,
-            "ocr": True,
-            "aux": True,
-            "actions": True,
+            "aux": False,
+            "ocr": False,
+            "actions": False,
             "postproduction": False,
             "pages": True,
         }
         stored_sections = self._last_session.get("section_expanded", {})
+        try:
+            stored_section_defaults_version = int(
+                self._last_session.get("sidebar_section_defaults_version", 0) or 0
+            )
+        except (TypeError, ValueError):
+            stored_section_defaults_version = 0
         if isinstance(stored_sections, dict):
             for key in tuple(self.section_expanded):
-                if key in stored_sections:
+                # v1 changes the default workspace to keep sections 2–5 folded.
+                # Preserve prior page-list / layout-section choices, but reset
+                # the four affected sections once so existing sessions actually
+                # receive the new default. Later user choices are persisted.
+                if (
+                    stored_section_defaults_version >= SIDEBAR_SECTION_DEFAULTS_VERSION
+                    or key in {"normal", "pages"}
+                ) and key in stored_sections:
                     self.section_expanded[key] = bool(stored_sections[key])
         self._collapsible_sections: dict[str, ttk.LabelFrame] = {}
         self.section_title_font = font.nametofont("TkDefaultFont").copy()
@@ -9691,6 +9790,7 @@ class PictureCaptureApp(tk.Tk):
                 "success_hover": base["success_hover"],
                 "tree_selected": base["selection"],
                 "canvas": base["canvas"],
+                "ruler_margin": "#20252b",
             }
         else:
             native_background = str(style.lookup("TFrame", "background") or "#f6f7f9")
@@ -9711,6 +9811,7 @@ class PictureCaptureApp(tk.Tk):
                 "success_hover": "#588F64",
                 "tree_selected": "#dce8f7",
                 "canvas": "#30343b",
+                "ruler_margin": "#f1f3f6",
             }
         self._main_ui_colors = colors
 
@@ -9992,11 +10093,12 @@ class PictureCaptureApp(tk.Tk):
                 "last_project": str(self.project.root) if self.project else "",
                 "last_page": self.current_page.name if self.current_page else "",
                 "last_page_index": self.current_index,
-                "image_suffix": self.settings.image_suffix if self.project else self.image_suffix_var.get().strip(),
+                "image_suffix": self.settings.image_suffix,
                 "page_range": self.page_range_var.get() if hasattr(self, "page_range_var") else "current",
                 "page_range_spec": self.page_range_spec_var.get() if hasattr(self, "page_range_spec_var") else "",
                 "view_zoom_percent": round(self.view_scale * 100),
                 "appearance_mode": self.appearance_mode,
+                "sidebar_section_defaults_version": SIDEBAR_SECTION_DEFAULTS_VERSION,
                 "section_expanded": dict(self.section_expanded),
             }
             tmp = self._session_path.with_suffix(".tmp")
@@ -10114,11 +10216,19 @@ class PictureCaptureApp(tk.Tk):
             style="PC.Compact.TButton",
         )
         self.batch_pause_button.pack(side="left", padx=(0, 5))
+        self._attach_tooltip(
+            self.batch_pause_button,
+            "暂停或继续当前批量任务；已完成页面不会回滚。",
+        )
         self.batch_stop_button = ttk.Button(
             self.batch_bar, text="停止", width=8, command=self._request_batch_stop,
             style="PC.Compact.TButton",
         )
         self.batch_stop_button.pack(side="left")
+        self._attach_tooltip(
+            self.batch_stop_button,
+            "请求停止当前批量任务；正在处理的页面完成后安全停止。",
+        )
 
         self.status_bar = ttk.Frame(self.bottom_stack, style="PC.Status.TFrame")
         self.status_bar.pack(side="bottom", fill="x")
@@ -10259,14 +10369,18 @@ class PictureCaptureApp(tk.Tk):
         )
         jump_button.pack(side="left", padx=(0, 3))
         self._attach_tooltip(jump_button, "跳转到指定页面的第一个有效页面")
-        ttk.Button(
+        previous_page_button = ttk.Button(
             size_row, text="上一页", width=6,
             command=lambda: self.change_page(-1), style="PC.PageNav.TButton",
-        ).pack(side="left", padx=(0, 3))
-        ttk.Button(
+        )
+        previous_page_button.pack(side="left", padx=(0, 3))
+        self._attach_tooltip(previous_page_button, "保存必要的当前页状态后切换到上一页")
+        next_page_button = ttk.Button(
             size_row, text="下一页", width=6,
             command=lambda: self.change_page(1), style="PC.PageNav.TButton",
-        ).pack(side="left")
+        )
+        next_page_button.pack(side="left")
+        self._attach_tooltip(next_page_button, "保存必要的当前页状态后切换到下一页")
         list_frame = ttk.Frame(page_panel)
         list_frame.grid(row=2, column=0, sticky="nsew")
         list_frame.columnconfigure(0, weight=1); list_frame.rowconfigure(0, weight=1)
@@ -10320,29 +10434,13 @@ class PictureCaptureApp(tk.Tk):
         }
         self._apply_page_list_display_columns(save=False)
 
-        suffix_row = ttk.Frame(self.project_action_bar, style="PC.Footer.TFrame")
-        suffix_row.pack(fill="x", pady=(0, 4))
-        suffix_row.columnconfigure(1, weight=1)
-        ttk.Label(suffix_row, text="图片后缀：", style="PC.Footer.TLabel").grid(
-            row=0, column=0, sticky="w", padx=(0, 4)
-        )
-        self.image_suffix_var = tk.StringVar(value=self.settings.image_suffix)
-        ttk.Entry(
-            suffix_row,
-            textvariable=self.image_suffix_var,
-            width=9,
-            justify="left",
-            style="PC.Footer.TEntry",
-        ).grid(row=0, column=1, sticky="w")
-        self.image_suffix_var.trace_add("write", lambda *_args: self._quick_parameter_changed())
-
         project_row = ttk.Frame(self.project_action_bar, style="PC.Footer.TFrame")
         project_row.pack(fill="x")
         for col in range(4):
             project_row.columnconfigure(col, weight=1, uniform="project-footer-columns")
         for col, (label, command) in enumerate((
             ("项目中心", self.open_recent_project),
-            ("初始Profile", self.open_project_profile),
+            ("项目Profile", self.open_project_profile),
             ("设置中心", self.open_settings),
             ("帮助中心", self.show_help_dialog),
         )):
@@ -10353,11 +10451,13 @@ class PictureCaptureApp(tk.Tk):
                 row=0, column=col, sticky="ew",
                 padx=(0 if col == 0 else 4, 0),
             )
-            if label == "帮助中心":
-                self._attach_tooltip(
-                    button,
-                    "打开帮助中心：推荐流程、各功能用途、快捷操作与常见排错。",
-                )
+            footer_tooltips = {
+                "项目中心": "打开最近项目与项目管理；可从这里新建或切换词典项目。",
+                "项目Profile": "配置词典信息、阅读方向、页面模板和词头结构，并用代表页测试。",
+                "设置中心": "按常用、OCR画线、普通画线、显示/校对、切图等任务调整项目参数。",
+                "帮助中心": "查看新版推荐流程、主界面说明、快捷操作与常见排错。",
+            }
+            self._attach_tooltip(button, footer_tooltips[label])
         self.canvas = tk.Canvas(
             viewer, bg=self._main_ui_colors["canvas"], highlightthickness=0
         )
@@ -11228,114 +11328,55 @@ class PictureCaptureApp(tk.Tk):
         )
         normal.pack(fill="x")
         add_field(normal, 0, 0, "分栏数：", "columns", int)
-        add_field(normal, 0, 2, "正文起始Y：", "start_y", int)
-        add_field(normal, 0, 4, "首栏X：", "manual_x", int)
-        add_field(normal, 0, 6, "单栏宽：", "column_width", int)
-        add_field(normal, 1, 0, "栏间空：", "gutter", int)
-        add_field(normal, 1, 2, "单行高：", "character_height", int)
-        add_field(normal, 1, 4, "行间空：", "row_padding", int)
-        add_field(normal, 1, 6, "正文缩进：", "body_indent", int)
-        add_field(normal, 2, 0, "微调判距：", "horizontal_tolerance", int)
-        shared_draw_row = ttk.Frame(normal)
-        shared_draw_row.grid(
-            row=2, column=2, columnspan=6, sticky="w", pady=(4, 0)
-        )
-        refine_y_var = tk.BooleanVar(
-            value=bool(self.settings.paddle_refine_separator_y)
-        )
-        self.quick_bool_vars["paddle_refine_separator_y"] = refine_y_var
-        ttk.Checkbutton(
-            shared_draw_row,
-            text="自动精修横线Y（通用）",
-            variable=refine_y_var,
-            command=self._quick_parameter_changed,
-        ).pack(side="left")
+        add_field(normal, 0, 2, "正文起始Y%：", "start_y", float)
+        add_field(normal, 0, 4, "首栏X%：", "manual_x", float)
+        add_field(normal, 1, 0, "单栏宽%：", "column_width", float)
+        add_field(normal, 1, 2, "栏间空%：", "gutter", float)
 
-        auto_layout_var = tk.BooleanVar(value=bool(self.settings.ordinary_auto_layout))
-        self.quick_bool_vars["ordinary_auto_layout"] = auto_layout_var
-        ttk.Checkbutton(
-            shared_draw_row,
-            text="使用自动版面参数",
-            variable=auto_layout_var,
-            command=self._quick_parameter_changed,
-        ).pack(side="left", padx=(12, 0))
-
-        row = ttk.Frame(normal); row.grid(row=3, column=0, columnspan=8, sticky="ew", pady=(4, 0))
-        ttk.Button(
+        row = ttk.Frame(normal); row.grid(row=2, column=0, columnspan=8, sticky="ew", pady=(4, 0))
+        detect_layout_button = ttk.Button(
             row, text="检测版面参数", command=self.detect_layout_current,
             style="PC.Compact.TButton",
-        ).pack(side="left", fill="x", expand=True)
-        ttk.Button(
+        )
+        detect_layout_button.pack(side="left", fill="x", expand=True)
+        self._attach_tooltip(
+            detect_layout_button,
+            "若所选页面数量≥2，参数为稳健中位数",
+        )
+        consistency_button = ttk.Button(
             row, text="检测版面一致性", command=self.detect_layout_consistency_selected,
             style="PC.Compact.TButton",
-        ).pack(side="left", fill="x", expand=True, padx=(5, 0))
-        ttk.Button(
+        )
+        consistency_button.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        self._attach_tooltip(
+            consistency_button,
+            "快速扫描所选至少 2 页的页眉边界和正文左缘，生成一致性报告；不修改版面参数。",
+        )
+        ordinary_settings_button = ttk.Button(
             row, text="普通画线设置（备用）…",
             command=lambda: self.open_settings(initial_tab="normal"),
             style="PC.Compact.TButton",
-        ).pack(side="left", fill="x", expand=True, padx=(5, 0))
+        )
+        ordinary_settings_button.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        self._attach_tooltip(
+            ordinary_settings_button,
+            "打开普通画线的专属参数；OCR画线正常时通常无需调整。",
+        )
         for col in (1, 3, 5, 7): normal.columnconfigure(col, weight=1)
 
-        ocr = self._section_frame(parent, "二、OCR画线（推荐默认）", padding=5, section_key="ocr")
-        ocr.pack(fill="x", pady=(4, 0))
-        self.ocr_refresh_var = tk.StringVar(value="reuse")
-        ttk.Label(ocr, text="识别策略：").grid(row=0, column=0, sticky="w")
-        ttk.Radiobutton(
-            ocr, text="使用有效缓存（推荐）",
-            variable=self.ocr_refresh_var, value="reuse",
-        ).grid(row=0, column=1, columnspan=2, sticky="w")
-        ttk.Radiobutton(
-            ocr, text="重新OCR（模型/图像改变时）",
-            variable=self.ocr_refresh_var, value="force",
-        ).grid(row=0, column=3, columnspan=3, sticky="w")
-        add_field(ocr, 1, 0, "OCR语言：", "ocr_language", str, 8)
-        add_field(ocr, 1, 2, "识别带宽%：", "paddle_band_width_ratio", int, 7)
-        add_field(ocr, 1, 4, "左缘容差：", "paddle_left_tolerance", int, 7)
-        engine_row = ttk.Frame(ocr); engine_row.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(4, 1))
-        ttk.Label(engine_row, text="OCR引擎：").pack(side="left")
-        for text, name in (("PaddleOCR", "paddle_use_paddleocr"), ("Tesseract", "paddle_compare_tesseract"), ("Google Lens", "paddle_enable_lens")):
-            var = tk.BooleanVar(value=bool(getattr(self.settings, name))); self.quick_bool_vars[name] = var
-            ttk.Checkbutton(engine_row, text=text, variable=var).pack(side="left", padx=(0, 5))
-        self.lens_mode_var = tk.StringVar(
-            value=LENS_MODE_LABELS.get(self.settings.paddle_lens_mode, LENS_MODE_LABELS["off"])
-        )
-        lens_row = ttk.Frame(ocr); lens_row.grid(row=3, column=0, columnspan=6, sticky="ew")
-        ttk.Label(lens_row, text="Lens模式：").pack(side="left")
-        ttk.Combobox(
-            lens_row, textvariable=self.lens_mode_var, values=tuple(LENS_MODE_VALUES),
-            state="readonly", width=34,
-        ).pack(side="left", fill="x", expand=True)
-        ttk.Label(lens_row, text="  Y安全空间：").pack(side="left")
-        safety_var = tk.StringVar(value=str(self.settings.paddle_separator_safety_px))
-        self.quick_vars["paddle_separator_safety_px"] = safety_var
-        self.quick_field_casts["paddle_separator_safety_px"] = int
-        ttk.Entry(
-            lens_row, textvariable=safety_var, width=4, justify="left"
-        ).pack(side="left", padx=(2, 2))
-        ttk.Label(lens_row, text="px").pack(side="left")
-        ocr_tools = ttk.Frame(ocr)
-        ocr_tools.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(4, 0))
-        ttk.Button(
-            ocr_tools, text="环境中心", command=self.check_ocr_engines,
-            style="PC.Compact.TButton",
-        ).pack(side="left", fill="x", expand=True)
-        ttk.Button(
-            ocr_tools, text="OCR画线设置…",
-            command=lambda: self.open_settings(initial_tab="ocr"),
-            style="PC.Compact.TButton",
-        ).pack(side="left", fill="x", expand=True, padx=(5, 0))
-        for col in (1, 3, 5): ocr.columnconfigure(col, weight=1)
-
-        aux = self._section_frame(parent, "三、辅助选项及框线色块", padding=5, section_key="aux")
+        aux = self._section_frame(parent, "二、显示设置", padding=5, section_key="aux")
         aux.pack(fill="x", pady=(4, 0))
+        ruler_var = tk.BooleanVar(value=bool(self.settings.show_rulers))
         section_var = tk.BooleanVar(value=bool(self.settings.show_page_sections))
         guide_var = tk.BooleanVar(value=bool(self.settings.show_column_guides))
         marker_var = tk.BooleanVar(value=bool(self.settings.show_headword_markers))
+        self.quick_bool_vars["show_rulers"] = ruler_var
         self.quick_bool_vars["show_page_sections"] = section_var
         self.quick_bool_vars["show_column_guides"] = guide_var
         self.quick_bool_vars["show_headword_markers"] = marker_var
         self.quick_color_buttons: dict[str, tk.Button] = {}
         self.quick_color_vars: dict[str, tk.StringVar] = {
+            "ruler_color": tk.StringVar(value=self.settings.ruler_color),
             "page_section_color": tk.StringVar(value=self.settings.page_section_color),
             "guide_color": tk.StringVar(value=self.settings.guide_color),
             "headword_marker_color": tk.StringVar(value=self.settings.headword_marker_color),
@@ -11352,13 +11393,30 @@ class PictureCaptureApp(tk.Tk):
             button.pack(side="left", padx=(2, 5), fill="y")
             self.quick_color_buttons[name] = button
             self._style_color_button(button, str(self.quick_color_vars[name].get()))
+            color_tips = {
+                "ruler_color": "选择标尺线和刻度数字颜色。",
+                "page_section_color": "选择 SECTION 边界线颜色。",
+                "guide_color": "选择栏左垂线颜色。",
+                "headword_marker_color": "选择词头横线颜色。",
+                "illustration_outline_color": "选择插图轮廓颜色。",
+                "illustration_fill_color": "选择插图区域背景色。",
+                "illustration_label_border_color": "选择插图标签外框颜色。",
+                "illustration_label_fill_color": "选择插图标签背景色。",
+                "main_entry_default_color": "选择主画布词条文本框默认背景色。",
+            }
+            self._attach_tooltip(button, color_tips.get(name, "点击选择颜色。"))
             return button
 
         section_row = ttk.Frame(aux); section_row.grid(row=0, column=0, columnspan=4, sticky="ew")
         ttk.Checkbutton(
+            section_row, text="显示标尺", variable=ruler_var,
+            command=lambda: self._apply_overlay_visibility_toggle("show_rulers", ruler_var),
+        ).pack(side="left")
+        color_button(section_row, "ruler_color")
+        ttk.Checkbutton(
             section_row, text="显示Section", variable=section_var,
             command=lambda: self._apply_overlay_visibility_toggle("show_page_sections", section_var),
-        ).pack(side="left")
+        ).pack(side="left", padx=(6, 0))
         color_button(section_row, "page_section_color")
         ttk.Label(section_row, text="粗细：").pack(side="left")
         section_width_var = tk.StringVar(value=str(self.settings.page_section_width))
@@ -11504,8 +11562,85 @@ class PictureCaptureApp(tk.Tk):
 
         aux.columnconfigure(1, weight=1); aux.columnconfigure(3, weight=1)
 
+        ocr = self._section_frame(parent, "三、OCR画线参数（默认）", padding=5, section_key="ocr")
+        ocr.pack(fill="x", pady=(4, 0))
+        self.ocr_refresh_var = tk.StringVar(value="reuse")
+        ttk.Label(ocr, text="识别策略：").grid(row=0, column=0, sticky="w")
+        ttk.Radiobutton(
+            ocr, text="使用有效缓存（推荐）",
+            variable=self.ocr_refresh_var, value="reuse",
+        ).grid(row=0, column=1, columnspan=2, sticky="w")
+        ttk.Radiobutton(
+            ocr, text="重新OCR（模型/图像改变时）",
+            variable=self.ocr_refresh_var, value="force",
+        ).grid(row=0, column=3, columnspan=3, sticky="w")
+        add_field(ocr, 1, 0, "OCR语言：", "ocr_language", str, 8)
+        add_field(ocr, 1, 2, "识别带宽%：", "paddle_band_width_ratio", int, 7)
+        add_field(ocr, 1, 4, "左缘容差：", "paddle_left_tolerance", int, 7)
+        engine_row = ttk.Frame(ocr); engine_row.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(4, 1))
+        ttk.Label(engine_row, text="OCR引擎：").pack(side="left")
+        for text, name in (("PaddleOCR", "paddle_use_paddleocr"), ("Tesseract", "paddle_compare_tesseract"), ("Google Lens", "paddle_enable_lens")):
+            var = tk.BooleanVar(value=bool(getattr(self.settings, name))); self.quick_bool_vars[name] = var
+            ttk.Checkbutton(engine_row, text=text, variable=var).pack(side="left", padx=(0, 5))
+        self.lens_mode_var = tk.StringVar(
+            value=LENS_MODE_LABELS.get(self.settings.paddle_lens_mode, LENS_MODE_LABELS["off"])
+        )
+        lens_row = ttk.Frame(ocr); lens_row.grid(row=3, column=0, columnspan=6, sticky="ew")
+        ttk.Label(lens_row, text="Lens模式：").pack(side="left")
+        ttk.Combobox(
+            lens_row, textvariable=self.lens_mode_var, values=tuple(LENS_MODE_VALUES),
+            state="readonly", width=34,
+        ).pack(side="left", fill="x", expand=True)
+        ttk.Label(lens_row, text="  Y安全空间：").pack(side="left")
+        safety_var = tk.StringVar(value=str(self.settings.paddle_separator_safety_px))
+        self.quick_vars["paddle_separator_safety_px"] = safety_var
+        self.quick_field_casts["paddle_separator_safety_px"] = int
+        ttk.Entry(
+            lens_row, textvariable=safety_var, width=4, justify="left"
+        ).pack(side="left", padx=(2, 2))
+        ttk.Label(lens_row, text="px").pack(side="left")
+        ocr_tools = ttk.Frame(ocr)
+        ocr_tools.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(4, 0))
+        environment_button = ttk.Button(
+            ocr_tools, text="环境中心", command=self.check_ocr_engines,
+            style="PC.Compact.TButton",
+        )
+        environment_button.pack(side="left", fill="x", expand=True)
+        self._attach_tooltip(
+            environment_button,
+            "检查 PaddleOCR / PaddlePaddle、Tesseract、Lens、OpenCC 等运行环境。",
+        )
+        ocr_settings_button = ttk.Button(
+            ocr_tools, text="OCR画线设置…",
+            command=lambda: self.open_settings(initial_tab="ocr"),
+            style="PC.Compact.TButton",
+        )
+        ocr_settings_button.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        self._attach_tooltip(
+            ocr_settings_button,
+            "打开 OCR画线参数和高级候选规则；建议先在代表页确认具体错误模式。",
+        )
+        for col in (1, 3, 5): ocr.columnconfigure(col, weight=1)
+
         actions = self._section_frame(parent, "四、画线与校对", padding=5, section_key="actions")
         actions.pack(fill="x", pady=(4, 0))
+        action_tooltips = {
+            "运行普通画线（备用）": "备用模式：依赖栏左几何、墨迹和行高；适合左缘高度稳定版式或 OCR 暂不可用时。",
+            "运行OCR画线（推荐）": "推荐默认：结合 OCR 文字、位置和结构证据识别词头，并可复用有效缓存。",
+            "清除画线": "清除当前页全部词条画线；不会删除扫描图片。",
+            "清除文本": "清空当前页画线中的词条文字，但保留画线位置。",
+            "精修画线": "仅在所选范围微调已有画线的 Y 位置，不新增或删除词条。",
+            "新旧比较": "比较所选范围当前 PDIC 与页码-词条文本，定位新增、缺失或顺序差异。",
+            "词条校对": "打开连续校对窗口，结合扫描图、OCR候选、简体和参考词表逐条核对。",
+            "选择词条文件": "选择带页码的既有词条 TXT，供后续【填充词条】重复使用。",
+            "填充词条": "按当前页面范围，用已选页码词条文件填充对应 PDIC 词条文本。",
+            "修复排序": "按栏号 → Y 修复所选范围 PDIC 记录顺序；不重新 OCR、不改变词条坐标配对。",
+            "备份PDIC": "将项目现有 PDIC 汇总为时间戳备份，适合批量修改前留档。",
+            "恢复PDIC": "从备份文本覆盖恢复主界面所选范围的 PDIC；执行前请确认页面范围。",
+            "插图识别": "在所选页面范围自动识别插图并写入 PPP；人工多边形会保留。",
+            "编辑插图": "进入/退出插图多边形编辑模式，可新增、移动顶点并修改标签。",
+            "保存当前页": "立即保存当前页的画线/词条或插图编辑结果。",
+        }
         rows = [
             (("运行普通画线（备用）", self.run_normal_draw_action), ("运行OCR画线（推荐）", self.run_ocr_draw_action)),
             (("清除画线", self.clear_entries), ("清除文本", self.clear_text), ("精修画线", self.refine_lines_selected_scope), ("新旧比较", self.compare_old_new_selected_scope), ("词条校对", self.open_review)),
@@ -11525,10 +11660,9 @@ class PictureCaptureApp(tk.Tk):
                     else "neutral"
                 )
                 button = self._sidebar_action_button(row, text, command, role=role)
-                if text == "运行OCR画线（推荐）":
-                    self._attach_tooltip(button, "推荐默认：结合 OCR 文字、位置与结构证据识别词头，并可复用有效缓存。")
-                elif text == "运行普通画线（备用）":
-                    self._attach_tooltip(button, "备用模式：只依赖栏左几何和墨迹，适合左缘极稳定版式或 OCR 暂不可用时。")
+                tooltip = action_tooltips.get(text)
+                if tooltip:
+                    self._attach_tooltip(button, tooltip)
                 if text == "编辑插图":
                     self.polygon_draw_button = button
                 button.grid(
@@ -11541,6 +11675,14 @@ class PictureCaptureApp(tk.Tk):
             parent, "五、后期词典制作", padding=5, section_key="postproduction"
         )
         postproduction.pack(fill="x", pady=(4, 0))
+        production_tooltips = {
+            "词条切图": "按所选页面范围和【设置中心 → 切图设置】生成完整词条切图。",
+            "插图切图": "按所选范围导出需要独立输出的 PPP 插图。",
+            "项目详情": "编辑词典名称、语言、正文页码范围等项目级元数据。",
+            "导出PicDic索引": "从项目已保存 PDIC 导出“词条 / X% / Y% / 页码”文本索引。",
+            "PicDic制作": "使用已生成的词条切图制作 PicDic DSL 与图片包。",
+            "导出训练标记包": "导出已人工确认的 PDIC/PPP、OCR候选和坐标上下文，供模型或规则验证。",
+        }
         production_rows = [
             (("词条切图", self.split_entries_selected_scope), ("插图切图", self.split_illustrations_selected_scope)),
             (("项目详情", self.open_project_details), ("导出PicDic索引", self.export_picdic_index), ("PicDic制作", self.build_picdic)),
@@ -11552,7 +11694,11 @@ class PictureCaptureApp(tk.Tk):
             for bi in range(len(specs)):
                 row.columnconfigure(bi, weight=1, uniform=f"postproduction-row-{ri}")
             for bi, (text, command) in enumerate(specs):
-                self._sidebar_action_button(row, text, command).grid(
+                button = self._sidebar_action_button(row, text, command)
+                tooltip = production_tooltips.get(text)
+                if tooltip:
+                    self._attach_tooltip(button, tooltip)
+                button.grid(
                     row=0, column=bi, sticky="ew",
                     padx=(0 if bi == 0 else 4, 0),
                 )
@@ -11612,6 +11758,8 @@ class PictureCaptureApp(tk.Tk):
         new value, then persist through the normal quick-settings path.
         """
         setattr(self.settings, setting_name, bool(variable.get()))
+        if setting_name == "show_rulers" and not bool(variable.get()):
+            self._hide_ruler_hint()
         self._quick_parameter_changed(immediate=True)
         self.redraw()
 
@@ -11655,8 +11803,8 @@ class PictureCaptureApp(tk.Tk):
         if not hasattr(self, "quick_field_labels"):
             return
         labels = {
-            "start_y": "正文起始Y：",
-            "manual_x": "首栏X：",
+            "start_y": "正文起始Y%：",
+            "manual_x": "首栏X%：",
         }
         for name, label in labels.items():
             widget = self.quick_field_labels.get(name)
@@ -11672,11 +11820,14 @@ class PictureCaptureApp(tk.Tk):
             for name, var in self.quick_vars.items():
                 if hasattr(self.settings, name):
                     value = getattr(self.settings, name)
-                    if name in {
-                        "start_y", "manual_x", "column_width",
-                        "gutter", "character_height", "row_padding",
-                    }:
-                        value = self._quick_geometry_value(name)
+                    if name in LAYOUT_PERCENT_AXES:
+                        source_value = self._quick_geometry_value(name)
+                        if self.image is not None:
+                            value = _format_layout_percent(
+                                _layout_pixels_to_percent(self.image, name, source_value)
+                            )
+                        else:
+                            value = source_value
                     if name == "main_entry_x_ratio":
                         value = round(float(value) * 100)
                     if name in {
@@ -11703,8 +11854,6 @@ class PictureCaptureApp(tk.Tk):
                         self.settings.paddle_lens_mode, LENS_MODE_LABELS["off"]
                     )
                 )
-            if hasattr(self, "image_suffix_var"):
-                self.image_suffix_var.set(self.settings.image_suffix)
         finally:
             self._quick_syncing = False
 
@@ -11716,16 +11865,19 @@ class PictureCaptureApp(tk.Tk):
             previous_ocr_language = str(getattr(self.settings, "ocr_language", "") or "")
             original_geometry = {
                 name: self._quick_geometry_value(name)
-                for name in (
-                    "start_y", "manual_x", "column_width",
-                    "gutter", "character_height", "row_padding",
-                )
+                for name in LAYOUT_PERCENT_AXES
                 if name in self.quick_vars
             }
             for name, var in self.quick_vars.items():
                 value = self.quick_field_casts[name](var.get())
                 if name in original_geometry:
-                    value = int(value)
+                    if self.image is not None and name in LAYOUT_PERCENT_AXES:
+                        percent = float(value)
+                        if not 0.0 <= percent <= 100.0:
+                            raise ValueError(f"{name} 必须在 0–100% 之间。")
+                        value = _layout_percent_to_pixels(self.image, name, percent)
+                    else:
+                        value = int(value)
                     if value < 0:
                         raise ValueError(f"{name} 不能小于 0。")
                     changed = value != original_geometry[name]
@@ -11804,8 +11956,6 @@ class PictureCaptureApp(tk.Tk):
             if not (self.settings.paddle_use_paddleocr or self.settings.paddle_compare_tesseract or self.settings.paddle_enable_lens):
                 raise ValueError("OCR引擎至少需要勾选一个。")
             self.settings.paddle_lens_mode = LENS_MODE_VALUES.get(self.lens_mode_var.get(), self.settings.paddle_lens_mode)
-            suffix = self.image_suffix_var.get().strip() if hasattr(self, "image_suffix_var") else self.settings.image_suffix
-            if suffix: self.settings.image_suffix = suffix if suffix.startswith(".") else f".{suffix}"
             self.settings.hide_overlays = bool(self.hide_var.get())
             self.settings.polygon_mode = bool(self.polygon_var.get())
             if persist: self.save_settings()
@@ -12132,7 +12282,8 @@ class PictureCaptureApp(tk.Tk):
             "选择检测页面范围",
             f"将按页面列表上方当前选择的范围检测 {len(indices)} 页。\n"
             f"范围：{names[0]}" + (f" ～ {names[-1]}" if len(names) > 1 else "") +
-            "\n\n多页结果将取稳健汇总并填充分栏/起始Y/首栏X/栏宽/栏间空/行高等版面参数；"
+            "\n\n多页数值参数将取稳健中位数；分栏数按多数页面的栏数确定。"
+            "检测结果会填充分栏/起始Y/首栏X/栏宽/栏间空/行高/行间空；"
             "页底不再作为手工参数写入。是否继续？",
             parent=self,
         ):
@@ -12159,7 +12310,8 @@ class PictureCaptureApp(tk.Tk):
                 setattr(self.settings, name, value)
             self.sync_quick_settings(); self.save_settings(); self.redraw()
             suffix = "（任务提前停止，按已完成页面计算）" if stopped else ""
-            self.status_var.set(f"版面参数检测完成：{consistency}；其余参数使用稳健中位数{suffix}")
+            summary = "稳健中位数" if len(results) >= 2 else "单页检测值"
+            self.status_var.set(f"版面参数检测完成：{consistency}；数值参数使用{summary}{suffix}")
 
         self._start_batch_task("检测版面参数", indices, worker, done, item_label=lambda i: pages[i].name)
 
@@ -13433,6 +13585,49 @@ class PictureCaptureApp(tk.Tk):
         widget.bind("<Leave>", hide, add="+")
         widget.bind("<Destroy>", hide, add="+")
 
+    def _choose_new_project_image_suffix(self, root: Path) -> str | None:
+        """Choose the scan-image extension once when creating a project.
+
+        The native directory chooser cannot filter by file extension.  After the
+        user selects a folder, inspect its actual page images instead: one
+        detected extension is accepted automatically; multiple extensions ask
+        the user which set belongs to this project.
+        """
+        pages = project_page_images(root)
+        if not pages:
+            raise ValueError("所选目录中没有 tif/tiff/png/jpg/jpeg/bmp 扫描图片。")
+
+        counts: dict[str, int] = {}
+        for page in pages:
+            suffix = page.suffix.lower()
+            counts[suffix] = counts.get(suffix, 0) + 1
+        suffixes = sorted(counts, key=lambda item: (-counts[item], item))
+        if len(suffixes) == 1:
+            return suffixes[0]
+
+        choices = "，".join(f"{suffix}（{counts[suffix]} 张）" for suffix in suffixes)
+        initial = suffixes[0]
+        while True:
+            value = simpledialog.askstring(
+                "选择扫描图片格式",
+                "检测到该文件夹包含多种扫描图片格式：\n"
+                f"{choices}\n\n"
+                "请输入本项目要使用的图片后缀（例如 .png 或 .tif）：",
+                initialvalue=initial,
+                parent=self,
+            )
+            if value is None:
+                return None
+            suffix = self._normalize_suffix(value)
+            if suffix in counts:
+                return suffix
+            messagebox.showerror(
+                "图片格式不存在",
+                f"该文件夹中没有 {suffix} 扫描图片。\n可选格式：{', '.join(suffixes)}",
+                parent=self,
+            )
+            initial = suffix
+
     def open_project(self) -> None:
         chosen = filedialog.askdirectory(title="选择词典扫描项目目录")
         if not chosen:
@@ -13445,8 +13640,10 @@ class PictureCaptureApp(tk.Tk):
             root = Path(chosen)
             existing_project = is_managed_project(root) or has_legacy_project_data(root)
             requested_suffix = None
-            if not existing_project and hasattr(self, "image_suffix_var"):
-                requested_suffix = self._normalize_suffix(self.image_suffix_var.get())
+            if not existing_project:
+                requested_suffix = self._choose_new_project_image_suffix(root)
+                if requested_suffix is None:
+                    return
             self._load_project(
                 root,
                 requested_suffix=requested_suffix,
@@ -14528,6 +14725,134 @@ class PictureCaptureApp(tk.Tk):
             f"切图预览｜{mode}｜词条切图片段 {len(plan.entry_pieces)}｜随词条PPP {linked_count}｜部分相交 {partial_count}｜独立PPP {standalone_count}"
         )
 
+    def _rulers_visible(self) -> bool:
+        if self.image is None:
+            return False
+        visible = (
+            self.quick_bool_vars.get("show_rulers").get()
+            if hasattr(self, "quick_bool_vars") and "show_rulers" in self.quick_bool_vars
+            else bool(getattr(self.settings, "show_rulers", False))
+        )
+        return bool(visible) and not bool(self.hide_var.get())
+
+    def _draw_percentage_rulers(self, geometry=None) -> None:
+        """Draw four fixed percentage rulers on the page edges."""
+        _ = geometry
+        if not self._rulers_visible() or self.image is None:
+            return
+        display_width = float(max(1, self.image.width - 1)) * self.view_scale
+        display_height = float(max(1, self.image.height - 1)) * self.view_scale
+        color = str(getattr(self.settings, "ruler_color", "#1976d2") or "#1976d2")
+        margin = 28
+        margin_color = str(
+            getattr(self, "_main_ui_colors", {}).get(
+                "ruler_margin",
+                "#20252b" if self.appearance_mode == "dark" else "#f1f3f6",
+            )
+        )
+        # Only the out-of-image ruler gutters get this background.  The page
+        # image and the rest of the canvas keep their existing colours.
+        self.canvas.create_rectangle(
+            -margin, 0, 0, display_height + margin,
+            fill=margin_color, outline="", tags=("ruler-margin",),
+        )
+        self.canvas.create_rectangle(
+            display_width, 0, display_width + margin, display_height + margin,
+            fill=margin_color, outline="", tags=("ruler-margin",),
+        )
+        self.canvas.create_rectangle(
+            0, display_height, display_width, display_height + margin,
+            fill=margin_color, outline="", tags=("ruler-margin",),
+        )
+
+        major_tick = 7
+        minor_tick = 4
+        label_gap = major_tick + 2
+        font_spec = ("TkDefaultFont", 8)
+
+        for ruler_id, y in (("top", 0.0), ("bottom", display_height)):
+            tags = ("measurement-ruler", "ruler-horizontal", f"ruler-{ruler_id}")
+            self.canvas.create_line(
+                0, y, display_width, y,
+                fill=color, width=1, tags=tags,
+            )
+            for half_percent in range(201):
+                pct = half_percent * 0.5
+                x = display_width * pct / 100.0
+                tick = major_tick if half_percent % 2 == 0 else minor_tick
+                self.canvas.create_line(
+                    x, y - tick, x, y + tick,
+                    fill=color, width=1, tags=tags,
+                )
+            for value in range(5, 100, 5):
+                x = display_width * value / 100.0
+                self.canvas.create_text(
+                    x, y + label_gap, text=str(value), fill=color,
+                    anchor="n", font=font_spec, tags=tags,
+                )
+
+        for ruler_id, x in (("left", 0.0), ("right", display_width)):
+            tags = ("measurement-ruler", "ruler-vertical", f"ruler-{ruler_id}")
+            self.canvas.create_line(
+                x, 0, x, display_height,
+                fill=color, width=1, tags=tags,
+            )
+            for half_percent in range(201):
+                pct = half_percent * 0.5
+                y = display_height * pct / 100.0
+                tick = major_tick if half_percent % 2 == 0 else minor_tick
+                self.canvas.create_line(
+                    x - tick, y, x + tick, y,
+                    fill=color, width=1, tags=tags,
+                )
+            label_x = x - label_gap if ruler_id == "left" else x + label_gap
+            anchor = "e" if ruler_id == "left" else "w"
+            for value in range(5, 100, 5):
+                y = display_height * value / 100.0
+                self.canvas.create_text(
+                    label_x, y, text=str(value), fill=color,
+                    anchor=anchor, font=font_spec, tags=tags,
+                )
+
+    def _ruler_hit_id(self, source_x: float, source_y: float) -> str | None:
+        if not self._rulers_visible() or self.image is None:
+            return None
+        max_x = float(max(1, self.image.width - 1))
+        max_y = float(max(1, self.image.height - 1))
+        tolerance = max(3.0, 8.0 / max(0.05, float(self.view_scale)))
+        distances = {
+            "top": abs(float(source_y)),
+            "bottom": abs(float(source_y) - max_y),
+            "left": abs(float(source_x)),
+            "right": abs(float(source_x) - max_x),
+        }
+        ruler_id, distance = min(distances.items(), key=lambda item: item[1])
+        return ruler_id if distance <= tolerance else None
+
+    def _hide_ruler_hint(self) -> None:
+        popup = getattr(self, "_ruler_hint", None)
+        if popup is not None:
+            try:
+                popup.destroy()
+            except tk.TclError:
+                pass
+        self._ruler_hint = None
+
+    def _show_ruler_hint(self, event: tk.Event) -> None:
+        text = "标尺可以帮助版面参数的手动填写。"
+        popup = getattr(self, "_ruler_hint", None)
+        if popup is None:
+            popup = tk.Toplevel(self.canvas)
+            popup.wm_overrideredirect(True)
+            ttk.Label(
+                popup, text=text, padding=(7, 4), relief="solid",
+            ).pack()
+            self._ruler_hint = popup
+        try:
+            popup.wm_geometry(f"+{event.x_root + 14}+{event.y_root + 18}")
+        except tk.TclError:
+            self._ruler_hint = None
+
     def redraw(self) -> None:
         self._sync_polygon_label_texts()
         self.canvas.delete("all")
@@ -14546,8 +14871,13 @@ class PictureCaptureApp(tk.Tk):
         self.canvas.create_image(0, 0, image=photo, anchor="nw", tags="page")
         if self.crop_preview_var.get():
             self._draw_crop_plan_preview()
-            self._draw_page_sections(self._get_cached_display_geometry())
-            self.canvas.configure(scrollregion=(0, 0, size[0], size[1]))
+            crop_geometry = self._get_cached_display_geometry()
+            self._draw_page_sections(crop_geometry)
+            self._draw_percentage_rulers(crop_geometry)
+            ruler_margin = 28 if self._rulers_visible() else 0
+            self.canvas.configure(
+                scrollregion=(-ruler_margin, 0, size[0] + ruler_margin, size[1] + ruler_margin)
+            )
             if self.cursor_canvas_xy is not None:
                 self.draw_cursor_guides(*self.cursor_canvas_xy)
             return
@@ -14573,6 +14903,7 @@ class PictureCaptureApp(tk.Tk):
                             smooth=True,
                         )
             self._draw_page_sections(geometry)
+            self._draw_percentage_rulers(geometry)
             processing_readonly = self._foreground_batch_state(self.current_index) == "processing"
             for index, entry in enumerate(self._ordered_entries_reading_order()):
                 self._draw_entry_overlay(
@@ -14725,7 +15056,10 @@ class PictureCaptureApp(tk.Tk):
                 for px, py in self.new_polygon:
                     cx, cy = px * self.view_scale, py * self.view_scale
                     self.canvas.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, fill="#ffffff", outline="#00aa55", width=2, tags=("ppp-overlay",))
-        self.canvas.configure(scrollregion=(0, 0, size[0], size[1]))
+        ruler_margin = 28 if self._rulers_visible() else 0
+        self.canvas.configure(
+            scrollregion=(-ruler_margin, 0, size[0] + ruler_margin, size[1] + ruler_margin)
+        )
         if self.cursor_canvas_xy is not None:
             self.draw_cursor_guides(*self.cursor_canvas_xy)
 
@@ -14820,6 +15154,7 @@ class PictureCaptureApp(tk.Tk):
     def canvas_leave(self, _event: tk.Event) -> None:
         self.cursor_canvas_xy = None
         self.canvas.delete("cursor-guide")
+        self._hide_ruler_hint()
         self._set_idle_cursor_status()
 
     def _set_idle_cursor_status(self) -> None:
@@ -15443,6 +15778,13 @@ class PictureCaptureApp(tk.Tk):
                     self.draw_cursor_guides(canvas_x, canvas_y)
                 source_x = round(canvas_x / self.view_scale)
                 source_y = round(canvas_y / self.view_scale)
+                if (
+                    not self._section_editing
+                    and self._ruler_hit_id(source_x, source_y) is not None
+                ):
+                    self._show_ruler_hint(event)
+                else:
+                    self._hide_ruler_hint()
                 self.cursor_status_var.set(
                     f"原图 X,Y {source_x}, {source_y}｜"
                     f"缩放 {round(self.view_scale * 100)}%｜词条 {len(self.entries)}"
@@ -15450,6 +15792,7 @@ class PictureCaptureApp(tk.Tk):
             else:
                 self.cursor_canvas_xy = None
                 self.canvas.delete("cursor-guide")
+                self._hide_ruler_hint()
                 self._set_idle_cursor_status()
 
     def _confidence_bg(self, confidence: float | None) -> str:

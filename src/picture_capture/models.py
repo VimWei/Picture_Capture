@@ -131,7 +131,7 @@ class AppSettings:
     # column starts. Values are direct original-image pixel offsets.
     column_start_offsets: list[int] = field(default_factory=list)
     manual_y: int = 400
-    body_indent: int = 28
+    body_indent: int = 26
     character_height: int = 26
     row_padding: int = 1
     # Percentage of the detected column width used by rightward entry boxes.
@@ -140,13 +140,16 @@ class AppSettings:
     right_ratio_percent_version: int = 1
     # VB.NET NumericUpDown10: separator analysis width = column_width / value * 0.98.
     ordinary_right_divisor: float = 1.0
-    horizontal_tolerance: int = 5
+    horizontal_tolerance: int = 13
     marker_height: int = 2
     guide_width: int = 2
     # Main overlay colours: headword markers stay red; other structural lines use blue.
     guide_color: str = "#1976d2"
     page_section_color: str = "#1976d2"
     page_section_width: int = 2
+    # Optional four-edge percentage rulers are fixed display-only overlays.
+    show_rulers: bool = True
+    ruler_color: str = "#1976d2"
     headword_marker_color: str = "#ff0000"
     illustration_outline_color: str = "#1976d2"
     illustration_outline_width: int = 2

@@ -4697,8 +4697,8 @@ def test_display_mode_and_dark_mode_live_at_bottom_of_auxiliary_options():
     page_toolbar = text[page_start:page_end]
     assert 'text="显示模式："' not in page_toolbar
 
-    aux_start = text.index('self._section_frame(parent, "三、辅助选项及框线色块"')
-    aux_end = text.index('actions = self._section_frame(parent, "四、画线与校对"', aux_start)
+    aux_start = text.index('self._section_frame(parent, "二、显示设置"')
+    aux_end = text.index('ocr = self._section_frame(parent, "三、OCR画线参数（默认）"', aux_start)
     aux = text[aux_start:aux_end]
     assert 'display_mode_combo = ttk.Combobox(\n            option_row,' in aux
     assert 'text="深色模式"' in aux
@@ -4766,8 +4766,8 @@ def test_action_and_postproduction_rows_use_equal_width_grid_columns():
     post_end = text.index("        # Main-panel parameters are live:", post_start)
     post = text[post_start:post_end]
     assert 'row.columnconfigure(bi, weight=1, uniform=f"postproduction-row-{ri}")' in post
-    assert ').grid(' in post
-    assert '.pack(\n                    side="left", fill="x", expand=True' not in post
+    assert 'button.grid(' in post
+    assert 'button.pack(side="left", fill="x", expand=True' not in post
 
 
 def test_main_quick_parameter_entries_are_left_aligned():
@@ -5332,9 +5332,19 @@ def test_project_details_are_persisted_in_project_settings(tmp_path):
     assert restored.dictionary_body_page_range == "1-1250"
 
 
-def test_sidebar_has_collapsed_postproduction_section_and_project_details():
+def test_sidebar_defaults_fold_sections_two_through_five_and_keep_project_details():
     app_text = (Path(__file__).parents[1] / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
-    assert '"postproduction": False' in app_text
+    defaults_start = app_text.index("        self.section_expanded = {")
+    defaults_end = app_text.index("\n        stored_sections =", defaults_start)
+    defaults = app_text[defaults_start:defaults_end]
+    assert '"normal": True' in defaults
+    assert '"aux": False' in defaults
+    assert '"ocr": False' in defaults
+    assert '"actions": False' in defaults
+    assert '"postproduction": False' in defaults
+    assert '"pages": True' in defaults
+    assert "SIDEBAR_SECTION_DEFAULTS_VERSION = 1" in app_text
+    assert '"sidebar_section_defaults_version": SIDEBAR_SECTION_DEFAULTS_VERSION' in app_text
     assert 'parent, "五、后期词典制作", padding=5, section_key="postproduction"' in app_text
     assert 'self._section_frame(parent, "四、画线与校对"' in app_text
     assert 'self._section_frame(sidebar, "六、页面列表"' in app_text
@@ -5352,6 +5362,7 @@ def test_sidebar_has_collapsed_postproduction_section_and_project_details():
 
 def test_auxiliary_overlay_defaults_and_label_style_controls():
     settings = AppSettings()
+    assert settings.show_rulers is True
     assert settings.guide_color == "#1976d2"
     assert settings.page_section_color == "#1976d2"
     assert settings.headword_marker_color == "#ff0000"
@@ -7894,10 +7905,12 @@ def test_alphabetical_warning_uses_section_major_reading_order():
 def test_main_auxiliary_section_controls_section_overlay_and_ocr_display_order():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
-    aux_start = text.index('self._section_frame(parent, "三、辅助选项及框线色块"')
-    aux_end = text.index('actions = self._section_frame(parent, "四、画线与校对"', aux_start)
+    aux_start = text.index('self._section_frame(parent, "二、显示设置"')
+    aux_end = text.index('ocr = self._section_frame(parent, "三、OCR画线参数（默认）"', aux_start)
     aux = text[aux_start:aux_end]
 
+    assert 'text="显示标尺"' in aux
+    assert '"ruler_color"' in aux
     assert 'text="显示Section"' in aux
     assert '"page_section_color"' in aux
     assert '"page_section_width"' in aux
