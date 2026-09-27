@@ -55,12 +55,15 @@ class VerticalRuleEstimate:
 
 
 def aggregate_layout_estimates(
-    estimates: Iterable[LayoutEstimate], *, columns_policy: str = "detect", fixed_columns: int | None = None
+    estimates: Iterable[LayoutEstimate], *, columns_policy: str = "detect",
+    fixed_columns: int | None = None, numeric_summary: str = "robust_median",
 ) -> tuple[dict[str, int], str]:
-    """Robustly combine page estimates in literal full-resolution pixels.
+    """Combine page estimates in literal full-resolution pixels.
 
-    No estimate is normalized to another page width. Suggested values are the
-    actual pixels measured on the representative source pages.
+    numeric_summary="robust_median" keeps representative-page/Profile analysis
+    resistant to outliers. numeric_summary="mean" is used by the main layout
+    detection action so selected-page numeric parameters are arithmetic means.
+    Column count remains a discrete mode/fixed prior.
     """
     rows = list(estimates)
     if not rows:
@@ -70,8 +73,12 @@ def aggregate_layout_estimates(
     mode_columns = min(counts, key=lambda value: (-counts[value], value))
     columns = max(1, int(fixed_columns or mode_columns)) if columns_policy == "fixed" else mode_columns
 
-    def robust_median(name: str) -> int:
+    def summarize(name: str) -> int:
         values = [float(getattr(row, name)) for row in rows]
+        if numeric_summary == "mean":
+            return round(statistics.fmean(values))
+        if numeric_summary != "robust_median":
+            raise ValueError(f"Unsupported numeric summary: {numeric_summary}")
         center = statistics.median(values)
         deviations = [abs(value - center) for value in values]
         mad = statistics.median(deviations)
@@ -80,7 +87,7 @@ def aggregate_layout_estimates(
 
     result = {"columns": columns}
     for field in ("start_y", "bottom_y", "manual_x", "column_width", "gutter", "character_height", "row_padding"):
-        result[field] = robust_median(field)
+        result[field] = summarize(field)
     result["start_y"] = max(0, result["start_y"] - 5)
     result["row_padding"] = max(1, result["row_padding"])
 
