@@ -203,7 +203,7 @@ class ProjectProfileWizard(tk.Toplevel):
             return
         self.new_project = bool(new_project)
         self.working = replace(parent.settings)
-        self.title("建立项目 Profile" if self.new_project else "项目 Profile")
+        self.title("建立项目Profile" if self.new_project else "项目Profile")
         self.update_idletasks()
         screen_w = max(800, int(self.winfo_screenwidth()))
         work_x, work_y, work_w, work_h = _screen_work_area(self)
@@ -582,10 +582,10 @@ class ProjectProfileWizard(tk.Toplevel):
         self.tab_contents: list[ttk.Frame] = []
         self.tab_canvases: list[tk.Canvas] = []
         for label in (
-            "1 词典信息与阅读方式",
+            "1 词典与阅读",
             "2 页面模板",
             "3 词头结构",
-            "4 测试与确认",
+            "4 测试确认",
         ):
             host = ttk.Frame(self.notebook)
             host.rowconfigure(0, weight=1)
@@ -620,7 +620,7 @@ class ProjectProfileWizard(tk.Toplevel):
         self.bind("<Button-4>", lambda event: self._wizard_linux_wheel(event, -1), add="+")
         self.bind("<Button-5>", lambda event: self._wizard_linux_wheel(event, 1), add="+")
 
-        summary_box = ttk.LabelFrame(left_panel, text="当前 Project Profile", padding=(8, 5))
+        summary_box = ttk.LabelFrame(left_panel, text="当前项目Profile", padding=(8, 5))
         summary_box.grid(row=4, column=0, sticky="ew", pady=(8, 0))
         self.summary_var = tk.StringVar(value="")
         ttk.Label(
