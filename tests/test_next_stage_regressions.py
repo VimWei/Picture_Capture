@@ -1165,12 +1165,15 @@ def test_layout_percentage_helpers_preserve_pixel_backend_contract():
     quick_start = text.index("    def _build_quick_settings(")
     quick_end = text.index("\n    def ", quick_start + 10)
     quick = text[quick_start:quick_end]
-    for label in ("正文起始Y%：", "首栏X%：", "单栏宽%：", "栏间空%："):
+    for label in ("正文起始Y：", "首栏X：", "单栏宽：", "栏间空："):
         assert label in quick
-    for label in ("单行高%：", "行间空%：", "正文缩进%：", "微调判距%："):
+    for label in ("单行高：", "行间空：", "正文缩进：", "微调判距："):
         assert label not in quick
-    assert quick.index('"单栏宽%："') > quick.index('"首栏X%："')
-    assert quick.index('"栏间空%："') > quick.index('"单栏宽%："')
+    assert quick.index('"单栏宽："') > quick.index('"首栏X："')
+    assert quick.index('"栏间空："') > quick.index('"单栏宽："')
+    assert "self.quick_pixel_vars: dict[str, tk.StringVar] = {}" in quick
+    assert 'ttk.Label(value_frame, text="%")' in quick
+    assert 'ttk.Label(value_frame, text="px")' in quick
     assert '"若所选页面数量≥2，参数为稳健中位数"' in quick
     detect_start = text.index("    def detect_layout_current(self) -> None:")
     detect_end = text.index("\n    def detect_layout_consistency_selected", detect_start)
@@ -1179,6 +1182,10 @@ def test_layout_percentage_helpers_preserve_pixel_backend_contract():
     assert "多页数值参数将取稳健中位数" in detect
     assert '"start_y": "% 图高"' in text
     assert '"manual_x": "% 图宽"' in text
+    assert "def _quick_percent_parameter_changed(self, name: str)" in text
+    assert "def _quick_pixel_parameter_changed(self, name: str)" in text
+    assert 'self._quick_geometry_edit_source[name] = "pixel"' in text
+    assert 'geometry_source == "pixel"' in text
 
 
 def test_page_template_auto_footer_uses_full_page_height_not_legacy_bottom_y():
