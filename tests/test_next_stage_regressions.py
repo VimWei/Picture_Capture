@@ -332,11 +332,14 @@ def test_settings_center_uses_context_help_units_and_user_facing_modes():
     assert "def _bind_responsive_labels(" in settings
     assert "label_width = int(label.winfo_width())" in settings
     assert "available = max(48, label_width - 12)" in settings
-    assert "label.configure(wraplength=wraplength)" in settings
+    assert "_wrap_mixed_ui_text(" in settings
+    assert "label.configure(text=rendered, wraplength=0)" in settings
+    assert "label._pc_dynamic_textvariable = bool(textvariable)" in settings
     assert "control.columnconfigure(0, weight=1)" in settings
     assert 'widget.grid(row=0, column=0, sticky="ew")' in settings
     assert "wraplength=0 if single_line_labels else 180" in settings
     assert 'justify="left"' in settings
+    assert "self._settings_help_body_label = help_body" in settings
     assert 'style="PC.Settings.TNotebook"' in settings
     assert '"PC.Settings.TNotebook.Tab"' in settings
     assert 'padding=(13, 7)' in settings
@@ -552,6 +555,20 @@ def test_crop_settings_entry_redirects_to_settings_center_tab():
     assert "CropSettingsDialog(self, indices)" not in method
 
 
+def test_mixed_ui_wrap_collapses_hard_breaks_and_keeps_latin_words():
+    from picture_capture.app import _normalize_ui_paragraphs, _wrap_mixed_ui_text
+
+    assert _normalize_ui_paragraphs("页面\n模板\n\n作用：测试") == "页面模板\n\n作用：测试"
+    wrapped = _wrap_mixed_ui_text(
+        "先用代表页证明“版面 + Profile + OCR”组合可靠，再扩大页面范围。",
+        lambda value: len(value) * 10,
+        140,
+    )
+    assert "Profi\nle" not in wrapped
+    assert "O\nCR" not in wrapped
+    assert "\n" in wrapped
+
+
 def test_usage_guide_is_modern_task_oriented_and_centered():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
@@ -584,16 +601,25 @@ def test_usage_guide_is_modern_task_oriented_and_centered():
     assert "OCR画线是默认推荐模式" in guide
     assert "普通画线降为备用" in guide
     assert "默认先用 OCR画线验证代表页" in guide
-    assert "wraplength=158" in guide
+    assert "sidebar_hint_text =" in guide
+    assert "_wrap_mixed_ui_text(" in guide
+    assert "wraplength=158" not in guide
     assert 'header.bind("<Configure>", resize_header, add="+")' in guide
     assert "def _register_wrapped_label(" in guide
     assert "self.after_idle(self._refresh_wrapped_labels)" in guide
+    assert "_wrap_mixed_ui_text(" in guide
     assert "wraplength=660" not in guide
     assert "wraplength=620" not in guide
     assert "新建项目】或【已有项目" not in guide
     assert "一、普通版面参数" not in guide
     assert "所选页面 ≥2 时，数值字段使用**稳健中位数**" not in guide
     assert "数值参数采用稳健中位数" in guide
+    from picture_capture.app import UsageGuideWindow
+    for _key, _title, subtitle, cards in UsageGuideWindow.PAGES:
+        assert "\n" not in subtitle
+        for _badge, card_title, body in cards:
+            assert "\n" not in card_title
+            assert "\n" not in body
     assert 'self.bind("<Escape>", lambda _event: self.destroy())' in guide
 
     show_start = text.index("    def show_help_dialog(self) -> None:")

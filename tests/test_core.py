@@ -8151,3 +8151,15 @@ def test_review_filter_and_main_overlay_ui_contracts_are_exposed():
     assert 'text="[X]"' in text
     assert 'bg="#9d042f"' in text
     assert 'record["delete_widget"] = delete_button' in text
+
+
+def test_generated_app_icon_is_packaged_and_applied_to_root():
+    root = Path(__file__).resolve().parents[1]
+    app_text = (root / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+    icon = root / "src" / "picture_capture" / "data" / "app_icon.png"
+    assert icon.exists()
+    assert icon.stat().st_size > 1000
+    assert '"data/*.png"' in pyproject
+    assert 'icon_path = Path(__file__).resolve().parent / "data" / "app_icon.png"' in app_text
+    assert "self.iconphoto(True, self._app_icon_photo)" in app_text
