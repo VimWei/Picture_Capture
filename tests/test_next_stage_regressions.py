@@ -1063,27 +1063,28 @@ def test_page_template_alternating_ab_side_widths_are_independent():
     assert entry_allowed_by_page_template(84, 30, image.size, settings, 1)
 
 
-def test_main_canvas_percentage_rulers_are_display_only_and_draggable():
+def test_main_canvas_percentage_rulers_are_fixed_display_only_overlays():
     root = Path(__file__).resolve().parents[1]
     app = (root / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
     models = (root / "src" / "picture_capture" / "models.py").read_text(encoding="utf-8")
 
     assert "show_rulers: bool = False" in models
     assert 'ruler_color: str = "#1976d2"' in models
-    assert "ruler_top_y_ratio: float = 0.0" in models
-    assert "ruler_bottom_y_ratio: float = 1.0" in models
-    assert "ruler_left_x_ratio: float = 0.0" in models
-    assert "ruler_right_x_ratio: float = 1.0" in models
+    assert "ruler_top_y_ratio" not in models
+    assert "ruler_bottom_y_ratio" not in models
+    assert "ruler_left_x_ratio" not in models
+    assert "ruler_right_x_ratio" not in models
+    assert 'for ruler_id, y in (("top", 0.0), ("bottom", display_height)):' in app
+    assert 'for ruler_id, x in (("left", 0.0), ("right", display_width)):' in app
     assert "for half_percent in range(201):" in app
     assert "pct = half_percent * 0.5" in app
-    assert "for value in range(0, 101, 5):" in app
-    for ruler_id in ("top", "bottom", "left", "right"):
-        assert f'f"ruler-{{ruler_id}}"' in app
-    assert 'self.canvas.move(tag, 0, canvas_y - last_y)' in app
-    assert 'self.canvas.move(tag, canvas_x - last_x, 0)' in app
-    assert 'setattr(self.settings, f"ruler_{ruler_id}_y_ratio", ratio)' in app
-    assert 'setattr(self.settings, f"ruler_{ruler_id}_x_ratio", ratio)' in app
-    assert "标尺可以帮助版面参数的手动填写，允许拖动。" in app
+    assert "for value in range(5, 100, 5):" in app
+    assert 'label_x = x - label_gap if ruler_id == "left" else x + label_gap' in app
+    assert 'anchor = "e" if ruler_id == "left" else "w"' in app
+    assert "标尺可以帮助版面参数的手动填写。" in app
+    assert "_drag_ruler_id" not in app
+    assert "_ruler_drag_last_canvas" not in app
+    assert "self.canvas.move(tag" not in app
     assert "build_page_crop_plan" not in app[
         app.index("    def _draw_bidirectional_rulers"):
         app.index("    def redraw(", app.index("    def _draw_bidirectional_rulers"))
@@ -1103,11 +1104,15 @@ def test_layout_percentage_helpers_preserve_pixel_backend_contract():
     assert '"manual_x": "width"' in text
     assert '"body_indent": "width"' in text
     assert '"horizontal_tolerance": "width"' in text
-    for label in (
-        "正文起始Y%：", "首栏X%：", "单栏宽%：", "栏间空%：",
-        "单行高%：", "行间空%：", "正文缩进%：", "微调判距%：",
-    ):
-        assert label in text
+    quick_start = text.index("    def _build_quick_settings(")
+    quick_end = text.index("\n    def ", quick_start + 10)
+    quick = text[quick_start:quick_end]
+    for label in ("正文起始Y%：", "首栏X%：", "单栏宽%：", "栏间空%："):
+        assert label in quick
+    for label in ("单行高%：", "行间空%：", "正文缩进%：", "微调判距%："):
+        assert label not in quick
+    assert quick.index('"单栏宽%："') > quick.index('"首栏X%："')
+    assert quick.index('"栏间空%："') > quick.index('"单栏宽%："')
     assert '"start_y": "% 图高"' in text
     assert '"manual_x": "% 图宽"' in text
 
@@ -2159,7 +2164,7 @@ def test_ordinary_drawing_auto_refine_y_is_shared_and_switchable(monkeypatch):
     assert refined_calls == len(refined)
 
 
-def test_auto_refine_y_is_exposed_as_shared_ordinary_drawing_control():
+def test_ordinary_only_controls_stay_out_of_main_layout_section():
     source = (
         Path(__file__).resolve().parents[1]
         / "src" / "picture_capture" / "app.py"
@@ -2173,13 +2178,16 @@ def test_auto_refine_y_is_exposed_as_shared_ordinary_drawing_control():
     normal_checks_end = settings_text.index("    OCR_COMMON_CHECKS = (", normal_checks_start)
     normal_checks = settings_text[normal_checks_start:normal_checks_end]
     assert '("自动精修横线 Y", "paddle_refine_separator_y")' in normal_checks
+    assert '("使用自动版面参数", "ordinary_auto_layout")' in normal_checks
 
     quick_start = source.index("    def _build_quick_settings(")
     quick_end = source.index("\n    def ", quick_start + 10)
     quick = source[quick_start:quick_end]
-    assert 'text="自动精修横线Y（通用）"' in quick
-    assert 'self.quick_bool_vars["paddle_refine_separator_y"] = refine_y_var' in quick
-    assert 'text="使用自动版面参数"' in quick
+    assert 'text="自动精修横线Y（通用）"' not in quick
+    assert 'self.quick_bool_vars["paddle_refine_separator_y"] = refine_y_var' not in quick
+    assert 'text="使用自动版面参数"' not in quick
+    for label in ("单行高%：", "行间空%：", "正文缩进%：", "微调判距%："):
+        assert label not in quick
     for name in (
         "ordinary_auto_columns", "ordinary_auto_start_y", "ordinary_auto_manual_x",
         "ordinary_auto_column_width", "ordinary_auto_gutter",
