@@ -5832,8 +5832,8 @@ def test_review_screenshot_polish_prevents_right_pane_clipping():
     build_end = review.index("    def _toggle_review_panel(", build_start)
     build = review[build_start:build_end]
     assert "def add_review_height_control(" in build
-    assert 'text="普通词条行切图高："' in build
-    assert 'text="单字行高："' in build
+    assert '"普通词条行切图高："' in build
+    assert '"单字行高："' in build
     height_controls = build[
         build.index("        def add_review_height_control("):
         build.index("        zoom_row = ttk.Frame(")
@@ -6058,8 +6058,8 @@ def test_sidebar_scroll_review_height_controls_and_normal_process_worker_are_wir
     review_start = text.index("class ReviewWindow")
     review_end = text.index("class OCRConflictReviewDialog", review_start)
     review = text[review_start:review_end]
-    assert 'text="行间空："' in review
-    assert 'text="普通词条行切图高："' in review
+    assert '"行间空："' in review
+    assert '"普通词条行切图高："' in review
     assert "self.review_regular_crop_height_var" in review
     detect_start = text.index("    def _detect_pages(")
     detect_end = text.index("    def clear_entries", detect_start)
@@ -6231,9 +6231,9 @@ def test_v21122_hotfix2_review_ui_exposes_shared_and_single_height_plus_main_ocr
     start = text.index("class ReviewWindow")
     end = text.index("class OCRConflictReviewDialog", start)
     review = text[start:end]
-    assert 'text="单行高："' in review
+    assert '"单行高："' in review
     assert 'textvariable=self.review_line_height_var' in review
-    assert 'text="单字行高："' in review
+    assert '"单字行高："' in review
     assert 'textvariable=self.review_single_cjk_line_height_var' in review
     height_controls = review[
         review.index("        def add_review_height_control("):
