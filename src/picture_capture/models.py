@@ -148,7 +148,7 @@ class AppSettings:
     page_section_color: str = "#1976d2"
     page_section_width: int = 2
     # Optional four-edge percentage rulers are fixed display-only overlays.
-    show_rulers: bool = False
+    show_rulers: bool = True
     ruler_color: str = "#1976d2"
     headword_marker_color: str = "#ff0000"
     illustration_outline_color: str = "#1976d2"
