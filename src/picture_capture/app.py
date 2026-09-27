@@ -1503,16 +1503,28 @@ class UsageGuideWindow(tk.Toplevel):
             header, text="帮助中心", bg=colors["bg"], fg=colors["text"],
             font=self._title_font, anchor="w",
         ).pack(anchor="w")
-        tk.Label(
+        header_subtitle = tk.Label(
             header,
             text="按当前版本真实工作流组织：从项目Profile、版面参数、画线和校对，到切图、PicDic 与常见排错。",
             bg=colors["bg"], fg=colors["muted"], anchor="w", justify="left",
-        ).pack(anchor="w", pady=(4, 0))
+        )
+        header_subtitle.pack(anchor="w", fill="x", pady=(4, 0))
         self._context_var = tk.StringVar()
-        tk.Label(
+        context_label = tk.Label(
             header, textvariable=self._context_var, bg=colors["bg"], fg=colors["accent"],
-            font=self._meta_font, anchor="w",
-        ).pack(anchor="w", pady=(7, 0))
+            font=self._meta_font, anchor="w", justify="left",
+        )
+        context_label.pack(anchor="w", fill="x", pady=(7, 0))
+
+        def resize_header(event: tk.Event) -> None:
+            wrap = max(320, int(event.width) - 4)
+            try:
+                header_subtitle.configure(wraplength=wrap)
+                context_label.configure(wraplength=wrap)
+            except tk.TclError:
+                pass
+
+        header.bind("<Configure>", resize_header, add="+")
 
         body = tk.Frame(shell, bg=colors["bg"])
         body.pack(fill="both", expand=True)
@@ -11366,6 +11378,18 @@ class PictureCaptureApp(tk.Tk):
             button.pack(side="left", padx=(2, 5), fill="y")
             self.quick_color_buttons[name] = button
             self._style_color_button(button, str(self.quick_color_vars[name].get()))
+            color_tips = {
+                "ruler_color": "选择标尺线和刻度数字颜色。",
+                "page_section_color": "选择 SECTION 边界线颜色。",
+                "guide_color": "选择栏左垂线颜色。",
+                "headword_marker_color": "选择词头横线颜色。",
+                "illustration_outline_color": "选择插图轮廓颜色。",
+                "illustration_fill_color": "选择插图区域背景色。",
+                "illustration_label_border_color": "选择插图标签外框颜色。",
+                "illustration_label_fill_color": "选择插图标签背景色。",
+                "main_entry_default_color": "选择主画布词条文本框默认背景色。",
+            }
+            self._attach_tooltip(button, color_tips.get(name, "点击选择颜色。"))
             return button
 
         section_row = ttk.Frame(aux); section_row.grid(row=0, column=0, columnspan=4, sticky="ew")
