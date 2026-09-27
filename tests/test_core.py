@@ -4766,8 +4766,8 @@ def test_action_and_postproduction_rows_use_equal_width_grid_columns():
     post_end = text.index("        # Main-panel parameters are live:", post_start)
     post = text[post_start:post_end]
     assert 'row.columnconfigure(bi, weight=1, uniform=f"postproduction-row-{ri}")' in post
-    assert ').grid(' in post
-    assert '.pack(\n                    side="left", fill="x", expand=True' not in post
+    assert 'button.grid(' in post
+    assert 'button.pack(side="left", fill="x", expand=True' not in post
 
 
 def test_main_quick_parameter_entries_are_left_aligned():
