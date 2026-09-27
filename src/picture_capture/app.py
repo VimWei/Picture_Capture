@@ -1724,7 +1724,7 @@ class UsageGuideWindow(tk.Toplevel):
         self._clear_content()
         self._add_page_heading(
             f"搜索：{self.search_var.get().strip()}",
-            f"在使用指南中找到 {len(matches)} 条匹配内容。",
+            f"在帮助中心中找到 {len(matches)} 条匹配内容。",
         )
         if not matches:
             self._add_callout(
