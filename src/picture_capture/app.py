@@ -11270,14 +11270,14 @@ class PictureCaptureApp(tk.Tk):
         )
         normal.pack(fill="x")
         add_field(normal, 0, 0, "分栏数：", "columns", int)
-        add_field(normal, 0, 2, "正文起始Y：", "start_y", int)
-        add_field(normal, 0, 4, "首栏X：", "manual_x", int)
-        add_field(normal, 0, 6, "单栏宽：", "column_width", int)
-        add_field(normal, 1, 0, "栏间空：", "gutter", int)
-        add_field(normal, 1, 2, "单行高：", "character_height", int)
-        add_field(normal, 1, 4, "行间空：", "row_padding", int)
-        add_field(normal, 1, 6, "正文缩进：", "body_indent", int)
-        add_field(normal, 2, 0, "微调判距：", "horizontal_tolerance", int)
+        add_field(normal, 0, 2, "正文起始Y%：", "start_y", float)
+        add_field(normal, 0, 4, "首栏X%：", "manual_x", float)
+        add_field(normal, 0, 6, "单栏宽%：", "column_width", float)
+        add_field(normal, 1, 0, "栏间空%：", "gutter", float)
+        add_field(normal, 1, 2, "单行高%：", "character_height", float)
+        add_field(normal, 1, 4, "行间空%：", "row_padding", float)
+        add_field(normal, 1, 6, "正文缩进%：", "body_indent", float)
+        add_field(normal, 2, 0, "微调判距%：", "horizontal_tolerance", float)
         shared_draw_row = ttk.Frame(normal)
         shared_draw_row.grid(
             row=2, column=2, columnspan=6, sticky="w", pady=(4, 0)
@@ -11705,8 +11705,8 @@ class PictureCaptureApp(tk.Tk):
         if not hasattr(self, "quick_field_labels"):
             return
         labels = {
-            "start_y": "正文起始Y：",
-            "manual_x": "首栏X：",
+            "start_y": "正文起始Y%：",
+            "manual_x": "首栏X%：",
         }
         for name, label in labels.items():
             widget = self.quick_field_labels.get(name)
@@ -11722,11 +11722,14 @@ class PictureCaptureApp(tk.Tk):
             for name, var in self.quick_vars.items():
                 if hasattr(self.settings, name):
                     value = getattr(self.settings, name)
-                    if name in {
-                        "start_y", "manual_x", "column_width",
-                        "gutter", "character_height", "row_padding",
-                    }:
-                        value = self._quick_geometry_value(name)
+                    if name in LAYOUT_PERCENT_AXES:
+                        source_value = self._quick_geometry_value(name)
+                        if self.image is not None:
+                            value = _format_layout_percent(
+                                _layout_pixels_to_percent(self.image, name, source_value)
+                            )
+                        else:
+                            value = source_value
                     if name == "main_entry_x_ratio":
                         value = round(float(value) * 100)
                     if name in {
@@ -11764,16 +11767,19 @@ class PictureCaptureApp(tk.Tk):
             previous_ocr_language = str(getattr(self.settings, "ocr_language", "") or "")
             original_geometry = {
                 name: self._quick_geometry_value(name)
-                for name in (
-                    "start_y", "manual_x", "column_width",
-                    "gutter", "character_height", "row_padding",
-                )
+                for name in LAYOUT_PERCENT_AXES
                 if name in self.quick_vars
             }
             for name, var in self.quick_vars.items():
                 value = self.quick_field_casts[name](var.get())
                 if name in original_geometry:
-                    value = int(value)
+                    if self.image is not None and name in LAYOUT_PERCENT_AXES:
+                        percent = float(value)
+                        if not 0.0 <= percent <= 100.0:
+                            raise ValueError(f"{name} 必须在 0–100% 之间。")
+                        value = _layout_percent_to_pixels(self.image, name, percent)
+                    else:
+                        value = int(value)
                     if value < 0:
                         raise ValueError(f"{name} 不能小于 0。")
                     changed = value != original_geometry[name]
