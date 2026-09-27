@@ -9748,6 +9748,7 @@ class PictureCaptureApp(tk.Tk):
                 "success_hover": base["success_hover"],
                 "tree_selected": base["selection"],
                 "canvas": base["canvas"],
+                "ruler_margin": "#20252b",
             }
         else:
             native_background = str(style.lookup("TFrame", "background") or "#f6f7f9")
@@ -9768,6 +9769,7 @@ class PictureCaptureApp(tk.Tk):
                 "success_hover": "#588F64",
                 "tree_selected": "#dce8f7",
                 "canvas": "#30343b",
+                "ruler_margin": "#f1f3f6",
             }
         self._main_ui_colors = colors
 
@@ -14617,6 +14619,28 @@ class PictureCaptureApp(tk.Tk):
         display_width = float(max(1, self.image.width - 1)) * self.view_scale
         display_height = float(max(1, self.image.height - 1)) * self.view_scale
         color = str(getattr(self.settings, "ruler_color", "#1976d2") or "#1976d2")
+        margin = 28
+        margin_color = str(
+            getattr(self, "_main_ui_colors", {}).get(
+                "ruler_margin",
+                "#20252b" if self.appearance_mode == "dark" else "#f1f3f6",
+            )
+        )
+        # Only the out-of-image ruler gutters get this background.  The page
+        # image and the rest of the canvas keep their existing colours.
+        self.canvas.create_rectangle(
+            -margin, 0, 0, display_height + margin,
+            fill=margin_color, outline="", tags=("ruler-margin",),
+        )
+        self.canvas.create_rectangle(
+            display_width, 0, display_width + margin, display_height + margin,
+            fill=margin_color, outline="", tags=("ruler-margin",),
+        )
+        self.canvas.create_rectangle(
+            0, display_height, display_width, display_height + margin,
+            fill=margin_color, outline="", tags=("ruler-margin",),
+        )
+
         major_tick = 7
         minor_tick = 4
         label_gap = major_tick + 2
