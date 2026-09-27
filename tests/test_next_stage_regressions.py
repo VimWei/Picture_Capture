@@ -3054,6 +3054,35 @@ def test_concurrency_picdic_pair_rolls_back_when_second_publish_fails(tmp_path, 
     assert not list(out.glob("*.bak"))
 
 
+def test_focused_filter_streams_complete_batches_and_prefetches_next_batch():
+    fake = SimpleNamespace(
+        filtered_targets=[{} for _ in range(45)],
+        _filter_scan_complete=False,
+        _focused_batch_size=lambda: 20,
+    )
+    assert ReviewWindow._filter_available_target_count(fake) == 40
+    fake._filter_scan_complete = True
+    assert ReviewWindow._filter_available_target_count(fake) == 45
+
+    root = Path(__file__).resolve().parents[1]
+    app = (root / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
+    review_start = app.index("class ReviewWindow")
+    review_end = app.index("class OCRConflictReviewDialog", review_start)
+    review = app[review_start:review_end]
+
+    focused_start = review.index("    def run_focused_filter(")
+    focused_end = review.index("\n    def _render_filter_batch(", focused_start)
+    focused = review[focused_start:focused_end]
+    assert "needed_for_next" in focused
+    assert "if len(additions) >= needed_for_next:" in focused
+    assert "start_remaining_scan(" in focused
+    assert "self._schedule_filter_next_batch_preload()" in focused
+    assert 'f"focused-filter-prefetch-{id(self)}"' in focused
+    assert "_filter_batch_render_cache" in focused
+    assert "下一批已在后台预生成，即将显示" in focused
+    assert "return (total // batch_size) * batch_size" in focused
+
+
 def test_concurrency_review_tracks_critical_workers_and_stale_results():
     root = Path(__file__).resolve().parents[1]
     app = (root / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
