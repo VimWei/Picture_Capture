@@ -9,6 +9,13 @@ def main() -> int:
 
     app = PictureCaptureApp()
     try:
+        if app._app_icon_photo is None:
+            raise RuntimeError(
+                "Packaged application icon failed to load: "
+                + str(getattr(app, "_app_icon_error", None))
+            )
+        if not app._app_icon_registered:
+            raise RuntimeError("Application icon could not be registered")
         app.withdraw()
         app.update_idletasks()
 

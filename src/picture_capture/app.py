@@ -9655,14 +9655,35 @@ class OldNewComparisonWindow(tk.Toplevel):
 class PictureCaptureApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self._app_icon_photo: tk.PhotoImage | None = None
+        self._app_icon_photo: ImageTk.PhotoImage | None = None
+        self._app_icon_registered = False
+        self._app_icon_error: str | None = None
+        icon_path = Path(__file__).resolve().parent / "data" / "app_icon.png"
         try:
-            icon_path = Path(__file__).resolve().parent / "data" / "app_icon.png"
-            if icon_path.exists():
-                self._app_icon_photo = tk.PhotoImage(file=str(icon_path))
-                self.iconphoto(True, self._app_icon_photo)
-        except (tk.TclError, OSError):
+            if not icon_path.exists():
+                self._app_icon_error = f"icon asset not found: {icon_path}"
+            else:
+                with Image.open(icon_path) as icon_image:
+                    self._app_icon_photo = ImageTk.PhotoImage(icon_image.convert("RGBA"))
+        except (tk.TclError, OSError) as exc:
             self._app_icon_photo = None
+            self._app_icon_error = f"{type(exc).__name__}: {exc} (path={icon_path})"
+        if self._app_icon_photo is not None:
+            # Prefer Tk's default icon so future Toplevels inherit it. Some
+            # window-manager/headless combinations reject the default flag, so
+            # fall back to explicitly setting the root icon instead.
+            try:
+                self.iconphoto(True, self._app_icon_photo)
+                self._app_icon_registered = True
+            except tk.TclError:
+                try:
+                    self.iconphoto(False, self._app_icon_photo)
+                    self._app_icon_registered = True
+                except tk.TclError:
+                    pass
+        # Reapply the same packaged icon to every mapped Toplevel. This makes
+        # secondary-window behavior independent of default-icon inheritance.
+        self.bind_class("Toplevel", "<Map>", self._app_icon_toplevel_mapped, add="+")
         self.title(f"Picture Capture v{__version__} — OCR 词头定位")
         fit_window_to_work_area(self, 1440, 900, min_width=1080, min_height=680)
         self.project: ProjectState | None = None
@@ -9844,6 +9865,21 @@ class PictureCaptureApp(tk.Tk):
         self.after_idle(self._maximize_main_window)
         self.after_idle(self._ensure_sidebar_navigation_width)
         self.after_idle(self.restore_last_session)
+
+    def _app_icon_toplevel_mapped(self, event: tk.Event) -> None:
+        widget = getattr(event, "widget", None)
+        if not isinstance(widget, tk.Toplevel) or self._app_icon_photo is None:
+            return
+        if getattr(widget, "_pc_app_icon_applied", False):
+            return
+        # Mark before iconphoto(): on Windows, changing the window icon while a
+        # Toplevel is mapping may itself produce another Map notification.
+        # The guard keeps icon propagation idempotent and prevents a remap loop.
+        widget._pc_app_icon_applied = True
+        try:
+            widget.iconphoto(False, self._app_icon_photo)
+        except tk.TclError:
+            pass
 
     def _maximize_main_window(self) -> None:
         """Start the main window maximized, with cross-platform fallbacks."""
