@@ -282,6 +282,26 @@ def _format_layout_percent(value: int | float) -> str:
     return rendered or "0"
 
 
+def _review_height_pixels_to_percent(
+    image: Image.Image | None, pixels: int | float,
+) -> float:
+    """Convert a proofreading vertical source-pixel distance to % image height."""
+    return _layout_pixels_to_percent(image, "character_height", pixels)
+
+
+def _review_height_percent_to_pixels(
+    image: Image.Image | None, percent: int | float,
+) -> int:
+    """Convert a proofreading % image-height value back to source pixels."""
+    return _layout_percent_to_pixels(image, "character_height", percent)
+
+
+def _format_review_height_percent(
+    image: Image.Image | None, pixels: int | float,
+) -> str:
+    return _format_layout_percent(_review_height_pixels_to_percent(image, pixels))
+
+
 def _natural_text_key(value: object) -> tuple:
     """Natural, case-insensitive key used by the sortable page list.
 
@@ -4540,13 +4560,25 @@ class ReviewWindow(tk.Toplevel):
         self.review_vertical_padding_var = tk.StringVar(
             value=str(max(0, min(30, int(parent.settings.review_entry_vertical_padding))))
         )
-        self.review_line_height_var = tk.StringVar(value=str(max(1, int(parent.settings.character_height))))
-        self.review_row_padding_var = tk.StringVar(value=str(max(0, int(parent.settings.row_padding))))
+        self.review_line_height_var = tk.StringVar(
+            value=_format_review_height_percent(
+                parent.image, max(1, int(parent.settings.character_height))
+            )
+        )
+        self.review_row_padding_var = tk.StringVar(
+            value=_format_review_height_percent(
+                parent.image, max(0, int(parent.settings.row_padding))
+            )
+        )
         self.review_regular_crop_height_var = tk.StringVar(
-            value=str(_effective_review_regular_crop_height(parent.settings))
+            value=_format_review_height_percent(
+                parent.image, _effective_review_regular_crop_height(parent.settings)
+            )
         )
         self.review_single_cjk_line_height_var = tk.StringVar(
-            value=str(_effective_review_single_cjk_line_height(parent.settings))
+            value=_format_review_height_percent(
+                parent.image, _effective_review_single_cjk_line_height(parent.settings)
+            )
         )
         self.review_main_ocr_choices_var = tk.BooleanVar(
             value=bool(getattr(parent.settings, "review_main_show_ocr_choices", False))
@@ -5120,33 +5152,33 @@ class ReviewWindow(tk.Toplevel):
         height_row.pack(fill="x")
         ttk.Label(height_row, text="单行高：").pack(side="left")
         self.review_line_height_spin = ttk.Spinbox(
-            height_row, from_=1, to=500, increment=1, width=5,
+            height_row, from_=0.01, to=100.0, increment=0.05, width=6,
             textvariable=self.review_line_height_var, style="PCR.Compact.TSpinbox",
         )
         self.review_line_height_spin.pack(side="left")
-        ttk.Label(height_row, text="px").pack(side="left", padx=(2, 9))
+        ttk.Label(height_row, text="%").pack(side="left", padx=(2, 9))
         ttk.Label(height_row, text="行间空：").pack(side="left")
         ttk.Spinbox(
-            height_row, from_=0, to=200, increment=1, width=4,
+            height_row, from_=0.0, to=100.0, increment=0.05, width=6,
             textvariable=self.review_row_padding_var, style="PCR.Compact.TSpinbox",
         ).pack(side="left")
-        ttk.Label(height_row, text="px").pack(side="left", padx=(2, 0))
+        ttk.Label(height_row, text="%").pack(side="left", padx=(2, 0))
 
         crop_height_row = ttk.Frame(review_info, style="PCR.Surface.TFrame")
         crop_height_row.pack(fill="x", pady=(3, 0))
         ttk.Label(crop_height_row, text="普通词条行切图高：").pack(side="left")
         ttk.Spinbox(
-            crop_height_row, from_=1, to=500, increment=1, width=5,
+            crop_height_row, from_=0.01, to=100.0, increment=0.05, width=6,
             textvariable=self.review_regular_crop_height_var, style="PCR.Compact.TSpinbox",
         ).pack(side="left")
-        ttk.Label(crop_height_row, text="px").pack(side="left", padx=(2, 9))
+        ttk.Label(crop_height_row, text="%").pack(side="left", padx=(2, 9))
         ttk.Label(crop_height_row, text="单字行高：").pack(side="left")
         self.review_single_cjk_line_height_spin = ttk.Spinbox(
-            crop_height_row, from_=1, to=500, increment=1, width=5,
+            crop_height_row, from_=0.01, to=100.0, increment=0.05, width=6,
             textvariable=self.review_single_cjk_line_height_var, style="PCR.Compact.TSpinbox",
         )
         self.review_single_cjk_line_height_spin.pack(side="left")
-        ttk.Label(crop_height_row, text="px").pack(side="left", padx=(2, 0))
+        ttk.Label(crop_height_row, text="%").pack(side="left", padx=(2, 0))
 
         zoom_row = ttk.Frame(review_info, style="PCR.Surface.TFrame")
         zoom_row.pack(fill="x")
@@ -7272,7 +7304,53 @@ class ReviewWindow(tk.Toplevel):
                 pass
         self.parent.save_settings()
 
+    def _review_height_pixels_from_percent_var(
+        self,
+        variable: tk.StringVar,
+        *,
+        minimum: int,
+        maximum: int,
+    ) -> tuple[int, str]:
+        raw = variable.get().strip().rstrip("%").strip()
+        percent = float(raw)
+        percent = max(0.0, min(100.0, percent))
+        pixels = _review_height_percent_to_pixels(self.parent.image, percent)
+        pixels = max(minimum, min(maximum, pixels))
+        normalized = _format_review_height_percent(self.parent.image, pixels)
+        return pixels, normalized
+
+    def _sync_review_height_percent_vars(self) -> None:
+        """Refresh displayed percentages without changing persisted source-pixel values."""
+        self._syncing_review_height_vars = True
+        try:
+            values = (
+                (
+                    self.review_line_height_var,
+                    max(1, int(self.parent.settings.character_height)),
+                ),
+                (
+                    self.review_row_padding_var,
+                    max(0, int(self.parent.settings.row_padding)),
+                ),
+                (
+                    self.review_regular_crop_height_var,
+                    _effective_review_regular_crop_height(self.parent.settings),
+                ),
+                (
+                    self.review_single_cjk_line_height_var,
+                    _effective_review_single_cjk_line_height(self.parent.settings),
+                ),
+            )
+            for variable, pixels in values:
+                rendered = _format_review_height_percent(self.parent.image, pixels)
+                if variable.get() != rendered:
+                    variable.set(rendered)
+        finally:
+            self._syncing_review_height_vars = False
+
     def _schedule_review_line_height_apply(self) -> None:
+        if self._syncing_review_height_vars:
+            return
         if self._review_line_height_apply_job is not None:
             try:
                 self.after_cancel(self._review_line_height_apply_job)
@@ -7283,32 +7361,21 @@ class ReviewWindow(tk.Toplevel):
     def _apply_review_line_height_setting(self) -> None:
         self._review_line_height_apply_job = None
         try:
-            line_height = int(float(self.review_line_height_var.get().strip()))
+            line_height, normalized = self._review_height_pixels_from_percent_var(
+                self.review_line_height_var, minimum=1, maximum=500
+            )
         except (TypeError, ValueError):
             return
-        line_height = max(1, min(500, line_height))
-        if self.review_line_height_var.get() != str(line_height):
-            self.review_line_height_var.set(str(line_height))
-            return
+        if self.review_line_height_var.get() != normalized:
+            self._syncing_review_height_vars = True
+            try:
+                self.review_line_height_var.set(normalized)
+            finally:
+                self._syncing_review_height_vars = False
         self.parent.settings.character_height = line_height
-        # While the project still uses the automatic single-CJK height, keep
-        # its visible value synchronized with the shared main-window line height.
-        if int(getattr(self.parent.settings, "review_single_cjk_line_height", 0) or 0) <= 0:
-            self._syncing_review_height_vars = True
-            try:
-                self.review_single_cjk_line_height_var.set(
-                    str(_effective_review_single_cjk_line_height(self.parent.settings))
-                )
-            finally:
-                self._syncing_review_height_vars = False
-        if int(getattr(self.parent.settings, "review_regular_crop_height", 0) or 0) <= 0:
-            self._syncing_review_height_vars = True
-            try:
-                self.review_regular_crop_height_var.set(
-                    str(_effective_review_regular_crop_height(self.parent.settings))
-                )
-            finally:
-                self._syncing_review_height_vars = False
+        # Automatic review heights remain derived in source pixels; the pane
+        # merely renders those effective values as percentages of this page.
+        self._sync_review_height_percent_vars()
         self.parent.sync_quick_settings()
         self.parent.save_settings()
         self._commit_edits()
@@ -7329,21 +7396,19 @@ class ReviewWindow(tk.Toplevel):
     def _apply_review_row_padding_setting(self) -> None:
         self._review_row_padding_apply_job = None
         try:
-            padding = max(0, min(200, int(float(self.review_row_padding_var.get().strip()))))
+            padding, normalized = self._review_height_pixels_from_percent_var(
+                self.review_row_padding_var, minimum=0, maximum=200
+            )
         except (TypeError, ValueError):
             return
-        if self.review_row_padding_var.get() != str(padding):
-            self.review_row_padding_var.set(str(padding))
-            return
-        self.parent.settings.row_padding = padding
-        if int(getattr(self.parent.settings, "review_regular_crop_height", 0) or 0) <= 0:
+        if self.review_row_padding_var.get() != normalized:
             self._syncing_review_height_vars = True
             try:
-                self.review_regular_crop_height_var.set(
-                    str(_effective_review_regular_crop_height(self.parent.settings))
-                )
+                self.review_row_padding_var.set(normalized)
             finally:
                 self._syncing_review_height_vars = False
+        self.parent.settings.row_padding = padding
+        self._sync_review_height_percent_vars()
         self.parent.sync_quick_settings()
         self.parent.save_settings()
         self._commit_edits()
@@ -7365,13 +7430,19 @@ class ReviewWindow(tk.Toplevel):
     def _apply_review_regular_crop_height_setting(self) -> None:
         self._review_regular_crop_height_apply_job = None
         try:
-            height = max(1, min(500, int(float(self.review_regular_crop_height_var.get().strip()))))
+            height, normalized = self._review_height_pixels_from_percent_var(
+                self.review_regular_crop_height_var, minimum=1, maximum=500
+            )
         except (TypeError, ValueError):
             return
-        if self.review_regular_crop_height_var.get() != str(height):
-            self.review_regular_crop_height_var.set(str(height))
-            return
+        if self.review_regular_crop_height_var.get() != normalized:
+            self._syncing_review_height_vars = True
+            try:
+                self.review_regular_crop_height_var.set(normalized)
+            finally:
+                self._syncing_review_height_vars = False
         self.parent.settings.review_regular_crop_height = height
+        self._sync_review_height_percent_vars()
         self.parent.save_settings()
         self._commit_edits()
         self._request_render_rows(focus_index=self.active_index)
@@ -7389,14 +7460,19 @@ class ReviewWindow(tk.Toplevel):
     def _apply_review_single_cjk_height_setting(self) -> None:
         self._review_single_cjk_height_apply_job = None
         try:
-            line_height = int(float(self.review_single_cjk_line_height_var.get().strip()))
+            line_height, normalized = self._review_height_pixels_from_percent_var(
+                self.review_single_cjk_line_height_var, minimum=1, maximum=500
+            )
         except (TypeError, ValueError):
             return
-        line_height = max(1, min(500, line_height))
-        if self.review_single_cjk_line_height_var.get() != str(line_height):
-            self.review_single_cjk_line_height_var.set(str(line_height))
-            return
+        if self.review_single_cjk_line_height_var.get() != normalized:
+            self._syncing_review_height_vars = True
+            try:
+                self.review_single_cjk_line_height_var.set(normalized)
+            finally:
+                self._syncing_review_height_vars = False
         self.parent.settings.review_single_cjk_line_height = line_height
+        self._sync_review_height_percent_vars()
         self.parent.save_settings()
         self._commit_edits()
         active = self.active_index
@@ -8674,6 +8750,7 @@ class ReviewWindow(tk.Toplevel):
         if self.parent.change_page(
             delta, preloaded=preloaded, current_already_saved=True, async_allowed=False
         ):
+            self._sync_review_height_percent_vars()
             crops = None
             if (
                 not self.review_zoom_auto

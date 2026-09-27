@@ -5834,6 +5834,14 @@ def test_review_screenshot_polish_prevents_right_pane_clipping():
     assert "crop_height_row = ttk.Frame(" in build
     assert 'text="普通词条行切图高："' in build
     assert 'text="单字行高："' in build
+    height_controls = build[
+        build.index("        height_row = ttk.Frame("):
+        build.index("        zoom_row = ttk.Frame(")
+    ]
+    assert 'text="px"' not in height_controls
+    assert height_controls.count('text="%"') == 4
+    assert "from_=0.01, to=100.0, increment=0.05" in height_controls
+    assert "from_=0.0, to=100.0, increment=0.05" in height_controls
     assert "ref_fill_row = ttk.Frame(" not in build
     assert 'ref_actions, text="从所选词开始填充至本页结束"' in build
     assert build.index('text="定位："') < build.index('ref_actions, text="从所选词开始填充至本页结束"')
@@ -6172,6 +6180,18 @@ def test_v21122_review_ui_exposes_vertical_safety_padding_and_applies_ipady():
     assert 'editor.pack_configure(ipady=padding)' in review
 
 
+def test_review_height_controls_use_percent_of_source_image_height():
+    from picture_capture.app import (
+        _review_height_percent_to_pixels,
+        _review_height_pixels_to_percent,
+    )
+
+    image = Image.new("RGB", (900, 2000), "white")
+    assert _review_height_pixels_to_percent(image, 40) == 2.0
+    assert _review_height_percent_to_pixels(image, 2.0) == 40
+    assert _review_height_percent_to_pixels(image, 1.25) == 25
+
+
 def test_v21122_hotfix2_chinese_single_cjk_height_defaults_to_2_5x_and_can_override():
     from picture_capture.app import _effective_review_single_cjk_line_height
 
@@ -6208,6 +6228,15 @@ def test_v21122_hotfix2_review_ui_exposes_shared_and_single_height_plus_main_ocr
     assert 'textvariable=self.review_line_height_var' in review
     assert 'text="单字行高："' in review
     assert 'textvariable=self.review_single_cjk_line_height_var' in review
+    height_controls = review[
+        review.index("        height_row = ttk.Frame("):
+        review.index("        zoom_row = ttk.Frame(")
+    ]
+    assert 'text="px"' not in height_controls
+    assert height_controls.count('text="%"') == 4
+    assert "_review_height_pixels_from_percent_var" in review
+    assert "_sync_review_height_percent_vars" in review
+    assert "self._sync_review_height_percent_vars()" in review
     assert 'text="显示 OCR 内容选择"' not in review
     assert 'text="显示 OCR 底色"' not in review
     assert 'self.settings.review_main_show_ocr_choices = False' in text
