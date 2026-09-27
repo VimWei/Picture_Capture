@@ -4697,8 +4697,8 @@ def test_display_mode_and_dark_mode_live_at_bottom_of_auxiliary_options():
     page_toolbar = text[page_start:page_end]
     assert 'text="显示模式："' not in page_toolbar
 
-    aux_start = text.index('self._section_frame(parent, "三、辅助选项及框线色块"')
-    aux_end = text.index('actions = self._section_frame(parent, "四、画线与校对"', aux_start)
+    aux_start = text.index('self._section_frame(parent, "二、显示设置"')
+    aux_end = text.index('ocr = self._section_frame(parent, "三、OCR画线参数（默认）"', aux_start)
     aux = text[aux_start:aux_end]
     assert 'display_mode_combo = ttk.Combobox(\n            option_row,' in aux
     assert 'text="深色模式"' in aux
@@ -7894,10 +7894,12 @@ def test_alphabetical_warning_uses_section_major_reading_order():
 def test_main_auxiliary_section_controls_section_overlay_and_ocr_display_order():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
-    aux_start = text.index('self._section_frame(parent, "三、辅助选项及框线色块"')
-    aux_end = text.index('actions = self._section_frame(parent, "四、画线与校对"', aux_start)
+    aux_start = text.index('self._section_frame(parent, "二、显示设置"')
+    aux_end = text.index('ocr = self._section_frame(parent, "三、OCR画线参数（默认）"', aux_start)
     aux = text[aux_start:aux_end]
 
+    assert 'text="显示标尺"' in aux
+    assert '"ruler_color"' in aux
     assert 'text="显示Section"' in aux
     assert '"page_section_color"' in aux
     assert '"page_section_width"' in aux
