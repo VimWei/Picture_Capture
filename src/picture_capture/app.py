@@ -1247,14 +1247,15 @@ class UsageGuideWindow(tk.Toplevel):
             "第一次使用时，按这条路径走最稳妥：先确定结构，再做代表页验证，最后批量处理。",
             (
                 (
-                    "01", "建立项目并完成【项目Profile】",
-                    "用【新建项目】或【已有项目】进入词典目录。新项目先完成词典信息、阅读方式、页面模板、"
-                    "词头结构和代表页测试。Project Profile 是配置入口，不建议一开始就逐个修改高级参数。"
+                    "01", "从【项目中心】建立项目并完成【项目Profile】",
+                    "在主界面【项目中心】中新建或打开词典目录。新项目会自动进入【项目Profile】，依次确认词典信息、"
+                    "阅读方式、页面模板、词头结构和代表页测试；若目录内有多种扫描图片格式，创建时只选择一次本项目使用的后缀。"
                 ),
                 (
-                    "02", "先检测版面，再看结果是否合理",
-                    "在【一、普通版面参数】选择有代表性的页面范围，运行【检测版面参数】。重点检查分栏数、"
-                    "页眉/页尾、首栏 X、单栏宽和栏间空；检测值应先通过肉眼确认，再进入批量画线。"
+                    "02", "先检测版面，再用百分比标尺核对",
+                    "在【一、版面参数】选择有代表性的页面范围，运行【检测版面参数】。选择 2 页及以上时，"
+                    "数值参数采用稳健中位数，分栏数按多数页面确定。主界面显示分栏数、正文起始Y%、首栏X%、单栏宽%和栏间空%；"
+                    "四边百分比标尺默认开启，可直接辅助人工核对和填写。"
                 ),
                 (
                     "03", "默认先用 OCR画线验证代表页",
@@ -1264,11 +1265,11 @@ class UsageGuideWindow(tk.Toplevel):
                 (
                     "04", "先校对误差模式，再决定是否调参",
                     "用【词条校对】检查漏检、误检、OCR 拼写和顺序。若只是少量个案，直接校对通常比继续调全局参数更安全；"
-                    "只有出现稳定、重复的错误模式时，再到【设置中心】针对性调整。"
+                    "只有出现稳定、重复的错误模式时，再到【设置中心】针对性调整。主界面【二～五】默认折叠，需要时点击标题展开。"
                 ),
                 (
                     "05", "正式切图前一定先预览",
-                    "进入【切图设置】确认上下边界、左右留白和插图关系，再使用“切图预览”检查完整 Crop Plan。"
+                    "进入【设置中心 → 切图设置】确认上下边界、左右留白和插图关系，再在主界面选择“切图预览”检查完整 Crop Plan。"
                     "确认无误后再执行【词条切图】或【插图切图】。"
                 ),
                 (
@@ -1306,7 +1307,7 @@ class UsageGuideWindow(tk.Toplevel):
                 (
                     "E", "主画布是最后的人工控制层",
                     "左键可手动增加词条线；Delete 或反引号键可删除当前词条。普通模式下右键进入下一页。"
-                    "鼠标滚轮纵向滚动，Shift + 滚轮横向滚动，Ctrl + 滚轮缩放。"
+                    "鼠标滚轮纵向滚动，Shift + 滚轮横向滚动，Ctrl + 滚轮缩放。四边标尺仅用于读数，不参与 OCR、画线或切图。"
                 ),
                 (
                     "F", "不要把高级参数当作第一步",
@@ -1415,7 +1416,7 @@ class UsageGuideWindow(tk.Toplevel):
                 ),
                 (
                     "1", "整页位置都偏：先查版面参数",
-                    "如果整页的栏位置、页眉、行距或切线整体偏移，优先重新检测/检查【普通版面参数】和 Project Profile 页面模板，"
+                    "如果整页的栏位置、页眉、行距或切线整体偏移，优先重新检测/检查【一、版面参数】和【项目Profile】页面模板，"
                     "不要先调候选置信度。"
                 ),
                 (
@@ -1445,7 +1446,7 @@ class UsageGuideWindow(tk.Toplevel):
     def __init__(self, parent: tk.Misc):
         super().__init__(parent)
         self.parent_app = parent
-        self.title("Picture Capture · 使用指南")
+        self.title("Picture Capture · 帮助中心")
         screen_w = max(900, self.winfo_screenwidth())
         screen_h = max(650, self.winfo_screenheight())
         work_x, work_y, work_w, work_h = _screen_work_area(self)
@@ -1499,12 +1500,12 @@ class UsageGuideWindow(tk.Toplevel):
         header = tk.Frame(shell, bg=colors["bg"])
         header.pack(fill="x", pady=(0, 14))
         tk.Label(
-            header, text="使用指南", bg=colors["bg"], fg=colors["text"],
+            header, text="帮助中心", bg=colors["bg"], fg=colors["text"],
             font=self._title_font, anchor="w",
         ).pack(anchor="w")
         tk.Label(
             header,
-            text="按真实工作流组织：从 Project Profile、画线和校对，到切图、PicDic 与常见排错。",
+            text="按当前版本真实工作流组织：从项目Profile、版面参数、画线和校对，到切图、PicDic 与常见排错。",
             bg=colors["bg"], fg=colors["muted"], anchor="w", justify="left",
         ).pack(anchor="w", pady=(4, 0))
         self._context_var = tk.StringVar()
@@ -1628,7 +1629,7 @@ class UsageGuideWindow(tk.Toplevel):
     def _refresh_context(self) -> None:
         project = getattr(self.parent_app, "project", None)
         if project is None:
-            self._context_var.set("当前：尚未打开项目 · 可先从主界面的【新建项目】或【已有项目】开始")
+            self._context_var.set("当前：尚未打开项目 · 可先从主界面的【项目中心】新建或打开项目")
             state = "disabled"
         else:
             settings = getattr(self.parent_app, "settings", None)
