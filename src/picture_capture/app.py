@@ -9190,8 +9190,9 @@ class PictureCaptureApp(tk.Tk):
         self.page_sections: list[PageSection] = []
         self._section_editing = False
         self._drag_section_boundary: tuple[int, str] | None = None
-        self._drag_ruler_axis: str | None = None
+        self._drag_ruler_id: str | None = None
         self._ruler_drag_last_canvas: tuple[float, float] | None = None
+        self._ruler_hint: tk.Toplevel | None = None
         self._pending_section_editor_index: int | None = None
         self.new_polygon: list[tuple[int, int]] = []
         self.overlay_widgets: list[tk.Widget] = []
@@ -15063,6 +15064,7 @@ class PictureCaptureApp(tk.Tk):
     def canvas_leave(self, _event: tk.Event) -> None:
         self.cursor_canvas_xy = None
         self.canvas.delete("cursor-guide")
+        self._hide_ruler_hint()
         self._set_idle_cursor_status()
 
     def _set_idle_cursor_status(self) -> None:
@@ -15540,14 +15542,17 @@ class PictureCaptureApp(tk.Tk):
         x, y = self.original_xy(event)
         if not (0 <= x < self.image.width and 0 <= y < self.image.height):
             return
-        ruler_axis = self._ruler_hit_axis(x, y)
-        if ruler_axis is not None:
-            self._drag_ruler_axis = ruler_axis
+        ruler_id = self._ruler_hit_id(x, y)
+        if ruler_id is not None:
+            self._drag_ruler_id = ruler_id
             self._ruler_drag_last_canvas = (
                 self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
             )
+            self._hide_ruler_hint()
             self.status_var.set(
-                "拖动横向标尺上下移动" if ruler_axis == "horizontal" else "拖动纵向标尺左右移动"
+                "拖动横向标尺上下移动"
+                if ruler_id in {"top", "bottom"}
+                else "拖动纵向标尺左右移动"
             )
             return
         if self._section_editing:
@@ -15605,14 +15610,17 @@ class PictureCaptureApp(tk.Tk):
         if self.image is None:
             return None
         x, y = self.original_xy(event)
-        if self._drag_ruler_axis is not None:
-            canvas_x = max(0.0, min(float(self.image.width) * self.view_scale, self.canvas.canvasx(event.x)))
-            canvas_y = max(0.0, min(float(self.image.height) * self.view_scale, self.canvas.canvasy(event.y)))
+        if self._drag_ruler_id is not None:
+            max_x = float(max(1, self.image.width - 1)) * self.view_scale
+            max_y = float(max(1, self.image.height - 1)) * self.view_scale
+            canvas_x = max(0.0, min(max_x, self.canvas.canvasx(event.x)))
+            canvas_y = max(0.0, min(max_y, self.canvas.canvasy(event.y)))
             last_x, last_y = self._ruler_drag_last_canvas or (canvas_x, canvas_y)
-            if self._drag_ruler_axis == "horizontal":
-                self.canvas.move("ruler-horizontal", 0, canvas_y - last_y)
+            tag = f"ruler-{self._drag_ruler_id}"
+            if self._drag_ruler_id in {"top", "bottom"}:
+                self.canvas.move(tag, 0, canvas_y - last_y)
             else:
-                self.canvas.move("ruler-vertical", canvas_x - last_x, 0)
+                self.canvas.move(tag, canvas_x - last_x, 0)
             self._ruler_drag_last_canvas = (canvas_x, canvas_y)
             return "break"
         if self._drag_section_boundary is not None:
@@ -15643,18 +15651,24 @@ class PictureCaptureApp(tk.Tk):
         return None
 
     def canvas_left_release(self, _event: tk.Event) -> str | None:
-        if self._drag_ruler_axis is not None:
-            axis = self._drag_ruler_axis
+        if self._drag_ruler_id is not None:
+            ruler_id = self._drag_ruler_id
             canvas_x, canvas_y = self._ruler_drag_last_canvas or (0.0, 0.0)
-            self._drag_ruler_axis = None
+            self._drag_ruler_id = None
             self._ruler_drag_last_canvas = None
             if self.image is not None:
-                if axis == "horizontal":
-                    denominator = max(1.0, float(self.image.height) * self.view_scale)
-                    self.settings.ruler_horizontal_y_ratio = max(0.005, min(0.995, canvas_y / denominator))
+                if ruler_id in {"top", "bottom"}:
+                    denominator = max(
+                        1.0, float(max(1, self.image.height - 1)) * self.view_scale
+                    )
+                    ratio = max(0.0, min(1.0, canvas_y / denominator))
+                    setattr(self.settings, f"ruler_{ruler_id}_y_ratio", ratio)
                 else:
-                    denominator = max(1.0, float(self.image.width) * self.view_scale)
-                    self.settings.ruler_vertical_x_ratio = max(0.005, min(0.995, canvas_x / denominator))
+                    denominator = max(
+                        1.0, float(max(1, self.image.width - 1)) * self.view_scale
+                    )
+                    ratio = max(0.0, min(1.0, canvas_x / denominator))
+                    setattr(self.settings, f"ruler_{ruler_id}_x_ratio", ratio)
                 self.save_settings()
                 self.redraw()
                 self.status_var.set("标尺位置已保存")
@@ -15722,6 +15736,14 @@ class PictureCaptureApp(tk.Tk):
                     self.draw_cursor_guides(canvas_x, canvas_y)
                 source_x = round(canvas_x / self.view_scale)
                 source_y = round(canvas_y / self.view_scale)
+                if (
+                    not self._section_editing
+                    and self._drag_ruler_id is None
+                    and self._ruler_hit_id(source_x, source_y) is not None
+                ):
+                    self._show_ruler_hint(event)
+                else:
+                    self._hide_ruler_hint()
                 self.cursor_status_var.set(
                     f"原图 X,Y {source_x}, {source_y}｜"
                     f"缩放 {round(self.view_scale * 100)}%｜词条 {len(self.entries)}"
@@ -15729,6 +15751,7 @@ class PictureCaptureApp(tk.Tk):
             else:
                 self.cursor_canvas_xy = None
                 self.canvas.delete("cursor-guide")
+                self._hide_ruler_hint()
                 self._set_idle_cursor_status()
 
     def _confidence_bg(self, confidence: float | None) -> str:
