@@ -10799,12 +10799,12 @@ class PictureCaptureApp(tk.Tk):
         ttk.Separator(size_row, orient="vertical").pack(side="left", fill="y", padx=4, pady=3)
 
         fit_width_button = ttk.Button(
-            size_row, text="↔", width=3, command=self.fit_page_width, style="PC.Tool.TButton"
+            size_row, text="⇔", width=3, command=self.fit_page_width, style="PC.Tool.TButton"
         )
         fit_width_button.pack(side="left", padx=(0, 2))
         self._attach_tooltip(fit_width_button, "适合宽度显示")
         fit_height_button = ttk.Button(
-            size_row, text="↕", width=3, command=self.fit_page_height, style="PC.Tool.TButton"
+            size_row, text="⇕", width=3, command=self.fit_page_height, style="PC.Tool.TButton"
         )
         fit_height_button.pack(side="left")
         self._attach_tooltip(fit_height_button, "适合高度显示")

@@ -4718,11 +4718,11 @@ def test_page_list_compact_labels_navigation_order_and_consistency_minimum():
     text = source.read_text(encoding="utf-8")
     assert 'text="当前页"' in text
     assert 'text="当前至末页"' in text
-    assert 'text="↔"' in text
-    assert 'text="↕"' in text
+    assert 'text="⇔"' in text
+    assert 'text="⇕"' in text
     assert 'text="跳到"' not in text
     assert 'text="跳转"' in text
-    assert text.index('text="↕"') < text.index('text="跳转"') < text.index('text="上一页"') < text.index('text="下一页"')
+    assert text.index('text="⇕"') < text.index('text="跳转"') < text.index('text="上一页"') < text.index('text="下一页"')
     page_start = text.index('page_panel = self._section_frame(sidebar, "六、页面列表"')
     page_end = text.index("        list_frame = ttk.Frame(page_panel)", page_start)
     page_toolbar = text[page_start:page_end]
