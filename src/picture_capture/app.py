@@ -9190,8 +9190,6 @@ class PictureCaptureApp(tk.Tk):
         self.page_sections: list[PageSection] = []
         self._section_editing = False
         self._drag_section_boundary: tuple[int, str] | None = None
-        self._drag_ruler_id: str | None = None
-        self._ruler_drag_last_canvas: tuple[float, float] | None = None
         self._ruler_hint: tk.Toplevel | None = None
         self._pending_section_editor_index: int | None = None
         self.new_polygon: list[tuple[int, int]] = []
@@ -11273,37 +11271,10 @@ class PictureCaptureApp(tk.Tk):
         add_field(normal, 0, 0, "分栏数：", "columns", int)
         add_field(normal, 0, 2, "正文起始Y%：", "start_y", float)
         add_field(normal, 0, 4, "首栏X%：", "manual_x", float)
-        add_field(normal, 0, 6, "单栏宽%：", "column_width", float)
-        add_field(normal, 1, 0, "栏间空%：", "gutter", float)
-        add_field(normal, 1, 2, "单行高%：", "character_height", float)
-        add_field(normal, 1, 4, "行间空%：", "row_padding", float)
-        add_field(normal, 1, 6, "正文缩进%：", "body_indent", float)
-        add_field(normal, 2, 0, "微调判距%：", "horizontal_tolerance", float)
-        shared_draw_row = ttk.Frame(normal)
-        shared_draw_row.grid(
-            row=2, column=2, columnspan=6, sticky="w", pady=(4, 0)
-        )
-        refine_y_var = tk.BooleanVar(
-            value=bool(self.settings.paddle_refine_separator_y)
-        )
-        self.quick_bool_vars["paddle_refine_separator_y"] = refine_y_var
-        ttk.Checkbutton(
-            shared_draw_row,
-            text="自动精修横线Y（通用）",
-            variable=refine_y_var,
-            command=self._quick_parameter_changed,
-        ).pack(side="left")
+        add_field(normal, 1, 0, "单栏宽%：", "column_width", float)
+        add_field(normal, 1, 2, "栏间空%：", "gutter", float)
 
-        auto_layout_var = tk.BooleanVar(value=bool(self.settings.ordinary_auto_layout))
-        self.quick_bool_vars["ordinary_auto_layout"] = auto_layout_var
-        ttk.Checkbutton(
-            shared_draw_row,
-            text="使用自动版面参数",
-            variable=auto_layout_var,
-            command=self._quick_parameter_changed,
-        ).pack(side="left", padx=(12, 0))
-
-        row = ttk.Frame(normal); row.grid(row=3, column=0, columnspan=8, sticky="ew", pady=(4, 0))
+        row = ttk.Frame(normal); row.grid(row=2, column=0, columnspan=8, sticky="ew", pady=(4, 0))
         ttk.Button(
             row, text="检测版面参数", command=self.detect_layout_current,
             style="PC.Compact.TButton",
@@ -14638,54 +14609,21 @@ class PictureCaptureApp(tk.Tk):
         )
         return bool(visible) and not bool(self.hide_var.get())
 
-    def _ruler_source_positions(self) -> dict[str, float]:
-        """Return source-image positions for the four draggable edge rulers."""
-        if self.image is None:
-            return {"top": 0.0, "bottom": 0.0, "left": 0.0, "right": 0.0}
-        max_x = float(max(1, self.image.width - 1))
-        max_y = float(max(1, self.image.height - 1))
-
-        def ratio(name: str, default: float) -> float:
-            try:
-                value = float(getattr(self.settings, name, default))
-            except (TypeError, ValueError):
-                value = default
-            return max(0.0, min(1.0, value))
-
-        return {
-            "top": ratio("ruler_top_y_ratio", 0.0) * max_y,
-            "bottom": ratio("ruler_bottom_y_ratio", 1.0) * max_y,
-            "left": ratio("ruler_left_x_ratio", 0.0) * max_x,
-            "right": ratio("ruler_right_x_ratio", 1.0) * max_x,
-        }
-
     def _draw_bidirectional_rulers(self, geometry=None) -> None:
-        """Draw four draggable percentage rulers at the page edges.
-
-        Geometry is accepted for call-site compatibility but rulers are defined
-        only by the source image dimensions.  Labels use one normal 0–100
-        direction: left-to-right for horizontal rulers and top-to-bottom for
-        vertical rulers.
-        """
+        """Draw four fixed percentage rulers on the page edges."""
         _ = geometry
         if not self._rulers_visible() or self.image is None:
             return
         display_width = float(max(1, self.image.width - 1)) * self.view_scale
         display_height = float(max(1, self.image.height - 1)) * self.view_scale
-        positions = self._ruler_source_positions()
         color = str(getattr(self.settings, "ruler_color", "#1976d2") or "#1976d2")
         major_tick = 7
         minor_tick = 4
         label_gap = major_tick + 2
         font_spec = ("TkDefaultFont", 8)
 
-        horizontal = (
-            ("top", positions["top"] * self.view_scale),
-            ("bottom", positions["bottom"] * self.view_scale),
-        )
-        for ruler_id, y in horizontal:
-            tag = f"ruler-{ruler_id}"
-            tags = ("measurement-ruler", "ruler-horizontal", tag)
+        for ruler_id, y in (("top", 0.0), ("bottom", display_height)):
+            tags = ("measurement-ruler", "ruler-horizontal", f"ruler-{ruler_id}")
             self.canvas.create_line(
                 0, y, display_width, y,
                 fill=color, width=1, tags=tags,
@@ -14698,21 +14636,15 @@ class PictureCaptureApp(tk.Tk):
                     x, y - tick, x, y + tick,
                     fill=color, width=1, tags=tags,
                 )
-            for value in range(0, 101, 5):
+            for value in range(5, 100, 5):
                 x = display_width * value / 100.0
-                anchor = "nw" if value == 0 else ("ne" if value == 100 else "n")
                 self.canvas.create_text(
                     x, y + label_gap, text=str(value), fill=color,
-                    anchor=anchor, font=font_spec, tags=tags,
+                    anchor="n", font=font_spec, tags=tags,
                 )
 
-        vertical = (
-            ("left", positions["left"] * self.view_scale),
-            ("right", positions["right"] * self.view_scale),
-        )
-        for ruler_id, x in vertical:
-            tag = f"ruler-{ruler_id}"
-            tags = ("measurement-ruler", "ruler-vertical", tag)
+        for ruler_id, x in (("left", 0.0), ("right", display_width)):
+            tags = ("measurement-ruler", "ruler-vertical", f"ruler-{ruler_id}")
             self.canvas.create_line(
                 x, 0, x, display_height,
                 fill=color, width=1, tags=tags,
@@ -14725,24 +14657,26 @@ class PictureCaptureApp(tk.Tk):
                     x - tick, y, x + tick, y,
                     fill=color, width=1, tags=tags,
                 )
-            for value in range(0, 101, 5):
+            label_x = x - label_gap if ruler_id == "left" else x + label_gap
+            anchor = "e" if ruler_id == "left" else "w"
+            for value in range(5, 100, 5):
                 y = display_height * value / 100.0
-                anchor = "nw" if value == 0 else ("sw" if value == 100 else "w")
                 self.canvas.create_text(
-                    x + label_gap, y, text=str(value), fill=color,
+                    label_x, y, text=str(value), fill=color,
                     anchor=anchor, font=font_spec, tags=tags,
                 )
 
     def _ruler_hit_id(self, source_x: float, source_y: float) -> str | None:
         if not self._rulers_visible() or self.image is None:
             return None
-        positions = self._ruler_source_positions()
+        max_x = float(max(1, self.image.width - 1))
+        max_y = float(max(1, self.image.height - 1))
         tolerance = max(3.0, 8.0 / max(0.05, float(self.view_scale)))
         distances = {
-            "top": abs(float(source_y) - positions["top"]),
-            "bottom": abs(float(source_y) - positions["bottom"]),
-            "left": abs(float(source_x) - positions["left"]),
-            "right": abs(float(source_x) - positions["right"]),
+            "top": abs(float(source_y)),
+            "bottom": abs(float(source_y) - max_y),
+            "left": abs(float(source_x)),
+            "right": abs(float(source_x) - max_x),
         }
         ruler_id, distance = min(distances.items(), key=lambda item: item[1])
         return ruler_id if distance <= tolerance else None
@@ -14757,7 +14691,7 @@ class PictureCaptureApp(tk.Tk):
         self._ruler_hint = None
 
     def _show_ruler_hint(self, event: tk.Event) -> None:
-        text = "标尺可以帮助版面参数的手动填写，允许拖动。"
+        text = "标尺可以帮助版面参数的手动填写。"
         popup = getattr(self, "_ruler_hint", None)
         if popup is None:
             popup = tk.Toplevel(self.canvas)
@@ -14794,7 +14728,7 @@ class PictureCaptureApp(tk.Tk):
             self._draw_bidirectional_rulers(crop_geometry)
             ruler_margin = 28 if self._rulers_visible() else 0
             self.canvas.configure(
-                scrollregion=(0, 0, size[0] + ruler_margin, size[1] + ruler_margin)
+                scrollregion=(-ruler_margin, 0, size[0] + ruler_margin, size[1] + ruler_margin)
             )
             if self.cursor_canvas_xy is not None:
                 self.draw_cursor_guides(*self.cursor_canvas_xy)
@@ -14976,7 +14910,7 @@ class PictureCaptureApp(tk.Tk):
                     self.canvas.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, fill="#ffffff", outline="#00aa55", width=2, tags=("ppp-overlay",))
         ruler_margin = 28 if self._rulers_visible() else 0
         self.canvas.configure(
-            scrollregion=(0, 0, size[0] + ruler_margin, size[1] + ruler_margin)
+            scrollregion=(-ruler_margin, 0, size[0] + ruler_margin, size[1] + ruler_margin)
         )
         if self.cursor_canvas_xy is not None:
             self.draw_cursor_guides(*self.cursor_canvas_xy)
@@ -15550,19 +15484,6 @@ class PictureCaptureApp(tk.Tk):
         x, y = self.original_xy(event)
         if not (0 <= x < self.image.width and 0 <= y < self.image.height):
             return
-        ruler_id = self._ruler_hit_id(x, y)
-        if ruler_id is not None:
-            self._drag_ruler_id = ruler_id
-            self._ruler_drag_last_canvas = (
-                self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
-            )
-            self._hide_ruler_hint()
-            self.status_var.set(
-                "拖动横向标尺上下移动"
-                if ruler_id in {"top", "bottom"}
-                else "拖动纵向标尺左右移动"
-            )
-            return
         if self._section_editing:
             target = self._nearest_section_boundary(x, y)
             if target is None:
@@ -15618,19 +15539,6 @@ class PictureCaptureApp(tk.Tk):
         if self.image is None:
             return None
         x, y = self.original_xy(event)
-        if self._drag_ruler_id is not None:
-            max_x = float(max(1, self.image.width - 1)) * self.view_scale
-            max_y = float(max(1, self.image.height - 1)) * self.view_scale
-            canvas_x = max(0.0, min(max_x, self.canvas.canvasx(event.x)))
-            canvas_y = max(0.0, min(max_y, self.canvas.canvasy(event.y)))
-            last_x, last_y = self._ruler_drag_last_canvas or (canvas_x, canvas_y)
-            tag = f"ruler-{self._drag_ruler_id}"
-            if self._drag_ruler_id in {"top", "bottom"}:
-                self.canvas.move(tag, 0, canvas_y - last_y)
-            else:
-                self.canvas.move(tag, canvas_x - last_x, 0)
-            self._ruler_drag_last_canvas = (canvas_x, canvas_y)
-            return "break"
         if self._drag_section_boundary is not None:
             x = max(0, min(self.image.width - 1, x))
             y = max(0, min(self.image.height - 1, y))
@@ -15659,28 +15567,6 @@ class PictureCaptureApp(tk.Tk):
         return None
 
     def canvas_left_release(self, _event: tk.Event) -> str | None:
-        if self._drag_ruler_id is not None:
-            ruler_id = self._drag_ruler_id
-            canvas_x, canvas_y = self._ruler_drag_last_canvas or (0.0, 0.0)
-            self._drag_ruler_id = None
-            self._ruler_drag_last_canvas = None
-            if self.image is not None:
-                if ruler_id in {"top", "bottom"}:
-                    denominator = max(
-                        1.0, float(max(1, self.image.height - 1)) * self.view_scale
-                    )
-                    ratio = max(0.0, min(1.0, canvas_y / denominator))
-                    setattr(self.settings, f"ruler_{ruler_id}_y_ratio", ratio)
-                else:
-                    denominator = max(
-                        1.0, float(max(1, self.image.width - 1)) * self.view_scale
-                    )
-                    ratio = max(0.0, min(1.0, canvas_x / denominator))
-                    setattr(self.settings, f"ruler_{ruler_id}_x_ratio", ratio)
-                self.save_settings()
-                self.redraw()
-                self.status_var.set("标尺位置已保存")
-            return "break"
         if self._drag_section_boundary is not None:
             self._drag_section_boundary = None
             try:
@@ -15746,7 +15632,6 @@ class PictureCaptureApp(tk.Tk):
                 source_y = round(canvas_y / self.view_scale)
                 if (
                     not self._section_editing
-                    and self._drag_ruler_id is None
                     and self._ruler_hit_id(source_x, source_y) is not None
                 ):
                     self._show_ruler_hint(event)
