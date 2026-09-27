@@ -619,6 +619,8 @@ def test_main_workspace_modern_styles_are_scoped_and_dense():
     assert 'style="PC.Treeview"' in ui
     assert 'style="PC.Footer.TFrame"' in ui
     assert '"一、版面参数"' in text
+    assert 'add_field(normal, 0, 0, "正文栏数：", "columns", int)' in text
+    assert 'add_field(normal, 0, 0, "分栏数：", "columns", int)' not in text
     assert '"二、显示设置"' in text
     assert '"三、OCR画线参数（默认）"' in text
     assert text.index('"二、显示设置"') < text.index('"三、OCR画线参数（默认）"')
