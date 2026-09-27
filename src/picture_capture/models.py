@@ -147,14 +147,9 @@ class AppSettings:
     guide_color: str = "#1976d2"
     page_section_color: str = "#1976d2"
     page_section_width: int = 2
-    # Optional four-edge percentage rulers are display-only overlays.
-    # Ratios are relative to the source image and persist user drag positions.
+    # Optional four-edge percentage rulers are fixed display-only overlays.
     show_rulers: bool = False
     ruler_color: str = "#1976d2"
-    ruler_top_y_ratio: float = 0.0
-    ruler_bottom_y_ratio: float = 1.0
-    ruler_left_x_ratio: float = 0.0
-    ruler_right_x_ratio: float = 1.0
     headword_marker_color: str = "#ff0000"
     illustration_outline_color: str = "#1976d2"
     illustration_outline_width: int = 2
