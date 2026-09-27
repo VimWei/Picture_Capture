@@ -302,6 +302,133 @@ def _format_review_height_percent(
     return _format_layout_percent(_review_height_pixels_to_percent(image, pixels))
 
 
+_UI_WRAP_CLOSING_PUNCTUATION = frozenset("，。；：！？、）》】」』”’…,.!?;:)]}»")
+_UI_WRAP_OPENING_PUNCTUATION = frozenset("（《【「『“‘([{«")
+
+
+def _normalize_ui_paragraphs(value: object) -> str:
+    """Remove accidental single hard breaks while preserving true paragraphs."""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    blocks = re.split(r"\n\s*\n", text)
+    normalized: list[str] = []
+    for block in blocks:
+        parts = [part.strip() for part in block.split("\n") if part.strip()]
+        if not parts:
+            continue
+        merged = parts[0]
+        for part in parts[1:]:
+            if (
+                merged
+                and part
+                and merged[-1].isascii()
+                and part[0].isascii()
+                and (merged[-1].isalnum() or merged[-1] in "_%")
+                and (part[0].isalnum() or part[0] in "_%")
+            ):
+                merged += " "
+            merged += part
+        normalized.append(re.sub(r"[ \t]+", " ", merged).strip())
+    return "\n\n".join(normalized)
+
+
+def _mixed_ui_wrap_tokens(paragraph: str) -> list[str]:
+    """Return CJK characters as individual break opportunities; keep Latin runs whole."""
+    tokens: list[str] = []
+    ascii_run: list[str] = []
+
+    def flush_ascii() -> None:
+        if ascii_run:
+            tokens.append("".join(ascii_run))
+            ascii_run.clear()
+
+    for char in paragraph:
+        if char.isspace():
+            flush_ascii()
+            if not tokens or tokens[-1] != " ":
+                tokens.append(" ")
+            continue
+        if unicodedata.east_asian_width(char) in {"W", "F"}:
+            flush_ascii()
+            tokens.append(char)
+            continue
+        ascii_run.append(char)
+    flush_ascii()
+    return tokens
+
+
+def _wrap_mixed_ui_text(value: object, measure, max_width: int) -> str:
+    """Pixel-wrap Chinese/Latin UI prose without relying on Tk word boundaries."""
+    text = _normalize_ui_paragraphs(value)
+    limit = max(24, int(max_width))
+    if not text:
+        return ""
+
+    wrapped_paragraphs: list[str] = []
+    for paragraph in text.split("\n\n"):
+        lines: list[str] = []
+        current = ""
+        pending_space = False
+
+        def flush_current() -> None:
+            nonlocal current
+            if current:
+                lines.append(current.rstrip())
+                current = ""
+
+        for token in _mixed_ui_wrap_tokens(paragraph):
+            if token == " ":
+                pending_space = bool(current)
+                continue
+            prefix = " " if pending_space and current else ""
+            candidate = current + prefix + token
+            if not current or measure(candidate) <= limit:
+                current = candidate
+                pending_space = False
+                continue
+
+            if token in _UI_WRAP_CLOSING_PUNCTUATION:
+                current += token
+                flush_current()
+                pending_space = False
+                continue
+
+            if current and current[-1] in _UI_WRAP_OPENING_PUNCTUATION:
+                opening = current[-1]
+                current = current[:-1].rstrip()
+                flush_current()
+                current = opening + token
+                pending_space = False
+                continue
+
+            flush_current()
+            token = token.lstrip()
+            if measure(token) <= limit:
+                current = token
+            else:
+                # Extremely long Latin/URL-like tokens are the only case where
+                # a word may be split; normal English words stay intact.
+                for char in token:
+                    candidate = current + char
+                    if current and measure(candidate) > limit:
+                        flush_current()
+                    current += char
+            pending_space = False
+        flush_current()
+        wrapped_paragraphs.append("\n".join(lines))
+    return "\n\n".join(wrapped_paragraphs)
+
+
+def _label_measure(label: tk.Misc):
+    """Return a Tk font measurement callable for classic or ttk labels."""
+    try:
+        font_spec = str(label.cget("font") or "").strip()
+        if font_spec:
+            return font.Font(font=font_spec).measure
+    except (tk.TclError, TypeError, ValueError):
+        pass
+    return font.nametofont("TkDefaultFont").measure
+
+
 def _natural_text_key(value: object) -> tuple:
     """Natural, case-insensitive key used by the sortable page list.
 
@@ -1582,9 +1709,12 @@ class UsageGuideWindow(tk.Toplevel):
             header, text="帮助中心", bg=colors["bg"], fg=colors["text"],
             font=self._title_font, anchor="w",
         ).pack(anchor="w")
+        header_subtitle_text = (
+            "按当前版本真实工作流组织：从项目Profile、版面/Section、画线和校对，到切图、PicDic 与常见排错。"
+        )
         header_subtitle = tk.Label(
             header,
-            text="按当前版本真实工作流组织：从项目Profile、版面/Section、画线和校对，到切图、PicDic 与常见排错。",
+            text=header_subtitle_text,
             bg=colors["bg"], fg=colors["muted"], anchor="w", justify="left",
         )
         header_subtitle.pack(anchor="w", fill="x", pady=(4, 0))
@@ -1596,9 +1726,14 @@ class UsageGuideWindow(tk.Toplevel):
         context_label.pack(anchor="w", fill="x", pady=(7, 0))
 
         def resize_header(event: tk.Event) -> None:
-            wrap = max(320, int(event.width) - 4)
+            wrap = max(320, int(event.width) - 8)
             try:
-                header_subtitle.configure(wraplength=wrap)
+                header_subtitle.configure(
+                    text=_wrap_mixed_ui_text(
+                        header_subtitle_text, _label_measure(header_subtitle), wrap
+                    ),
+                    wraplength=0,
+                )
                 context_label.configure(wraplength=wrap)
             except tk.TclError:
                 pass
@@ -1650,12 +1785,19 @@ class UsageGuideWindow(tk.Toplevel):
             sidebar, text="遇到问题时", bg=colors["sidebar"], fg=colors["muted"],
             font=self._meta_font, anchor="w",
         ).pack(fill="x", padx=14)
-        tk.Label(
+        sidebar_hint_text = "先判断是版面、OCR 环境、规则，还是单个词条问题，再进入对应页面。"
+        sidebar_hint = tk.Label(
             sidebar,
-            text="先判断是版面、OCR 环境、规则，还是单个词条问题，再进入对应页面。",
+            text=sidebar_hint_text,
             bg=colors["sidebar"], fg=colors["muted"], justify="left", anchor="nw",
-            wraplength=158,
-        ).pack(fill="x", padx=14, pady=(4, 12))
+        )
+        sidebar_hint.configure(
+            text=_wrap_mixed_ui_text(
+                sidebar_hint_text, _label_measure(sidebar_hint), 150
+            ),
+            wraplength=0,
+        )
+        sidebar_hint.pack(fill="x", padx=14, pady=(4, 12))
 
         content_shell = tk.Frame(
             body, bg=colors["surface"],
@@ -1784,40 +1926,47 @@ class UsageGuideWindow(tk.Toplevel):
         *,
         safety: int = 10,
     ) -> None:
-        """Wrap against the label's real allocated width, with a glyph-safe margin."""
-        self._wrap_labels.append((label, max(0, int(safety))))
+        """Use character-aware pixel wrapping instead of Tk's word-only wrapping."""
+        raw = _normalize_ui_paragraphs(label.cget("text"))
+        label._pc_wrap_source = raw
+        safe = max(0, int(safety))
+        self._wrap_labels.append((label, safe))
+        # Bound the initial requested width so the label cannot enlarge its
+        # parent before the first real layout pass.
+        label.configure(
+            text=_wrap_mixed_ui_text(raw, _label_measure(label), 520),
+            wraplength=0,
+        )
 
-        def refresh(event=None) -> None:
-            try:
-                width = int(event.width) if event is not None else int(label.winfo_width())
-                if width <= 20:
-                    width = int(label.master.winfo_width())
-                if width <= 20:
-                    return
-                wraplength = max(60, width - max(0, int(safety)))
-                if int(float(label.cget("wraplength"))) != wraplength:
-                    label.configure(wraplength=wraplength)
-            except (tk.TclError, TypeError, ValueError):
-                return
+        def refresh(_event=None) -> None:
+            self._refresh_one_wrapped_label(label, safe)
 
         label.bind("<Configure>", refresh, add="+")
         self.after_idle(refresh)
 
+    def _refresh_one_wrapped_label(self, label: tk.Label, safety: int) -> None:
+        try:
+            if not label.winfo_exists():
+                return
+            label_width = int(label.winfo_width())
+            master_width = int(label.master.winfo_width())
+            content_width = int(self._content.winfo_width())
+            cap = max(100, content_width - 56)
+            if label_width <= 20 or label_width > cap:
+                label_width = min(max(1, master_width), cap)
+            if label_width <= 20:
+                return
+            available = max(60, label_width - max(0, int(safety)))
+            raw = getattr(label, "_pc_wrap_source", label.cget("text"))
+            rendered = _wrap_mixed_ui_text(raw, _label_measure(label), available)
+            if label.cget("text") != rendered or int(float(label.cget("wraplength"))) != 0:
+                label.configure(text=rendered, wraplength=0)
+        except (tk.TclError, TypeError, ValueError):
+            return
+
     def _refresh_wrapped_labels(self) -> None:
         for label, safety in tuple(self._wrap_labels):
-            try:
-                if not label.winfo_exists():
-                    continue
-                width = int(label.winfo_width())
-                if width <= 20:
-                    width = int(label.master.winfo_width())
-                if width <= 20:
-                    continue
-                wraplength = max(60, width - safety)
-                if int(float(label.cget("wraplength"))) != wraplength:
-                    label.configure(wraplength=wraplength)
-            except (tk.TclError, TypeError, ValueError):
-                continue
+            self._refresh_one_wrapped_label(label, safety)
 
     def _show_page(self, key: str) -> None:
         page = self._page_map.get(key)
@@ -2472,7 +2621,17 @@ class SettingsDialog(tk.Toplevel):
         if hasattr(self, "_settings_help_title_var"):
             self._settings_help_title_var.set(str(title or "设置说明"))
         if hasattr(self, "_settings_help_body_var"):
-            self._settings_help_body_var.set(str(body or "不确定时保持当前值即可。"))
+            raw_body = str(body or "不确定时保持当前值即可。")
+            self._settings_help_body_var.set(raw_body)
+            help_body = getattr(self, "_settings_help_body_label", None)
+            if help_body is not None:
+                normalized = _normalize_ui_paragraphs(raw_body)
+                help_body._pc_wrap_source = normalized
+                help_body.configure(text=normalized, wraplength=0)
+                try:
+                    self.after_idle(lambda w=help_body: w.event_generate("<Configure>"))
+                except tk.TclError:
+                    pass
         self._settings_help_current_image = image_name
         self._schedule_settings_help_image_render()
 
@@ -2583,8 +2742,25 @@ class SettingsDialog(tk.Toplevel):
         horizontal_padding: int = 12,
         min_wrap: int = 120,
     ) -> None:
-        """Wrap using each label's allocated width, leaving room for full CJK glyphs."""
+        """Character-wrap CJK prose to each label's real visible width."""
         pending = {"job": None}
+
+        for label in labels:
+            try:
+                textvariable = str(label.cget("textvariable") or "").strip()
+                label._pc_dynamic_textvariable = bool(textvariable)
+                if label._pc_dynamic_textvariable:
+                    continue
+                if not getattr(label, "_pc_wrap_source", None):
+                    label._pc_wrap_source = _normalize_ui_paragraphs(label.cget("text"))
+                initial = _wrap_mixed_ui_text(
+                    label._pc_wrap_source,
+                    _label_measure(label),
+                    max(180, int(min_wrap) * 3),
+                )
+                label.configure(text=initial, wraplength=0)
+            except (tk.TclError, TypeError, ValueError):
+                continue
 
         def refresh() -> None:
             pending["job"] = None
@@ -2594,20 +2770,23 @@ class SettingsDialog(tk.Toplevel):
                 return
             if container_width <= 1:
                 return
+            cap = max(60, container_width - max(0, int(horizontal_padding)))
             for label in labels:
                 try:
                     label_width = int(label.winfo_width())
-                    if label_width <= 20:
-                        label_width = max(1, container_width - horizontal_padding)
-                    # Never let a historical minimum exceed the space Tk
-                    # actually allocated to the label. The small right margin
-                    # avoids half-glyph clipping on Windows/high-DPI CJK fonts.
+                    if label_width <= 20 or label_width > cap:
+                        label_width = cap
                     available = max(48, label_width - 12)
-                    wraplength = min(max(48, int(min_wrap)), available)
-                    if available > min_wrap:
-                        wraplength = available
-                    if int(float(label.cget("wraplength"))) != wraplength:
-                        label.configure(wraplength=wraplength)
+                    if getattr(label, "_pc_dynamic_textvariable", False):
+                        if int(float(label.cget("wraplength"))) != available:
+                            label.configure(wraplength=available)
+                        continue
+                    raw = getattr(label, "_pc_wrap_source", label.cget("text"))
+                    rendered = _wrap_mixed_ui_text(
+                        raw, _label_measure(label), available
+                    )
+                    if label.cget("text") != rendered or int(float(label.cget("wraplength"))) != 0:
+                        label.configure(text=rendered, wraplength=0)
                 except (tk.TclError, TypeError, ValueError):
                     continue
 
@@ -2970,11 +3149,15 @@ class SettingsDialog(tk.Toplevel):
         help_title.pack(anchor="w", fill="x", padx=(0, 6))
         help_body = ttk.Label(
             help_box,
-            textvariable=self._settings_help_body_var,
+            text=self._settings_help_body_var.get(),
             foreground="#555b63",
             justify="left",
         )
-        help_body.pack(anchor="w", fill="x", padx=(0, 6), pady=(7, 0))
+        help_body._pc_wrap_source = _normalize_ui_paragraphs(
+            self._settings_help_body_var.get()
+        )
+        self._settings_help_body_label = help_body
+        help_body.pack(anchor="w", fill="x", padx=(0, 8), pady=(7, 0))
         help_image = ttk.Label(help_box, anchor="center")
         help_separator = ttk.Separator(help_box, orient="horizontal")
         help_separator.pack(fill="x", pady=(14, 10))
@@ -2991,10 +3174,9 @@ class SettingsDialog(tk.Toplevel):
         help_hint.pack(anchor="w", fill="x", padx=(0, 6))
         self._bind_responsive_labels(
             help_box,
-            help_title,
             help_body,
             help_hint,
-            horizontal_padding=28,
+            horizontal_padding=34,
             min_wrap=120,
         )
         help_box.bind(
@@ -9473,6 +9655,14 @@ class OldNewComparisonWindow(tk.Toplevel):
 class PictureCaptureApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        self._app_icon_photo: tk.PhotoImage | None = None
+        try:
+            icon_path = Path(__file__).resolve().parent / "data" / "app_icon.png"
+            if icon_path.exists():
+                self._app_icon_photo = tk.PhotoImage(file=str(icon_path))
+                self.iconphoto(True, self._app_icon_photo)
+        except (tk.TclError, OSError):
+            self._app_icon_photo = None
         self.title(f"Picture Capture v{__version__} — OCR 词头定位")
         fit_window_to_work_area(self, 1440, 900, min_width=1080, min_height=680)
         self.project: ProjectState | None = None
