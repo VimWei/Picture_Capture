@@ -241,6 +241,47 @@ OCR_REFRESH_LABELS = {
 }
 OCR_REFRESH_VALUES = {label: value for value, label in OCR_REFRESH_LABELS.items()}
 
+# User-facing layout geometry is expressed as percentages of the current source
+# image. Algorithms and persisted legacy fields remain in source-image pixels.
+# Horizontal measurements use image width; vertical measurements use image height.
+LAYOUT_PERCENT_AXES = {
+    "start_y": "height",
+    "manual_x": "width",
+    "column_width": "width",
+    "gutter": "width",
+    "character_height": "height",
+    "row_padding": "height",
+    "body_indent": "width",
+    "horizontal_tolerance": "width",
+}
+
+
+def _layout_percent_denominator(image: Image.Image | None, name: str) -> float | None:
+    if image is None or name not in LAYOUT_PERCENT_AXES:
+        return None
+    axis = LAYOUT_PERCENT_AXES[name]
+    return float(max(1, image.width if axis == "width" else image.height))
+
+
+def _layout_pixels_to_percent(image: Image.Image | None, name: str, pixels: int | float) -> float:
+    denominator = _layout_percent_denominator(image, name)
+    if denominator is None:
+        return float(pixels)
+    return float(pixels) * 100.0 / denominator
+
+
+def _layout_percent_to_pixels(image: Image.Image | None, name: str, percent: int | float) -> int:
+    denominator = _layout_percent_denominator(image, name)
+    if denominator is None:
+        return int(round(float(percent)))
+    return int(round(float(percent) * denominator / 100.0))
+
+
+def _format_layout_percent(value: int | float) -> str:
+    rendered = f"{float(value):.2f}".rstrip("0").rstrip(".")
+    return rendered or "0"
+
+
 def _natural_text_key(value: object) -> tuple:
     """Natural, case-insensitive key used by the sortable page list.
 
