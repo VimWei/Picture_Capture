@@ -2089,7 +2089,7 @@ class SettingsDialog(tk.Toplevel):
     }
 
     COMMON_FIELDS = (
-        "columns", "start_y", "bottom_y", "manual_x", "column_width", "gutter",
+        "columns", "start_y", "manual_x", "column_width", "gutter",
         "character_height", "row_padding", "ocr_language",
     )
     NORMAL_COMMON_FIELDS = (
@@ -9134,6 +9134,8 @@ class PictureCaptureApp(tk.Tk):
         self.page_sections: list[PageSection] = []
         self._section_editing = False
         self._drag_section_boundary: tuple[int, str] | None = None
+        self._drag_ruler_axis: str | None = None
+        self._ruler_drag_last_canvas: tuple[float, float] | None = None
         self._pending_section_editor_index: int | None = None
         self.new_polygon: list[tuple[int, int]] = []
         self.overlay_widgets: list[tk.Widget] = []
@@ -10326,7 +10328,7 @@ class PictureCaptureApp(tk.Tk):
             project_row.columnconfigure(col, weight=1, uniform="project-footer-columns")
         for col, (label, command) in enumerate((
             ("项目中心", self.open_recent_project),
-            ("初始Profile", self.open_project_profile),
+            ("项目Profile", self.open_project_profile),
             ("设置中心", self.open_settings),
             ("帮助中心", self.show_help_dialog),
         )):
@@ -11260,66 +11262,19 @@ class PictureCaptureApp(tk.Tk):
         ).pack(side="left", fill="x", expand=True, padx=(5, 0))
         for col in (1, 3, 5, 7): normal.columnconfigure(col, weight=1)
 
-        ocr = self._section_frame(parent, "二、OCR画线（推荐默认）", padding=5, section_key="ocr")
-        ocr.pack(fill="x", pady=(4, 0))
-        self.ocr_refresh_var = tk.StringVar(value="reuse")
-        ttk.Label(ocr, text="识别策略：").grid(row=0, column=0, sticky="w")
-        ttk.Radiobutton(
-            ocr, text="使用有效缓存（推荐）",
-            variable=self.ocr_refresh_var, value="reuse",
-        ).grid(row=0, column=1, columnspan=2, sticky="w")
-        ttk.Radiobutton(
-            ocr, text="重新OCR（模型/图像改变时）",
-            variable=self.ocr_refresh_var, value="force",
-        ).grid(row=0, column=3, columnspan=3, sticky="w")
-        add_field(ocr, 1, 0, "OCR语言：", "ocr_language", str, 8)
-        add_field(ocr, 1, 2, "识别带宽%：", "paddle_band_width_ratio", int, 7)
-        add_field(ocr, 1, 4, "左缘容差：", "paddle_left_tolerance", int, 7)
-        engine_row = ttk.Frame(ocr); engine_row.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(4, 1))
-        ttk.Label(engine_row, text="OCR引擎：").pack(side="left")
-        for text, name in (("PaddleOCR", "paddle_use_paddleocr"), ("Tesseract", "paddle_compare_tesseract"), ("Google Lens", "paddle_enable_lens")):
-            var = tk.BooleanVar(value=bool(getattr(self.settings, name))); self.quick_bool_vars[name] = var
-            ttk.Checkbutton(engine_row, text=text, variable=var).pack(side="left", padx=(0, 5))
-        self.lens_mode_var = tk.StringVar(
-            value=LENS_MODE_LABELS.get(self.settings.paddle_lens_mode, LENS_MODE_LABELS["off"])
-        )
-        lens_row = ttk.Frame(ocr); lens_row.grid(row=3, column=0, columnspan=6, sticky="ew")
-        ttk.Label(lens_row, text="Lens模式：").pack(side="left")
-        ttk.Combobox(
-            lens_row, textvariable=self.lens_mode_var, values=tuple(LENS_MODE_VALUES),
-            state="readonly", width=34,
-        ).pack(side="left", fill="x", expand=True)
-        ttk.Label(lens_row, text="  Y安全空间：").pack(side="left")
-        safety_var = tk.StringVar(value=str(self.settings.paddle_separator_safety_px))
-        self.quick_vars["paddle_separator_safety_px"] = safety_var
-        self.quick_field_casts["paddle_separator_safety_px"] = int
-        ttk.Entry(
-            lens_row, textvariable=safety_var, width=4, justify="left"
-        ).pack(side="left", padx=(2, 2))
-        ttk.Label(lens_row, text="px").pack(side="left")
-        ocr_tools = ttk.Frame(ocr)
-        ocr_tools.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(4, 0))
-        ttk.Button(
-            ocr_tools, text="环境中心", command=self.check_ocr_engines,
-            style="PC.Compact.TButton",
-        ).pack(side="left", fill="x", expand=True)
-        ttk.Button(
-            ocr_tools, text="OCR画线设置…",
-            command=lambda: self.open_settings(initial_tab="ocr"),
-            style="PC.Compact.TButton",
-        ).pack(side="left", fill="x", expand=True, padx=(5, 0))
-        for col in (1, 3, 5): ocr.columnconfigure(col, weight=1)
-
-        aux = self._section_frame(parent, "三、辅助选项及框线色块", padding=5, section_key="aux")
+        aux = self._section_frame(parent, "二、显示设置", padding=5, section_key="aux")
         aux.pack(fill="x", pady=(4, 0))
+        ruler_var = tk.BooleanVar(value=bool(self.settings.show_rulers))
         section_var = tk.BooleanVar(value=bool(self.settings.show_page_sections))
         guide_var = tk.BooleanVar(value=bool(self.settings.show_column_guides))
         marker_var = tk.BooleanVar(value=bool(self.settings.show_headword_markers))
+        self.quick_bool_vars["show_rulers"] = ruler_var
         self.quick_bool_vars["show_page_sections"] = section_var
         self.quick_bool_vars["show_column_guides"] = guide_var
         self.quick_bool_vars["show_headword_markers"] = marker_var
         self.quick_color_buttons: dict[str, tk.Button] = {}
         self.quick_color_vars: dict[str, tk.StringVar] = {
+            "ruler_color": tk.StringVar(value=self.settings.ruler_color),
             "page_section_color": tk.StringVar(value=self.settings.page_section_color),
             "guide_color": tk.StringVar(value=self.settings.guide_color),
             "headword_marker_color": tk.StringVar(value=self.settings.headword_marker_color),
@@ -11340,9 +11295,14 @@ class PictureCaptureApp(tk.Tk):
 
         section_row = ttk.Frame(aux); section_row.grid(row=0, column=0, columnspan=4, sticky="ew")
         ttk.Checkbutton(
+            section_row, text="显示标尺", variable=ruler_var,
+            command=lambda: self._apply_overlay_visibility_toggle("show_rulers", ruler_var),
+        ).pack(side="left")
+        color_button(section_row, "ruler_color")
+        ttk.Checkbutton(
             section_row, text="显示Section", variable=section_var,
             command=lambda: self._apply_overlay_visibility_toggle("show_page_sections", section_var),
-        ).pack(side="left")
+        ).pack(side="left", padx=(6, 0))
         color_button(section_row, "page_section_color")
         ttk.Label(section_row, text="粗细：").pack(side="left")
         section_width_var = tk.StringVar(value=str(self.settings.page_section_width))
@@ -11487,6 +11447,56 @@ class PictureCaptureApp(tk.Tk):
         ).pack(side="left")
 
         aux.columnconfigure(1, weight=1); aux.columnconfigure(3, weight=1)
+
+        ocr = self._section_frame(parent, "三、OCR画线参数（默认）", padding=5, section_key="ocr")
+        ocr.pack(fill="x", pady=(4, 0))
+        self.ocr_refresh_var = tk.StringVar(value="reuse")
+        ttk.Label(ocr, text="识别策略：").grid(row=0, column=0, sticky="w")
+        ttk.Radiobutton(
+            ocr, text="使用有效缓存（推荐）",
+            variable=self.ocr_refresh_var, value="reuse",
+        ).grid(row=0, column=1, columnspan=2, sticky="w")
+        ttk.Radiobutton(
+            ocr, text="重新OCR（模型/图像改变时）",
+            variable=self.ocr_refresh_var, value="force",
+        ).grid(row=0, column=3, columnspan=3, sticky="w")
+        add_field(ocr, 1, 0, "OCR语言：", "ocr_language", str, 8)
+        add_field(ocr, 1, 2, "识别带宽%：", "paddle_band_width_ratio", int, 7)
+        add_field(ocr, 1, 4, "左缘容差：", "paddle_left_tolerance", int, 7)
+        engine_row = ttk.Frame(ocr); engine_row.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(4, 1))
+        ttk.Label(engine_row, text="OCR引擎：").pack(side="left")
+        for text, name in (("PaddleOCR", "paddle_use_paddleocr"), ("Tesseract", "paddle_compare_tesseract"), ("Google Lens", "paddle_enable_lens")):
+            var = tk.BooleanVar(value=bool(getattr(self.settings, name))); self.quick_bool_vars[name] = var
+            ttk.Checkbutton(engine_row, text=text, variable=var).pack(side="left", padx=(0, 5))
+        self.lens_mode_var = tk.StringVar(
+            value=LENS_MODE_LABELS.get(self.settings.paddle_lens_mode, LENS_MODE_LABELS["off"])
+        )
+        lens_row = ttk.Frame(ocr); lens_row.grid(row=3, column=0, columnspan=6, sticky="ew")
+        ttk.Label(lens_row, text="Lens模式：").pack(side="left")
+        ttk.Combobox(
+            lens_row, textvariable=self.lens_mode_var, values=tuple(LENS_MODE_VALUES),
+            state="readonly", width=34,
+        ).pack(side="left", fill="x", expand=True)
+        ttk.Label(lens_row, text="  Y安全空间：").pack(side="left")
+        safety_var = tk.StringVar(value=str(self.settings.paddle_separator_safety_px))
+        self.quick_vars["paddle_separator_safety_px"] = safety_var
+        self.quick_field_casts["paddle_separator_safety_px"] = int
+        ttk.Entry(
+            lens_row, textvariable=safety_var, width=4, justify="left"
+        ).pack(side="left", padx=(2, 2))
+        ttk.Label(lens_row, text="px").pack(side="left")
+        ocr_tools = ttk.Frame(ocr)
+        ocr_tools.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(4, 0))
+        ttk.Button(
+            ocr_tools, text="环境中心", command=self.check_ocr_engines,
+            style="PC.Compact.TButton",
+        ).pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            ocr_tools, text="OCR画线设置…",
+            command=lambda: self.open_settings(initial_tab="ocr"),
+            style="PC.Compact.TButton",
+        ).pack(side="left", fill="x", expand=True, padx=(5, 0))
+        for col in (1, 3, 5): ocr.columnconfigure(col, weight=1)
 
         actions = self._section_frame(parent, "四、画线与校对", padding=5, section_key="actions")
         actions.pack(fill="x", pady=(4, 0))
@@ -14553,6 +14563,150 @@ class PictureCaptureApp(tk.Tk):
             f"切图预览｜{mode}｜词条切图片段 {len(plan.entry_pieces)}｜随词条PPP {linked_count}｜部分相交 {partial_count}｜独立PPP {standalone_count}"
         )
 
+    def _rulers_visible(self) -> bool:
+        if self.image is None:
+            return False
+        visible = (
+            self.quick_bool_vars.get("show_rulers").get()
+            if hasattr(self, "quick_bool_vars") and "show_rulers" in self.quick_bool_vars
+            else bool(getattr(self.settings, "show_rulers", False))
+        )
+        return bool(visible) and not bool(self.hide_var.get())
+
+    def _ruler_source_positions(self, geometry=None) -> tuple[float, float]:
+        """Return source-image Y/X positions for the horizontal/vertical rulers."""
+        if self.image is None:
+            return 0.0, 0.0
+        width = max(1, int(self.image.width))
+        height = max(1, int(self.image.height))
+
+        try:
+            horizontal_ratio = float(getattr(self.settings, "ruler_horizontal_y_ratio", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            horizontal_ratio = 0.0
+        if 0.0 < horizontal_ratio < 1.0:
+            horizontal_y = horizontal_ratio * height
+        else:
+            effective = self._current_effective_profile_settings()
+            start_y = max(0, int(getattr(effective, "start_y", getattr(self.settings, "start_y", 0)) or 0))
+            line_height = max(1, int(getattr(effective, "character_height", getattr(self.settings, "character_height", 1)) or 1))
+            horizontal_y = start_y - max(6.0, line_height * 0.55)
+            if horizontal_y <= 1:
+                horizontal_y = height * 0.04
+
+        try:
+            vertical_ratio = float(getattr(self.settings, "ruler_vertical_x_ratio", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            vertical_ratio = 0.0
+        if 0.0 < vertical_ratio < 1.0:
+            vertical_x = vertical_ratio * width
+        else:
+            vertical_x = width * 0.5
+            try:
+                geometry = geometry or self._get_cached_display_geometry()
+                if len(geometry.column_starts) >= 2 and len(geometry.column_widths) >= 1:
+                    mid_v = (float(geometry.top) + float(geometry.bottom)) / 2.0
+                    first_right = float(geometry.x_at(0, mid_v)) + float(geometry.column_widths[0])
+                    second_left = float(geometry.x_at(1, mid_v))
+                    first_source = geometry.canonical_to_source(first_right, mid_v)
+                    second_source = geometry.canonical_to_source(second_left, mid_v)
+                    vertical_x = (float(first_source[0]) + float(second_source[0])) / 2.0
+            except Exception:
+                vertical_x = width * 0.5
+
+        horizontal_y = max(2.0, min(height - 2.0, float(horizontal_y)))
+        vertical_x = max(2.0, min(width - 2.0, float(vertical_x)))
+        return horizontal_y, vertical_x
+
+    def _draw_bidirectional_rulers(self, geometry=None) -> None:
+        """Draw draggable 0.5%/1% bidirectional percentage rulers on the page."""
+        if not self._rulers_visible() or self.image is None:
+            return
+        display_width = float(self.image.width) * self.view_scale
+        display_height = float(self.image.height) * self.view_scale
+        if display_width <= 1 or display_height <= 1:
+            return
+        horizontal_y, vertical_x = self._ruler_source_positions(geometry)
+        horizontal_y *= self.view_scale
+        vertical_x *= self.view_scale
+        color = str(getattr(self.settings, "ruler_color", "#1976d2") or "#1976d2")
+        major_tick = 7
+        minor_tick = 4
+        font_spec = ("TkDefaultFont", 8)
+
+        self.canvas.create_line(
+            0, horizontal_y, display_width, horizontal_y,
+            fill=color, width=1, tags=("measurement-ruler", "ruler-horizontal"),
+        )
+        for half_percent in range(201):
+            pct = half_percent * 0.5
+            x = display_width * pct / 100.0
+            tick = major_tick if half_percent % 2 == 0 else minor_tick
+            self.canvas.create_line(
+                x, horizontal_y - tick, x, horizontal_y,
+                fill=color, width=1, tags=("measurement-ruler", "ruler-horizontal"),
+            )
+            self.canvas.create_line(
+                x, horizontal_y, x, horizontal_y + tick,
+                fill=color, width=1, tags=("measurement-ruler", "ruler-horizontal"),
+            )
+        for value in range(10, 101, 10):
+            top_x = display_width * value / 100.0
+            bottom_x = display_width * (100 - value) / 100.0
+            self.canvas.create_text(
+                top_x, horizontal_y - major_tick - 2, text=str(value), fill=color,
+                anchor="se" if value == 100 else "s", font=font_spec,
+                tags=("measurement-ruler", "ruler-horizontal"),
+            )
+            self.canvas.create_text(
+                bottom_x, horizontal_y + major_tick + 2, text=str(value), fill=color,
+                anchor="nw" if value == 100 else "n", font=font_spec,
+                tags=("measurement-ruler", "ruler-horizontal"),
+            )
+
+        self.canvas.create_line(
+            vertical_x, 0, vertical_x, display_height,
+            fill=color, width=1, tags=("measurement-ruler", "ruler-vertical"),
+        )
+        for half_percent in range(201):
+            pct = half_percent * 0.5
+            y = display_height * pct / 100.0
+            tick = major_tick if half_percent % 2 == 0 else minor_tick
+            self.canvas.create_line(
+                vertical_x - tick, y, vertical_x, y,
+                fill=color, width=1, tags=("measurement-ruler", "ruler-vertical"),
+            )
+            self.canvas.create_line(
+                vertical_x, y, vertical_x + tick, y,
+                fill=color, width=1, tags=("measurement-ruler", "ruler-vertical"),
+            )
+        for value in range(10, 101, 10):
+            left_y = display_height * value / 100.0
+            right_y = display_height * (100 - value) / 100.0
+            self.canvas.create_text(
+                vertical_x - major_tick - 2, left_y, text=str(value), fill=color,
+                anchor="se" if value == 100 else "e", font=font_spec,
+                tags=("measurement-ruler", "ruler-vertical"),
+            )
+            self.canvas.create_text(
+                vertical_x + major_tick + 2, right_y, text=str(value), fill=color,
+                anchor="ne" if value == 100 else "w", font=font_spec,
+                tags=("measurement-ruler", "ruler-vertical"),
+            )
+
+    def _ruler_hit_axis(self, source_x: float, source_y: float) -> str | None:
+        if not self._rulers_visible() or self.image is None:
+            return None
+        horizontal_y, vertical_x = self._ruler_source_positions()
+        tolerance = max(3.0, 8.0 / max(0.05, float(self.view_scale)))
+        dy = abs(float(source_y) - horizontal_y)
+        dx = abs(float(source_x) - vertical_x)
+        if dy > tolerance and dx > tolerance:
+            return None
+        if dy <= tolerance and dx <= tolerance:
+            return "horizontal" if dy <= dx else "vertical"
+        return "horizontal" if dy <= tolerance else "vertical"
+
     def redraw(self) -> None:
         self._sync_polygon_label_texts()
         self.canvas.delete("all")
@@ -14571,7 +14725,9 @@ class PictureCaptureApp(tk.Tk):
         self.canvas.create_image(0, 0, image=photo, anchor="nw", tags="page")
         if self.crop_preview_var.get():
             self._draw_crop_plan_preview()
-            self._draw_page_sections(self._get_cached_display_geometry())
+            crop_geometry = self._get_cached_display_geometry()
+            self._draw_page_sections(crop_geometry)
+            self._draw_bidirectional_rulers(crop_geometry)
             self.canvas.configure(scrollregion=(0, 0, size[0], size[1]))
             if self.cursor_canvas_xy is not None:
                 self.draw_cursor_guides(*self.cursor_canvas_xy)
@@ -14598,6 +14754,7 @@ class PictureCaptureApp(tk.Tk):
                             smooth=True,
                         )
             self._draw_page_sections(geometry)
+            self._draw_bidirectional_rulers(geometry)
             processing_readonly = self._foreground_batch_state(self.current_index) == "processing"
             for index, entry in enumerate(self._ordered_entries_reading_order()):
                 self._draw_entry_overlay(
@@ -15322,6 +15479,16 @@ class PictureCaptureApp(tk.Tk):
         x, y = self.original_xy(event)
         if not (0 <= x < self.image.width and 0 <= y < self.image.height):
             return
+        ruler_axis = self._ruler_hit_axis(x, y)
+        if ruler_axis is not None:
+            self._drag_ruler_axis = ruler_axis
+            self._ruler_drag_last_canvas = (
+                self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+            )
+            self.status_var.set(
+                "拖动横向标尺上下移动" if ruler_axis == "horizontal" else "拖动纵向标尺左右移动"
+            )
+            return
         if self._section_editing:
             target = self._nearest_section_boundary(x, y)
             if target is None:
@@ -15377,6 +15544,16 @@ class PictureCaptureApp(tk.Tk):
         if self.image is None:
             return None
         x, y = self.original_xy(event)
+        if self._drag_ruler_axis is not None:
+            canvas_x = max(0.0, min(float(self.image.width) * self.view_scale, self.canvas.canvasx(event.x)))
+            canvas_y = max(0.0, min(float(self.image.height) * self.view_scale, self.canvas.canvasy(event.y)))
+            last_x, last_y = self._ruler_drag_last_canvas or (canvas_x, canvas_y)
+            if self._drag_ruler_axis == "horizontal":
+                self.canvas.move("ruler-horizontal", 0, canvas_y - last_y)
+            else:
+                self.canvas.move("ruler-vertical", canvas_x - last_x, 0)
+            self._ruler_drag_last_canvas = (canvas_x, canvas_y)
+            return "break"
         if self._drag_section_boundary is not None:
             x = max(0, min(self.image.width - 1, x))
             y = max(0, min(self.image.height - 1, y))
@@ -15405,6 +15582,22 @@ class PictureCaptureApp(tk.Tk):
         return None
 
     def canvas_left_release(self, _event: tk.Event) -> str | None:
+        if self._drag_ruler_axis is not None:
+            axis = self._drag_ruler_axis
+            canvas_x, canvas_y = self._ruler_drag_last_canvas or (0.0, 0.0)
+            self._drag_ruler_axis = None
+            self._ruler_drag_last_canvas = None
+            if self.image is not None:
+                if axis == "horizontal":
+                    denominator = max(1.0, float(self.image.height) * self.view_scale)
+                    self.settings.ruler_horizontal_y_ratio = max(0.005, min(0.995, canvas_y / denominator))
+                else:
+                    denominator = max(1.0, float(self.image.width) * self.view_scale)
+                    self.settings.ruler_vertical_x_ratio = max(0.005, min(0.995, canvas_x / denominator))
+                self.save_settings()
+                self.redraw()
+                self.status_var.set("标尺位置已保存")
+            return "break"
         if self._drag_section_boundary is not None:
             self._drag_section_boundary = None
             try:
