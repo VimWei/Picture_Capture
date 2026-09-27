@@ -340,7 +340,7 @@ def test_settings_center_uses_context_help_units_and_user_facing_modes():
     assert 'padding=(13, 7)' in settings
     assert "self.transient(parent); self.grab_set()" not in settings
     assert "def select_tab(self, key: str | None)" in settings
-    assert '(crop_tab, "切图设置")' in settings
+    assert '(crop_tab, "切图")' in settings
     assert '"crop": crop_tab' in settings
     assert "def _build_crop_settings_tab(" in settings
     assert '"general_top_y"' in settings
@@ -572,6 +572,10 @@ def test_usage_guide_is_modern_task_oriented_and_centered():
     assert 'self.search_var = tk.StringVar()' in guide
     assert '"推荐原则"' in guide
     assert '"项目Profile"' in guide
+    assert '"版面与Section"' in guide
+    assert "双击页面列表的 Section 单元格" in guide
+    assert "重新简体化" in guide
+    assert "重点筛选校对" in guide
     assert '"检测版面参数"' in guide
     assert '"环境中心"' in guide
     assert '"设置中心"' in guide
@@ -670,6 +674,31 @@ def test_main_workspace_modern_styles_are_scoped_and_dense():
     assert "highlightbackground=border" in button
     assert "highlightcolor=border" in button
     assert '"PC.EditActive.TButton"' in styles
+
+
+def test_new_project_sidebar_defaults_do_not_overwrite_existing_session_preferences():
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+
+    startup = text[
+        text.index("        self.section_expanded = {"):
+        text.index("        self._collapsible_sections:", text.index("        self.section_expanded = {"))
+    ]
+    assert "sidebar_section_defaults_version" not in startup
+    assert "SIDEBAR_SECTION_DEFAULTS_VERSION" not in text
+    assert "if key in stored_sections:" in startup
+
+    start = text.index("    def _apply_new_project_sidebar_defaults(self) -> None:")
+    end = text.index("    @staticmethod\n    def _default_session_state_path", start)
+    method = text[start:end]
+    for expected in (
+        '"normal": True', '"aux": False', '"ocr": False',
+        '"actions": False', '"postproduction": False', '"pages": True',
+    ):
+        assert expected in method
+    assert "persist=False" in method
+    assert "if launch_profile_setup:" in text
+    assert "self._apply_new_project_sidebar_defaults()" in text
 
 
 def test_binary_preview_and_font_scaling_are_display_only():
@@ -2071,9 +2100,12 @@ def test_project_profile_wizard_is_the_normal_entry_path():
     assert "x = work_x + max(0, (work_w - width) // 2)" in wizard_init
     assert "y = work_y + max(0, (work_h - height) // 2)" in wizard_init
     assert '(common_tab, "常用")' in text
-    assert '(ocr_tab, "OCR画线（推荐）")' in text
-    assert '(normal_tab, "普通画线（备用）")' in text
-    assert text.index('(ocr_tab, "OCR画线（推荐）")') < text.index('(normal_tab, "普通画线（备用）")')
+    assert '(ocr_tab, "OCR画线")' in text
+    assert '(normal_tab, "普通画线")' in text
+    assert text.index('(ocr_tab, "OCR画线")') < text.index('(normal_tab, "普通画线")')
+    assert '(display_tab, "显示/校对")' in text
+    assert '(project_tab, "项目/批量")' in text
+    assert '(crop_tab, "切图")' in text
     assert '(advanced_tab, "高级")' in text
     assert '"profile": advanced_tab' in text
     start = text.index("    def open_project_profile(")
@@ -2100,6 +2132,16 @@ def test_vb_ordinary_defaults_are_not_replaced_by_scale_heuristics():
     settings = AppSettings()
     assert settings.body_indent == settings.character_height == 26
     assert settings.horizontal_tolerance == settings.character_height // 2 == 13
+
+    root = Path(__file__).resolve().parents[1]
+    app_text = (root / "src" / "picture_capture" / "app.py").read_text(encoding="utf-8")
+    profile_text = (root / "src" / "picture_capture" / "profile_setup.py").read_text(encoding="utf-8")
+    assert "body_indent_was_auto" in app_text
+    assert "horizontal_tolerance_was_auto" in app_text
+    assert 'if "character_height" in values:' in app_text
+    assert "body_indent_was_auto" in profile_text
+    assert "horizontal_tolerance_was_auto" in profile_text
+    assert 'if "character_height" in self._analysis_suggestion:' in profile_text
     assert settings.ordinary_right_divisor == 1.0
     assert settings.white_threshold_high == 999
     assert settings.white_threshold_low == 700

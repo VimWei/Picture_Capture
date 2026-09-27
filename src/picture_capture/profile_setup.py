@@ -3030,12 +3030,26 @@ class ProjectProfileWizard(tk.Toplevel):
             self._selected_column_index(), max(0, int(self.columns_var.get()) - 1)
         )
         self._refresh_column_adjust_status()
+        old_character_height = max(1, int(self.working.character_height))
+        body_indent_was_auto = int(self.working.body_indent) == old_character_height
+        horizontal_tolerance_was_auto = (
+            int(self.working.horizontal_tolerance)
+            == max(1, round(old_character_height / 2.0))
+        )
         for name in (
             "start_y", "bottom_y", "manual_x", "column_width", "gutter",
             "character_height", "row_padding",
         ):
             if name in self._analysis_suggestion:
                 setattr(self.working, name, int(self._analysis_suggestion[name]))
+        if "character_height" in self._analysis_suggestion:
+            new_character_height = max(1, int(self.working.character_height))
+            if body_indent_was_auto:
+                self.working.body_indent = new_character_height
+            if horizontal_tolerance_was_auto:
+                self.working.horizontal_tolerance = max(
+                    1, round(new_character_height / 2.0)
+                )
         separator_value = str(self._analysis_suggestion.get("separator", "auto"))
         self.separator_var.set(_label_for_value(
             SEPARATOR_LABEL_TO_VALUE, separator_value, "自动判断",
