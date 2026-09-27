@@ -4686,7 +4686,7 @@ def test_main_crop_preview_is_selected_only_through_display_mode():
     assert 'def _draw_crop_plan_preview' in text
 
 
-def test_display_mode_and_dark_mode_live_at_bottom_of_auxiliary_options():
+def test_display_mode_and_color_mode_live_at_bottom_of_auxiliary_options():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
     assert 'text="显示模式："' in text
@@ -4701,10 +4701,12 @@ def test_display_mode_and_dark_mode_live_at_bottom_of_auxiliary_options():
     aux_end = text.index('ocr = self._section_frame(parent, "三、OCR画线参数（默认）"', aux_start)
     aux = text[aux_start:aux_end]
     assert 'display_mode_combo = ttk.Combobox(\n            option_row,' in aux
-    assert 'text="深色模式"' in aux
+    assert 'text="颜色模式："' in aux
+    assert 'textvariable=self.appearance_mode_var' in aux
+    assert 'values=tuple(APPEARANCE_MODE_VALUES)' in aux
     assert 'text="显示切图预览"' not in aux
     assert aux.index('text="隐藏线框(插图除外)"') < aux.index('text="显示模式："')
-    assert aux.index('text="显示模式："') < aux.index('text="深色模式"')
+    assert aux.index('text="显示模式："') < aux.index('text="颜色模式："')
     assert 'text="◧"' not in text
     assert '"原图+标注": (False, False, False)' in text
     assert '"二值+标注": (True, False, False)' in text
@@ -5805,7 +5807,7 @@ def test_review_modern_styles_are_scoped_and_preserve_dense_workflow():
     render_start = review.index("    def render_rows(")
     render_end = review.index("    def _candidate_for_entry(", render_start)
     render = review[render_start:render_end]
-    assert 'editor_bg = "#b3fddd" if entry.word in words else "#fce5e8"' in render
+    assert "self._review_membership_colors(entry.word in words)" in render
     assert 'relief="flat"' in render
     assert 'highlightthickness=1' in render
     assert 'text="[X]"' in render
@@ -7976,11 +7978,12 @@ def test_main_auxiliary_section_controls_section_overlay_and_ocr_display_order()
     assert 'fill="#ffffff", anchor="s"' in text
 
 
-def test_settings_display_labels_wrap_responsively_and_dark_mode_name_is_current():
+def test_settings_display_labels_wrap_responsively_and_color_mode_name_is_current():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
-    assert 'text="深色模式（夜间模式）"' in text
-    assert 'text="深色模式（夜间校对）"' not in text
+    assert 'text="颜色模式："' in text
+    assert '"system": "跟随系统"' in text
+    assert 'text="深色模式（夜间模式）"' not in text
     assert "single_line_labels: bool = False" in text
     assert "wraplength=0 if single_line_labels else 180" in text
     assert "group.columnconfigure(0, minsize=longest_label_width + 4)" in text

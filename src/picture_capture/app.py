@@ -30,7 +30,9 @@ from .appearance import (
     appearance_palette,
     apply_classic_widget_appearance,
     apply_native_titlebar_appearance,
+    detect_system_appearance_mode,
     normalize_appearance_mode,
+    normalize_appearance_preference,
     themed_display_image,
     usage_guide_palette,
 )
@@ -143,6 +145,8 @@ LENS_MODE_LABELS = {
     "full": "④ 全页参与三OCR融合",
 }
 LENS_MODE_VALUES = {label: value for value, label in LENS_MODE_LABELS.items()}
+APPEARANCE_MODE_LABELS = {"light": "浅色", "dark": "深色", "system": "跟随系统"}
+APPEARANCE_MODE_VALUES = {label: value for value, label in APPEARANCE_MODE_LABELS.items()}
 SESSION_STATE_FILENAME = "session_state.json"
 
 # ISO 639-1 codes for project metadata. Common dictionary languages are kept at
@@ -3519,16 +3523,20 @@ class SettingsDialog(tk.Toplevel):
         )
         appearance_group = ttk.LabelFrame(display, text="应用外观", padding=(12, 9))
         appearance_group.pack(fill="x", pady=(0, 10))
-        ttk.Checkbutton(
-            appearance_group,
-            text="深色模式（夜间模式）",
-            variable=self.parent.dark_mode_var,
-            command=self.parent._toggle_dark_mode,
-        ).pack(anchor="w")
+        appearance_row = ttk.Frame(appearance_group)
+        appearance_row.pack(anchor="w", fill="x")
+        ttk.Label(appearance_row, text="颜色模式：").pack(side="left")
+        appearance_combo = ttk.Combobox(
+            appearance_row, textvariable=self.parent.appearance_mode_var,
+            values=tuple(APPEARANCE_MODE_VALUES), state="readonly", width=10,
+        )
+        appearance_combo.pack(side="left", padx=(4, 0))
+        appearance_combo.bind("<<ComboboxSelected>>", self.parent._appearance_mode_selected)
         appearance_help = ttk.Label(
             appearance_group,
-            text="同步主界面、校对/Profile/设置窗口，并对扫描图做仅显示层的夜间转换；"
-                 "不会修改原图、OCR 输入、PDIC/PPP、切图或导出文件。",
+            text="浅色使用正常界面；深色同步主界面、校对/Profile/设置窗口及扫描图夜间预览；"
+                 "跟随系统会自动响应 Windows、macOS 与 Linux 的系统颜色模式。"
+                 "仅改变显示，不修改原图、OCR 输入、PDIC/PPP、切图或导出文件。",
             justify="left",
         )
         appearance_help.pack(anchor="w", fill="x", pady=(4, 0))
@@ -6523,13 +6531,15 @@ class ReviewWindow(tk.Toplevel):
             value = str(target.get("current_word", target.get("original_word", "")))
             variable = tk.StringVar(value=value)
             self.filter_vars.append(variable)
-            editor_bg = "#b3fddd" if value in reference_words else "#fce5e8"
+            editor_bg, editor_fg, selection_bg, selection_fg = (
+                self._review_membership_colors(value in reference_words)
+            )
             editor_row = ttk.Frame(row, style="PCR.Surface.TFrame")
             editor_row.grid(row=2, column=0, sticky="ew")
             editor = tk.Entry(
                 editor_row, textvariable=variable, font=font_spec,
-                bg=editor_bg, foreground="#111827", insertbackground="#111827",
-                selectbackground="#c7d5e3", selectforeground="#111827",
+                bg=editor_bg, foreground=editor_fg, insertbackground=editor_fg,
+                selectbackground=selection_bg, selectforeground=selection_fg,
                 relief="flat", bd=0, highlightthickness=1,
                 highlightbackground=editor_bg, highlightcolor=editor_bg,
             )
@@ -6782,6 +6792,18 @@ class ReviewWindow(tk.Toplevel):
         except tk.TclError:
             pass
         return "break"
+
+    def _review_membership_colors(
+        self, in_wordslist: bool,
+    ) -> tuple[str, str, str, str]:
+        palette = appearance_palette(self.parent.appearance_mode)
+        background = palette["review_present_bg"] if in_wordslist else palette["review_absent_bg"]
+        return (
+            background,
+            palette["review_membership_fg"],
+            palette["review_membership_select_bg"],
+            palette["review_membership_select_fg"],
+        )
 
     def _configure_word_list_appearance(self) -> None:
         palette = appearance_palette(self.parent.appearance_mode)
@@ -8487,7 +8509,9 @@ class ReviewWindow(tk.Toplevel):
             )
             char_px = max(1, measure_font.measure("0"))
             editor_width_chars = max(8, min(140, round(crop.width / char_px)))
-            editor_bg = "#b3fddd" if entry.word in words else "#fce5e8"
+            editor_bg, editor_fg, selection_bg, selection_fg = (
+                self._review_membership_colors(entry.word in words)
+            )
             editor_frame = tk.Frame(
                 self.rows,
                 bg=editor_bg,
@@ -8515,17 +8539,16 @@ class ReviewWindow(tk.Toplevel):
                 ),
                 bg=editor_bg,
                 disabledbackground=editor_bg,
-                foreground="#111827",
-                disabledforeground="#111827",
-                insertbackground="#111827",
-                selectbackground="#c7d5e3",
-                selectforeground="#111827",
+                foreground=editor_fg,
+                disabledforeground=editor_fg,
+                insertbackground=editor_fg,
+                selectbackground=selection_bg,
+                selectforeground=selection_fg,
                 relief="flat",
                 bd=0,
                 highlightthickness=0,
             )
-            # The light green/pink membership surface needs dark text even while
-            # the rest of the proofreading window uses the dark palette.
+            # Membership surfaces use theme-aware status colours.
             editor._pc_skip_classic_appearance = True
             editor.grid(
                 row=0, column=1, sticky="nsew",
@@ -8624,9 +8647,7 @@ class ReviewWindow(tk.Toplevel):
             self.set_active(0)
         self._schedule_adjacent_preload()
         self.parent._apply_current_appearance(self.rows)
-        # Membership status intentionally uses pale green/red backgrounds even
-        # in dark mode. Re-apply it after generic theming so the text remains
-        # dark and legible instead of inheriting the dark-theme input foreground.
+        # Re-apply theme-aware membership colours after generic theming.
         for row_index, row_entry in enumerate(self.row_entries):
             self._set_editor_membership_color(
                 row_index, row_entry.word in words
@@ -8918,17 +8939,19 @@ class ReviewWindow(tk.Toplevel):
             self._schedule_network_lookup(self.vars[index].get())
 
     def _set_editor_membership_color(self, index: int, in_wordslist: bool) -> None:
-        color = "#b3fddd" if in_wordslist else "#fce5e8"
+        color, foreground, selection_bg, selection_fg = (
+            self._review_membership_colors(in_wordslist)
+        )
         if 0 <= index < len(self.editors):
             try:
                 self.editors[index].configure(
                     bg=color,
                     disabledbackground=color,
-                    foreground="#111827",
-                    disabledforeground="#111827",
-                    insertbackground="#111827",
-                    selectbackground="#c7d5e3",
-                    selectforeground="#111827",
+                    foreground=foreground,
+                    disabledforeground=foreground,
+                    insertbackground=foreground,
+                    selectbackground=selection_bg,
+                    selectforeground=selection_fg,
                 )
             except tk.TclError:
                 pass
@@ -10084,12 +10107,15 @@ class PictureCaptureApp(tk.Tk):
         self._pending_page_index: int | None = None
         self._session_path = self._default_session_state_path()
         self._last_session = self._read_session_state()
-        requested_appearance = normalize_appearance_mode(self._last_session.get("appearance_mode"))
-        # Build classic-Tk widgets from a stable light baseline. Persisted dark
-        # mode is applied only after construction so light<->dark remains fully
-        # reversible even for tk.Button/tk.Text/tk.Canvas widgets.
+        requested_appearance = normalize_appearance_preference(
+            self._last_session.get("appearance_mode")
+        )
+        self.appearance_preference = requested_appearance
         self.appearance_mode = "light"
-        self.dark_mode_var = tk.BooleanVar(value=False)
+        self.appearance_mode_var = tk.StringVar(
+            value=APPEARANCE_MODE_LABELS[requested_appearance]
+        )
+        self._system_appearance_job: str | None = None
         self._light_ttk_theme = str(ttk.Style(self).theme_use())
         self._configure_global_appearance()
         self.section_expanded = {
@@ -10111,10 +10137,7 @@ class PictureCaptureApp(tk.Tk):
         self._configure_main_workspace_styles()
         self._build_ui()
         self.bind_class("Toplevel", "<Map>", self._appearance_toplevel_mapped, add="+")
-        if requested_appearance == "dark":
-            self.set_appearance_mode("dark", persist=False)
-        else:
-            self.after_idle(lambda: self._apply_current_appearance(self))
+        self.set_appearance_mode(requested_appearance, persist=False)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.toggle_autosave()
         self.after_idle(self._maximize_main_window)
@@ -10419,28 +10442,79 @@ class PictureCaptureApp(tk.Tk):
         except tk.TclError:
             pass
 
-    def _toggle_dark_mode(self) -> None:
-        self.set_appearance_mode("dark" if self.dark_mode_var.get() else "light")
+    def _appearance_mode_selected(self, _event: tk.Event | None = None) -> None:
+        self.set_appearance_mode(
+            APPEARANCE_MODE_VALUES.get(self.appearance_mode_var.get(), "light")
+        )
+
+    def _cancel_system_appearance_poll(self) -> None:
+        if self._system_appearance_job is not None:
+            try:
+                self.after_cancel(self._system_appearance_job)
+            except tk.TclError:
+                pass
+            self._system_appearance_job = None
+        self._invalidate_ui_worker("system-appearance-detect")
+
+    def _schedule_system_appearance_poll(self, delay_ms: int = 2500) -> None:
+        if self.appearance_preference != "system" or self._ui_worker_shutdown:
+            return
+        if self._system_appearance_job is not None:
+            try:
+                self.after_cancel(self._system_appearance_job)
+            except tk.TclError:
+                pass
+        self._system_appearance_job = self.after(
+            max(0, int(delay_ms)), self._poll_system_appearance
+        )
+
+    def _poll_system_appearance(self) -> None:
+        self._system_appearance_job = None
+        if self.appearance_preference != "system" or self._ui_worker_shutdown:
+            return
+
+        def worker() -> str:
+            return detect_system_appearance_mode()
+
+        def done(mode: str) -> None:
+            if self.appearance_preference != "system":
+                return
+            resolved = normalize_appearance_mode(mode)
+            if resolved != self.appearance_mode:
+                self._apply_resolved_appearance(resolved)
+            self._schedule_system_appearance_poll()
+
+        def failed(exc, detail) -> None:
+            if detail:
+                print(detail)
+            if self.appearance_preference == "system":
+                self._schedule_system_appearance_poll()
+
+        self._start_ui_worker("system-appearance-detect", worker, done, failed)
 
     def set_appearance_mode(self, mode: object, *, persist: bool = True) -> None:
-        """Switch the whole application appearance without changing project data."""
+        """Set light/dark/system preference without changing project data."""
+        preference = normalize_appearance_preference(mode)
+        self.appearance_preference = preference
+        label = APPEARANCE_MODE_LABELS[preference]
+        if self.appearance_mode_var.get() != label:
+            self.appearance_mode_var.set(label)
+        self._cancel_system_appearance_poll()
+        if preference == "system":
+            self._schedule_system_appearance_poll(delay_ms=0)
+        else:
+            self._apply_resolved_appearance(preference)
+        if persist:
+            self._save_session_state()
+
+    def _apply_resolved_appearance(self, mode: object) -> None:
         normalized = normalize_appearance_mode(mode)
         self.appearance_mode = normalized
-        if self.dark_mode_var.get() != (normalized == "dark"):
-            self.dark_mode_var.set(normalized == "dark")
-
         self._configure_global_appearance()
         self._configure_main_workspace_styles()
-
-        # First let the reversible classic-Tk mapper capture/restore the stable
-        # light baselines. Only then apply the few surfaces whose desired dark
-        # colour is intentionally different from the generic mapping.
         self._apply_current_appearance(self)
         palette = appearance_palette(normalized)
-        for name, color_key in (
-            ("sidebar_canvas", "bg"),
-            ("canvas", "canvas"),
-        ):
+        for name, color_key in (("sidebar_canvas", "bg"), ("canvas", "canvas")):
             widget = self.__dict__.get(name)
             if widget is not None:
                 try:
@@ -10454,7 +10528,10 @@ class PictureCaptureApp(tk.Tk):
                 if review.winfo_exists():
                     review._configure_word_list_appearance()
                     review._configure_review_styles()
-                    review._request_render_rows(focus_index=review.active_index)
+                    if getattr(review, "_filter_rows_active", False):
+                        review._request_filter_batch_render()
+                    else:
+                        review._request_render_rows(focus_index=review.active_index)
             except tk.TclError:
                 pass
 
@@ -10465,7 +10542,6 @@ class PictureCaptureApp(tk.Tk):
                     settings_dialog.refresh_appearance()
             except tk.TclError:
                 pass
-
         guide = self.__dict__.get("_usage_guide_window")
         if guide is not None:
             try:
@@ -10473,7 +10549,6 @@ class PictureCaptureApp(tk.Tk):
                     guide.refresh_appearance()
             except tk.TclError:
                 pass
-
         comparison = self.__dict__.get("old_new_compare_window")
         if comparison is not None:
             try:
@@ -10481,7 +10556,6 @@ class PictureCaptureApp(tk.Tk):
                     comparison.refresh_appearance()
             except tk.TclError:
                 pass
-
         recent_dialog = self.__dict__.get("_recent_projects_dialog")
         recent_rebuild = self.__dict__.get("_recent_projects_rebuild")
         if recent_dialog is not None and callable(recent_rebuild):
@@ -10496,8 +10570,6 @@ class PictureCaptureApp(tk.Tk):
         self._schedule_page_cell_overlay_refresh()
         if self.image is not None:
             self.redraw()
-        if persist:
-            self._save_session_state()
 
 
     def _configure_main_workspace_styles(self) -> None:
@@ -10850,7 +10922,7 @@ class PictureCaptureApp(tk.Tk):
                 "page_range": self.page_range_var.get() if hasattr(self, "page_range_var") else "current",
                 "page_range_spec": self.page_range_spec_var.get() if hasattr(self, "page_range_spec_var") else "",
                 "view_zoom_percent": round(self.view_scale * 100),
-                "appearance_mode": self.appearance_mode,
+                "appearance_mode": self.appearance_preference,
                 "section_expanded": dict(self.section_expanded),
             }
             tmp = self._session_path.with_suffix(".tmp")
@@ -10920,6 +10992,7 @@ class PictureCaptureApp(tk.Tk):
             return
 
         try:
+            self._cancel_system_appearance_poll()
             self._ui_worker_shutdown = True
             self._ui_close_requested = True
             for key in tuple(self._ui_worker_generations):
@@ -12315,16 +12388,16 @@ class PictureCaptureApp(tk.Tk):
         )
         display_mode_combo.pack(side="left", padx=(0, 8))
         display_mode_combo.bind("<<ComboboxSelected>>", self._apply_display_mode)
-        dark_toggle = ttk.Checkbutton(
-            option_row,
-            text="深色模式",
-            variable=self.dark_mode_var,
-            command=self._toggle_dark_mode,
+        ttk.Label(option_row, text="颜色模式：").pack(side="left")
+        appearance_combo = ttk.Combobox(
+            option_row, textvariable=self.appearance_mode_var,
+            values=tuple(APPEARANCE_MODE_VALUES), state="readonly", width=8,
         )
-        dark_toggle.pack(side="left")
+        appearance_combo.pack(side="left")
+        appearance_combo.bind("<<ComboboxSelected>>", self._appearance_mode_selected)
         self._attach_tooltip(
-            dark_toggle,
-            "夜间显示：同步深色界面和扫描图夜间预览；不修改原图、OCR、PDIC/PPP 或导出文件。",
+            appearance_combo,
+            "浅色=正常界面；深色=夜间界面；跟随系统=自动响应 Windows/macOS/Linux 的系统颜色模式。",
         )
         save_row = ttk.Frame(aux); save_row.grid(row=8, column=0, columnspan=4, sticky="ew")
         ttk.Checkbutton(save_row, text="自动保存", variable=self.autosave_var, command=self.toggle_autosave).pack(side="left")

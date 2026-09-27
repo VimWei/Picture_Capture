@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import colorsys
 import ctypes
+import os
+from pathlib import Path
+import re
+import subprocess
 import sys
 import tkinter as tk
 from tkinter import ttk
@@ -29,6 +33,11 @@ LIGHT_PALETTE = {
     "success": "#69a875",
     "success_hover": "#588f64",
     "danger": "#9b3a3a",
+    "review_present_bg": "#b3fddd",
+    "review_absent_bg": "#fce5e8",
+    "review_membership_fg": "#111827",
+    "review_membership_select_bg": "#c7d5e3",
+    "review_membership_select_fg": "#111827",
 }
 
 DARK_PALETTE = {
@@ -51,12 +60,142 @@ DARK_PALETTE = {
     "success": "#67ad73",
     "success_hover": "#78bd84",
     "danger": "#db7b7b",
+    "review_present_bg": "#244438",
+    "review_absent_bg": "#493038",
+    "review_membership_fg": "#edf2f7",
+    "review_membership_select_bg": "#36556d",
+    "review_membership_select_fg": "#f4f7fa",
 }
 
 
+def normalize_appearance_preference(value: object) -> str:
+    """Return a persisted appearance preference: light, dark, or system."""
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"light", "dark", "system"} else "light"
+
+
 def normalize_appearance_mode(value: object) -> str:
-    """Return a supported global appearance mode."""
+    """Return a concrete light/dark render mode."""
     return "dark" if str(value or "").strip().lower() == "dark" else "light"
+
+
+def _run_theme_command(args: tuple[str, ...]) -> str:
+    try:
+        completed = subprocess.run(
+            list(args), capture_output=True, text=True, check=False, timeout=0.8,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return str(completed.stdout or "").strip() if completed.returncode == 0 else ""
+
+
+def _windows_theme_from_registry_value(value: object) -> str:
+    try:
+        return "dark" if int(value) == 0 else "light"
+    except (TypeError, ValueError):
+        return "light"
+
+
+def _portal_color_scheme(value: object) -> str | None:
+    match = re.search(r"uint32\s+([012])", str(value or ""))
+    if not match:
+        return None
+    code = int(match.group(1))
+    return "dark" if code == 1 else ("light" if code == 2 else None)
+
+
+def _gsettings_color_scheme(value: object) -> str | None:
+    text = str(value or "").strip().strip("'\"").casefold()
+    if "prefer-dark" in text:
+        return "dark"
+    if "prefer-light" in text:
+        return "light"
+    return None
+
+
+def _kde_color_scheme_from_text(value: object) -> str | None:
+    section = ""
+    for raw_line in str(value or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().casefold()
+            continue
+        if section != "colors:window" or "=" not in line:
+            continue
+        key, raw = line.split("=", 1)
+        if key.strip().casefold() != "background":
+            continue
+        try:
+            rgb = tuple(max(0, min(255, int(part.strip()))) for part in raw.split(",")[:3])
+        except ValueError:
+            return None
+        if len(rgb) != 3:
+            return None
+        luminance = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255.0
+        return "dark" if luminance < 0.50 else "light"
+    return None
+
+
+def detect_system_appearance_mode(platform: str | None = None) -> str:
+    """Detect the current OS colour preference on Windows, macOS and Linux."""
+    current = str(platform or sys.platform).casefold()
+    if current.startswith("win"):
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            ) as key:
+                value, _kind = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            return _windows_theme_from_registry_value(value)
+        except (ImportError, OSError, TypeError, ValueError):
+            return "light"
+
+    if current == "darwin":
+        style = _run_theme_command(("defaults", "read", "-g", "AppleInterfaceStyle"))
+        return "dark" if "dark" in style.casefold() else "light"
+
+    gsettings = _gsettings_color_scheme(
+        _run_theme_command(("gsettings", "get", "org.gnome.desktop.interface", "color-scheme"))
+    )
+    if gsettings is not None:
+        return gsettings
+
+    portal = _portal_color_scheme(_run_theme_command((
+        "gdbus", "call", "--session", "--dest", "org.freedesktop.portal.Desktop",
+        "--object-path", "/org/freedesktop/portal/desktop",
+        "--method", "org.freedesktop.portal.Settings.ReadOne",
+        "org.freedesktop.appearance", "color-scheme",
+    )))
+    if portal is not None:
+        return portal
+
+    gtk_env = str(os.environ.get("GTK_THEME", "") or "").strip()
+    if gtk_env:
+        return "dark" if "dark" in gtk_env.casefold() else "light"
+
+    gtk_theme = _run_theme_command(
+        ("gsettings", "get", "org.gnome.desktop.interface", "gtk-theme")
+    ).strip("'\" ")
+    if gtk_theme:
+        return "dark" if "dark" in gtk_theme.casefold() else "light"
+
+    try:
+        kde_text = (Path.home() / ".config" / "kdeglobals").read_text(
+            encoding="utf-8", errors="ignore"
+        )
+    except OSError:
+        kde_text = ""
+    return _kde_color_scheme_from_text(kde_text) or "light"
+
+
+def resolve_appearance_mode(preference: object, *, system_mode: object | None = None) -> str:
+    normalized = normalize_appearance_preference(preference)
+    if normalized != "system":
+        return normalize_appearance_mode(normalized)
+    return normalize_appearance_mode(system_mode) if system_mode is not None else detect_system_appearance_mode()
 
 
 def appearance_palette(mode: object) -> dict[str, str]:

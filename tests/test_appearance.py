@@ -4,9 +4,16 @@ from PIL import Image
 
 from picture_capture.appearance import (
     _dark_option_value,
+    _gsettings_color_scheme,
+    _kde_color_scheme_from_text,
+    _portal_color_scheme,
+    _windows_theme_from_registry_value,
     appearance_palette,
     apply_native_titlebar_appearance,
+    detect_system_appearance_mode,
     normalize_appearance_mode,
+    normalize_appearance_preference,
+    resolve_appearance_mode,
     themed_display_image,
 )
 
@@ -14,12 +21,39 @@ from picture_capture.appearance import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_normalize_appearance_mode_is_conservative() -> None:
+def test_appearance_preference_and_render_mode_are_separate() -> None:
+    assert normalize_appearance_preference("dark") == "dark"
+    assert normalize_appearance_preference(" LIGHT ") == "light"
+    assert normalize_appearance_preference("system") == "system"
+    assert normalize_appearance_preference(None) == "light"
     assert normalize_appearance_mode("dark") == "dark"
-    assert normalize_appearance_mode(" DARK ") == "dark"
-    assert normalize_appearance_mode("light") == "light"
     assert normalize_appearance_mode("system") == "light"
-    assert normalize_appearance_mode(None) == "light"
+    assert resolve_appearance_mode("system", system_mode="dark") == "dark"
+    assert resolve_appearance_mode("system", system_mode="light") == "light"
+
+
+def test_cross_platform_system_theme_parsers(monkeypatch) -> None:
+    assert _windows_theme_from_registry_value(0) == "dark"
+    assert _windows_theme_from_registry_value(1) == "light"
+    assert _portal_color_scheme("(<<uint32 1>>,)") == "dark"
+    assert _portal_color_scheme("(<<uint32 2>>,)") == "light"
+    assert _portal_color_scheme("(<<uint32 0>>,)") is None
+    assert _gsettings_color_scheme("'prefer-dark'") == "dark"
+    assert _gsettings_color_scheme("'prefer-light'") == "light"
+    assert _kde_color_scheme_from_text("[Colors:Window]\nBackground=32,36,42\n") == "dark"
+    assert _kde_color_scheme_from_text("[Colors:Window]\nBackground=242,242,242\n") == "light"
+
+    import picture_capture.appearance as appearance
+    monkeypatch.setattr(
+        appearance, "_run_theme_command",
+        lambda args: "Dark" if args and args[0] == "defaults" else "",
+    )
+    assert detect_system_appearance_mode(platform="darwin") == "dark"
+    monkeypatch.setattr(
+        appearance, "_run_theme_command",
+        lambda args: "'prefer-dark'" if args[:2] == ("gsettings", "get") else "",
+    )
+    assert detect_system_appearance_mode(platform="linux") == "dark"
 
 
 def test_dark_display_transform_preserves_source_and_reverses_paper_contrast() -> None:
@@ -65,6 +99,9 @@ def test_dark_palette_has_clear_text_background_separation() -> None:
 
     assert luminance(palette["text"]) - luminance(palette["surface"]) > 0.60
     assert luminance(palette["input_fg"]) - luminance(palette["input_bg"]) > 0.65
+    assert luminance(palette["review_present_bg"]) < 0.35
+    assert luminance(palette["review_absent_bg"]) < 0.35
+    assert luminance(palette["review_membership_fg"]) - luminance(palette["review_present_bg"]) > 0.45
 
 
 def test_classic_spinbox_state_surfaces_use_dark_input_and_button_colors() -> None:
@@ -106,7 +143,10 @@ def test_dark_mode_is_integrated_without_changing_project_image_semantics() -> N
     app_source = (ROOT / "src/picture_capture/app.py").read_text(encoding="utf-8")
     profile_source = (ROOT / "src/picture_capture/profile_setup.py").read_text(encoding="utf-8")
 
-    assert '"appearance_mode": self.appearance_mode' in app_source
+    assert '"appearance_mode": self.appearance_preference' in app_source
+    assert '"system": "跟随系统"' in app_source
+    assert "def _poll_system_appearance(" in app_source
+    assert '"system-appearance-detect"' in app_source
     assert 'key = (id(self.image), int(size[0]), int(size[1]), binary, self.appearance_mode)' in app_source
     assert 'display = themed_display_image(display, self.appearance_mode)' in app_source
     assert 'normalize_appearance_mode(preloaded.get("appearance_mode")) == self.appearance_mode' in app_source
@@ -125,8 +165,9 @@ def test_dark_mode_is_integrated_without_changing_project_image_semantics() -> N
     assert 'background="#d9d9d9", foreground="#111827"' in app_source
     assert 'editor_frame._pc_skip_classic_appearance = True' in app_source
     assert 'editor._pc_skip_classic_appearance = True' in app_source
-    assert 'selectbackground="#c7d5e3"' in app_source
-    assert 'foreground="#111827"' in app_source
+    assert 'palette["review_present_bg"]' in app_source
+    assert 'palette["review_absent_bg"]' in app_source
+    assert 'palette["review_membership_fg"]' in app_source
     assert 'self._apply_current_appearance(dialog)' in app_source
     assert 'themed_display_image(crop, self.parent.appearance_mode)' in app_source
     assert 'themed_display_image(rendered, self.parent.appearance_mode)' in app_source
