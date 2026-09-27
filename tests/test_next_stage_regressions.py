@@ -1081,6 +1081,10 @@ def test_main_canvas_percentage_rulers_are_fixed_display_only_overlays():
     assert "for value in range(5, 100, 5):" in app
     assert 'label_x = x - label_gap if ruler_id == "left" else x + label_gap' in app
     assert 'anchor = "e" if ruler_id == "left" else "w"' in app
+    assert '"ruler_margin": "#f1f3f6"' in app
+    assert '"ruler_margin": "#20252b"' in app
+    assert 'tags=("ruler-margin",)' in app
+    assert 'fill=margin_color, outline=""' in app
     assert "标尺可以帮助版面参数的手动填写。" in app
     assert "_drag_ruler_id" not in app
     assert "_ruler_drag_last_canvas" not in app
