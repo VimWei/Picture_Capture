@@ -1086,8 +1086,8 @@ def test_main_canvas_percentage_rulers_are_fixed_display_only_overlays():
     assert "_ruler_drag_last_canvas" not in app
     assert "self.canvas.move(tag" not in app
     assert "build_page_crop_plan" not in app[
-        app.index("    def _draw_bidirectional_rulers"):
-        app.index("    def redraw(", app.index("    def _draw_bidirectional_rulers"))
+        app.index("    def _draw_percentage_rulers"):
+        app.index("    def redraw(", app.index("    def _draw_percentage_rulers"))
     ]
 
 
