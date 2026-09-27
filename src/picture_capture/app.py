@@ -1273,7 +1273,7 @@ class UsageGuideWindow(tk.Toplevel):
                 (
                     "02", "先检测版面，再用百分比标尺核对",
                     "在【一、版面参数】选择有代表性的页面范围，运行【检测版面参数】。选择 2 页及以上时，"
-                    "数值参数采用稳健中位数，分栏数按多数页面确定。主界面显示分栏数、正文起始Y%、首栏X%、单栏宽%和栏间空%；"
+                    "数值参数采用稳健中位数，分栏数按多数页面确定。主界面显示正文栏数、正文起始Y%、首栏X%、单栏宽%和栏间空%；"
                     "四边百分比标尺默认开启，可直接辅助人工核对和填写。"
                 ),
                 (
@@ -11467,7 +11467,7 @@ class PictureCaptureApp(tk.Tk):
             section_key="normal",
         )
         normal.pack(fill="x")
-        add_field(normal, 0, 0, "分栏数：", "columns", int)
+        add_field(normal, 0, 0, "正文栏数：", "columns", int)
         add_field(normal, 0, 2, "正文起始Y%：", "start_y", float)
         add_field(normal, 0, 4, "首栏X%：", "manual_x", float)
         add_field(normal, 1, 0, "单栏宽%：", "column_width", float)
