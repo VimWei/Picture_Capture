@@ -5343,8 +5343,10 @@ def test_sidebar_defaults_fold_sections_two_through_five_and_keep_project_detail
     assert '"actions": False' in defaults
     assert '"postproduction": False' in defaults
     assert '"pages": True' in defaults
-    assert "SIDEBAR_SECTION_DEFAULTS_VERSION = 1" in app_text
-    assert '"sidebar_section_defaults_version": SIDEBAR_SECTION_DEFAULTS_VERSION' in app_text
+    assert "SIDEBAR_SECTION_DEFAULTS_VERSION" not in app_text
+    assert "sidebar_section_defaults_version" not in app_text
+    assert "def _apply_new_project_sidebar_defaults(self) -> None:" in app_text
+    assert "self._apply_new_project_sidebar_defaults()" in app_text
     assert 'parent, "五、后期词典制作", padding=5, section_key="postproduction"' in app_text
     assert 'self._section_frame(parent, "四、画线与校对"' in app_text
     assert 'self._section_frame(sidebar, "六、页面列表"' in app_text
@@ -5355,7 +5357,7 @@ def test_sidebar_defaults_fold_sections_two_through_five_and_keep_project_detail
     assert second_row in app_text
     assert final_row in app_text
     assert '("切图设置", self.open_crop_settings)' not in app_text
-    assert '(project_tab, "项目 / 批量")' in app_text
+    assert '(project_tab, "项目/批量")' in app_text
     assert '"项目资料"' in app_text
     assert 'self.open_settings(initial_tab="project")' in app_text
 
@@ -7925,7 +7927,7 @@ def test_main_auxiliary_section_controls_section_overlay_and_ocr_display_order()
     assert 'fill="#ffffff", anchor="s"' in text
 
 
-def test_settings_display_labels_stay_single_line_and_dark_mode_name_is_current():
+def test_settings_display_labels_wrap_responsively_and_dark_mode_name_is_current():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
     assert 'text="深色模式（夜间模式）"' in text
@@ -7934,7 +7936,10 @@ def test_settings_display_labels_stay_single_line_and_dark_mode_name_is_current(
     assert "wraplength=0 if single_line_labels else 180" in text
     assert "group.columnconfigure(0, minsize=longest_label_width + 4)" in text
     display_call = text.index('self._add_setting_group(\n            display,\n            "界面与校对"')
-    assert 'single_line_labels=True' in text[display_call:display_call + 240]
+    display_block = text[display_call:display_call + 240]
+    assert 'single_line_labels=True' not in display_block
+    assert "appearance_help = ttk.Label(" in text
+    assert "appearance_group, appearance_help, horizontal_padding=24, min_wrap=160" in text
 
 
 def test_page_list_context_menu_matches_visible_column_order():
