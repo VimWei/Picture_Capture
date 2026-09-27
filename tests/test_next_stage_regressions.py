@@ -447,6 +447,23 @@ def test_project_toolbar_and_profile_scroll_layout_are_wired():
     assert 'uniform="project-footer-columns"' in project_bar
     assert 'project_row.columnconfigure(col, weight=1, uniform="project-footer-columns")' in project_bar
     assert 'role="project"' in project_bar
+    assert 'text="图片后缀："' not in text
+    assert "self.image_suffix_var" not in text
+
+    suffix_choice_start = text.index("    def _choose_new_project_image_suffix(")
+    suffix_choice_end = text.index("\n    def open_project(", suffix_choice_start)
+    suffix_choice = text[suffix_choice_start:suffix_choice_end]
+    assert "project_page_images(root)" in suffix_choice
+    assert "if len(suffixes) == 1:" in suffix_choice
+    assert "simpledialog.askstring(" in suffix_choice
+    assert "if suffix in counts:" in suffix_choice
+
+    open_start = text.index("    def open_project(self) -> None:")
+    open_end = text.index("\n    def _load_project(", open_start)
+    open_project = text[open_start:open_end]
+    assert "if not existing_project:" in open_project
+    assert "self._choose_new_project_image_suffix(root)" in open_project
+    assert "if requested_suffix is None:" in open_project
 
     actions_start = text.index('        actions = self._section_frame(parent, "四、画线与校对"')
     actions_end = text.index("        postproduction = self._section_frame(", actions_start)
