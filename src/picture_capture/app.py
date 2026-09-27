@@ -2047,11 +2047,11 @@ class SettingsDialog(tk.Toplevel):
     }
 
     SETTING_HELP = {
-        "columns": "作用：正文栏数，是版面几何、阅读顺序、OCR 候选带和后续切图共同使用的基础参数。若【栏数策略】为自动检测，程序会在版面分析时估计栏数；若为固定，则这里的值是权威值。\n\n调整：栏数设错会让栏左缘、词条归栏、阅读顺序和切图边界整体错位。优先用【检测当前页版面参数】和 Project Profile 的代表页结果确认，不建议为修一个局部页面临时改全项目栏数。",
+        "columns": "作用：正文栏数，是版面几何、阅读顺序、OCR 候选带和后续切图共同使用的基础参数。若【栏数策略】为自动检测，程序会在版面分析时估计栏数；若为固定，则这里的值是权威值。\n\n调整：栏数设错会让栏左缘、词条归栏、阅读顺序和切图边界整体错位。优先用【检测版面参数】和【项目Profile】的代表页结果确认，不建议为修一个局部页面临时改全项目栏数。",
         "gutter": "作用：相邻正文栏之间的典型空白宽度。界面按原图宽度百分比显示和输入，保存/运行时自动换算为当前原图像素。\n\n调整：过小会让相邻栏靠得过近，过大则可能把正文有效区域压窄。通常应由版面检测或 Profile 代表页确定。",
         "column_width": "作用：单栏正文的典型宽度。界面按原图宽度百分比显示和输入，后台在运行前换算为原图像素；它决定栏几何的水平范围，并间接影响 OCR 候选带、词条矩形和相邻栏边界。\n\n调整：过小可能截掉长词头/释义并让切图偏窄；过大可能侵入栏间空白甚至邻栏。",
         "start_y": "作用：正文起始 Y。界面按原图高度百分比显示和输入，0% 为图片顶部、100% 为图片底部；后台自动换算为原图 Y 像素供版面分析与画线使用。\n\n若 Project Profile 明确设置页眉模式/页眉比例，页面模板仍可为当前页计算实际正文上界。",
-        "bottom_y": "作用：正文结束 Y，单位为原图像素，用来限制版面分析和词头识别的有效正文区。运行时直接使用该像素值，不按页面宽度或显示缩放换算。\n\n调整：过小会漏掉页尾词条，过大可能把页码/脚注吸入正文。",
+        "bottom_y": "兼容字段：普通页面不再把【正文结束 Y】作为常用手工参数。只有【项目Profile】明确设置页尾时，运行时才会为当前页解析有效正文下界；旧项目中的 bottom_y 仍可读取以保持兼容。最终切图下边界请在【切图设置】中调整。",
         "manual_x": "作用：第一栏左缘 X。界面按原图宽度百分比显示和输入，0% 为图片左边、100% 为图片右边；后台自动换算为原图 X 像素。其余栏位置结合栏宽、栏间距推导。\n\n镜像、RTL、竖排等阅读方向只影响内部读取顺序/临时变换，不改变百分比相对于原图边界的定义。",
         "body_indent": "作用：普通画线把它作为 VB.NET 原版【正文缩进】先验。界面按原图宽度百分比输入，后台换算为原图像素后用于二维墨迹确认和栏左跟踪。\n\n调整：应接近释义正文相对词头栏左缘的真实缩进。过小会让二维确认范围不足；过大则会引入更多上下邻行墨迹，但候选锚点仍受【微调判距 < 正文缩进】约束。",
         "character_height": "作用：项目的典型单行字高。界面按原图高度百分比显示和输入，后台换算为原图像素；普通画线、OCR 行距/空白判断、横线 Y 精修和部分 CJK 视觉逻辑都以它作为尺度基准。\n\n调整：应接近正文常规印刷行高，而不是某个特别大的词头字高。",
@@ -2988,21 +2988,36 @@ class SettingsDialog(tk.Toplevel):
         self._settings_intro(
             common,
             "先确认版面，再用 OCR 画线完成代表页验证",
-            "推荐流程：项目 Profile → 检测版面参数 → 当前页运行 OCR 画线 → "
+            "推荐流程：项目Profile → 检测版面参数 → 代表页运行 OCR 画线 → "
             "确认无明显漏线/误线后再批量。OCR画线是默认推荐路径，会同时利用文字、位置和结构证据；"
             "普通画线保留为备用方案，主要用于左缘极稳定的简单版式或 OCR 暂不可用时。",
         )
         workflow = ttk.Frame(common)
         workflow.pack(fill="x", pady=(0, 10))
-        ttk.Button(
-            workflow, text="打开项目 Profile…", command=parent.open_project_profile
-        ).pack(side="left")
-        ttk.Button(
-            workflow, text="检测当前页版面参数", command=parent.detect_layout_current
-        ).pack(side="left", padx=(6, 0))
-        ttk.Button(
+        profile_button = ttk.Button(
+            workflow, text="打开项目Profile…", command=parent.open_project_profile
+        )
+        profile_button.pack(side="left")
+        parent._attach_tooltip(
+            profile_button,
+            "配置词典信息、阅读方向、页面模板和词头结构，并用代表页测试。",
+        )
+        layout_button = ttk.Button(
+            workflow, text="检测版面参数", command=parent.detect_layout_current
+        )
+        layout_button.pack(side="left", padx=(6, 0))
+        parent._attach_tooltip(
+            layout_button,
+            "按主界面当前页面范围检测；若页面数量≥2，数值参数取稳健中位数。",
+        )
+        environment_button = ttk.Button(
             workflow, text="环境中心", command=self.check_ocr_engines
-        ).pack(side="left", padx=(6, 0))
+        )
+        environment_button.pack(side="left", padx=(6, 0))
+        parent._attach_tooltip(
+            environment_button,
+            "检查 OCR、Tesseract、Lens、OpenCC 等运行环境。",
+        )
 
         mode_group = ttk.LabelFrame(common, text="默认画线方式", padding=(12, 9))
         mode_group.pack(fill="x", pady=(0, 10))
@@ -3274,11 +3289,11 @@ class SettingsDialog(tk.Toplevel):
             advanced,
             "高级 / 专家参数",
             "这里保留版面语义、OCR 后端和正则规则等底层控制。"
-            "如果只是想提高某本词典的识别率，请优先回到“OCR画线（推荐）”页或 Project Profile；"
+            "如果只是想提高某本词典的识别率，请优先回到“OCR画线（推荐）”页或【项目Profile】；"
             "只有左缘高度规则的简单版式才优先考虑“普通画线（备用）”。",
         )
         ttk.Button(
-            advanced, text="打开项目 Profile（推荐）…", command=parent.open_project_profile
+            advanced, text="打开项目Profile（推荐）…", command=parent.open_project_profile
         ).pack(anchor="w", pady=(0, 10))
         self._add_setting_group(advanced, "版面与后端", self.EXPERT_FIELDS)
 
