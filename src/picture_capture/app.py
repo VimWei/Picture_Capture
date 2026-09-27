@@ -10188,11 +10188,19 @@ class PictureCaptureApp(tk.Tk):
             style="PC.Compact.TButton",
         )
         self.batch_pause_button.pack(side="left", padx=(0, 5))
+        self._attach_tooltip(
+            self.batch_pause_button,
+            "暂停或继续当前批量任务；已完成页面不会回滚。",
+        )
         self.batch_stop_button = ttk.Button(
             self.batch_bar, text="停止", width=8, command=self._request_batch_stop,
             style="PC.Compact.TButton",
         )
         self.batch_stop_button.pack(side="left")
+        self._attach_tooltip(
+            self.batch_stop_button,
+            "请求停止当前批量任务；正在处理的页面完成后安全停止。",
+        )
 
         self.status_bar = ttk.Frame(self.bottom_stack, style="PC.Status.TFrame")
         self.status_bar.pack(side="bottom", fill="x")
@@ -10333,14 +10341,18 @@ class PictureCaptureApp(tk.Tk):
         )
         jump_button.pack(side="left", padx=(0, 3))
         self._attach_tooltip(jump_button, "跳转到指定页面的第一个有效页面")
-        ttk.Button(
+        previous_page_button = ttk.Button(
             size_row, text="上一页", width=6,
             command=lambda: self.change_page(-1), style="PC.PageNav.TButton",
-        ).pack(side="left", padx=(0, 3))
-        ttk.Button(
+        )
+        previous_page_button.pack(side="left", padx=(0, 3))
+        self._attach_tooltip(previous_page_button, "保存必要的当前页状态后切换到上一页")
+        next_page_button = ttk.Button(
             size_row, text="下一页", width=6,
             command=lambda: self.change_page(1), style="PC.PageNav.TButton",
-        ).pack(side="left")
+        )
+        next_page_button.pack(side="left")
+        self._attach_tooltip(next_page_button, "保存必要的当前页状态后切换到下一页")
         list_frame = ttk.Frame(page_panel)
         list_frame.grid(row=2, column=0, sticky="nsew")
         list_frame.columnconfigure(0, weight=1); list_frame.rowconfigure(0, weight=1)
@@ -10411,11 +10423,13 @@ class PictureCaptureApp(tk.Tk):
                 row=0, column=col, sticky="ew",
                 padx=(0 if col == 0 else 4, 0),
             )
-            if label == "帮助中心":
-                self._attach_tooltip(
-                    button,
-                    "打开帮助中心：推荐流程、各功能用途、快捷操作与常见排错。",
-                )
+            footer_tooltips = {
+                "项目中心": "打开最近项目与项目管理；可从这里新建或切换词典项目。",
+                "项目Profile": "配置词典信息、阅读方向、页面模板和词头结构，并用代表页测试。",
+                "设置中心": "按常用、OCR画线、普通画线、显示/校对、切图等任务调整项目参数。",
+                "帮助中心": "查看新版推荐流程、主界面说明、快捷操作与常见排错。",
+            }
+            self._attach_tooltip(button, footer_tooltips[label])
         self.canvas = tk.Canvas(
             viewer, bg=self._main_ui_colors["canvas"], highlightthickness=0
         )
@@ -11301,15 +11315,25 @@ class PictureCaptureApp(tk.Tk):
             detect_layout_button,
             "若所选页面数量≥2，参数为稳健中位数",
         )
-        ttk.Button(
+        consistency_button = ttk.Button(
             row, text="检测版面一致性", command=self.detect_layout_consistency_selected,
             style="PC.Compact.TButton",
-        ).pack(side="left", fill="x", expand=True, padx=(5, 0))
-        ttk.Button(
+        )
+        consistency_button.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        self._attach_tooltip(
+            consistency_button,
+            "快速扫描所选至少 2 页的页眉边界和正文左缘，生成一致性报告；不修改版面参数。",
+        )
+        ordinary_settings_button = ttk.Button(
             row, text="普通画线设置（备用）…",
             command=lambda: self.open_settings(initial_tab="normal"),
             style="PC.Compact.TButton",
-        ).pack(side="left", fill="x", expand=True, padx=(5, 0))
+        )
+        ordinary_settings_button.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        self._attach_tooltip(
+            ordinary_settings_button,
+            "打开普通画线的专属参数；OCR画线正常时通常无需调整。",
+        )
         for col in (1, 3, 5, 7): normal.columnconfigure(col, weight=1)
 
         aux = self._section_frame(parent, "二、显示设置", padding=5, section_key="aux")
@@ -11537,19 +11561,46 @@ class PictureCaptureApp(tk.Tk):
         ttk.Label(lens_row, text="px").pack(side="left")
         ocr_tools = ttk.Frame(ocr)
         ocr_tools.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(4, 0))
-        ttk.Button(
+        environment_button = ttk.Button(
             ocr_tools, text="环境中心", command=self.check_ocr_engines,
             style="PC.Compact.TButton",
-        ).pack(side="left", fill="x", expand=True)
-        ttk.Button(
+        )
+        environment_button.pack(side="left", fill="x", expand=True)
+        self._attach_tooltip(
+            environment_button,
+            "检查 PaddleOCR / PaddlePaddle、Tesseract、Lens、OpenCC 等运行环境。",
+        )
+        ocr_settings_button = ttk.Button(
             ocr_tools, text="OCR画线设置…",
             command=lambda: self.open_settings(initial_tab="ocr"),
             style="PC.Compact.TButton",
-        ).pack(side="left", fill="x", expand=True, padx=(5, 0))
+        )
+        ocr_settings_button.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        self._attach_tooltip(
+            ocr_settings_button,
+            "打开 OCR画线参数和高级候选规则；建议先在代表页确认具体错误模式。",
+        )
         for col in (1, 3, 5): ocr.columnconfigure(col, weight=1)
 
         actions = self._section_frame(parent, "四、画线与校对", padding=5, section_key="actions")
         actions.pack(fill="x", pady=(4, 0))
+        action_tooltips = {
+            "运行普通画线（备用）": "备用模式：依赖栏左几何、墨迹和行高；适合左缘高度稳定版式或 OCR 暂不可用时。",
+            "运行OCR画线（推荐）": "推荐默认：结合 OCR 文字、位置和结构证据识别词头，并可复用有效缓存。",
+            "清除画线": "清除当前页全部词条画线；不会删除扫描图片。",
+            "清除文本": "清空当前页画线中的词条文字，但保留画线位置。",
+            "精修画线": "仅在所选范围微调已有画线的 Y 位置，不新增或删除词条。",
+            "新旧比较": "比较所选范围当前 PDIC 与页码-词条文本，定位新增、缺失或顺序差异。",
+            "词条校对": "打开连续校对窗口，结合扫描图、OCR候选、简体和参考词表逐条核对。",
+            "选择词条文件": "选择带页码的既有词条 TXT，供后续【填充词条】重复使用。",
+            "填充词条": "按当前页面范围，用已选页码词条文件填充对应 PDIC 词条文本。",
+            "修复排序": "按栏号 → Y 修复所选范围 PDIC 记录顺序；不重新 OCR、不改变词条坐标配对。",
+            "备份PDIC": "将项目现有 PDIC 汇总为时间戳备份，适合批量修改前留档。",
+            "恢复PDIC": "从备份文本覆盖恢复主界面所选范围的 PDIC；执行前请确认页面范围。",
+            "插图识别": "在所选页面范围自动识别插图并写入 PPP；人工多边形会保留。",
+            "编辑插图": "进入/退出插图多边形编辑模式，可新增、移动顶点并修改标签。",
+            "保存当前页": "立即保存当前页的画线/词条或插图编辑结果。",
+        }
         rows = [
             (("运行普通画线（备用）", self.run_normal_draw_action), ("运行OCR画线（推荐）", self.run_ocr_draw_action)),
             (("清除画线", self.clear_entries), ("清除文本", self.clear_text), ("精修画线", self.refine_lines_selected_scope), ("新旧比较", self.compare_old_new_selected_scope), ("词条校对", self.open_review)),
@@ -11569,10 +11620,9 @@ class PictureCaptureApp(tk.Tk):
                     else "neutral"
                 )
                 button = self._sidebar_action_button(row, text, command, role=role)
-                if text == "运行OCR画线（推荐）":
-                    self._attach_tooltip(button, "推荐默认：结合 OCR 文字、位置与结构证据识别词头，并可复用有效缓存。")
-                elif text == "运行普通画线（备用）":
-                    self._attach_tooltip(button, "备用模式：只依赖栏左几何和墨迹，适合左缘极稳定版式或 OCR 暂不可用时。")
+                tooltip = action_tooltips.get(text)
+                if tooltip:
+                    self._attach_tooltip(button, tooltip)
                 if text == "编辑插图":
                     self.polygon_draw_button = button
                 button.grid(
@@ -11585,6 +11635,14 @@ class PictureCaptureApp(tk.Tk):
             parent, "五、后期词典制作", padding=5, section_key="postproduction"
         )
         postproduction.pack(fill="x", pady=(4, 0))
+        production_tooltips = {
+            "词条切图": "按所选页面范围和【设置中心 → 切图设置】生成完整词条切图。",
+            "插图切图": "按所选范围导出需要独立输出的 PPP 插图。",
+            "项目详情": "编辑词典名称、语言、正文页码范围等项目级元数据。",
+            "导出PicDic索引": "从项目已保存 PDIC 导出“词条 / X% / Y% / 页码”文本索引。",
+            "PicDic制作": "使用已生成的词条切图制作 PicDic DSL 与图片包。",
+            "导出训练标记包": "导出已人工确认的 PDIC/PPP、OCR候选和坐标上下文，供模型或规则验证。",
+        }
         production_rows = [
             (("词条切图", self.split_entries_selected_scope), ("插图切图", self.split_illustrations_selected_scope)),
             (("项目详情", self.open_project_details), ("导出PicDic索引", self.export_picdic_index), ("PicDic制作", self.build_picdic)),
@@ -11596,7 +11654,11 @@ class PictureCaptureApp(tk.Tk):
             for bi in range(len(specs)):
                 row.columnconfigure(bi, weight=1, uniform=f"postproduction-row-{ri}")
             for bi, (text, command) in enumerate(specs):
-                self._sidebar_action_button(row, text, command).grid(
+                button = self._sidebar_action_button(row, text, command)
+                tooltip = production_tooltips.get(text)
+                if tooltip:
+                    self._attach_tooltip(button, tooltip)
+                button.grid(
                     row=0, column=bi, sticky="ew",
                     padx=(0 if bi == 0 else 4, 0),
                 )
