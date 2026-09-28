@@ -32,6 +32,15 @@ class LayoutEstimate:
     confidence: float = 0.0
     # Full-resolution canonical page width represented by this estimate.
     canonical_width: int = 0
+    # Actual detected/synthesized left edge of each column in canonical pixels.
+    # Keeping these lets downstream preprocessing use the real final-column
+    # position instead of reconstructing it from a median pitch.
+    column_starts: tuple[int, ...] = ()
+    # Robust observed right edge of each column.  This is intentionally separate
+    # from column_width: the latter remains a stable drawing/layout parameter,
+    # while preprocessing needs the actual outer edge of the final occupied
+    # column so short pages do not inherit an oversized median width.
+    column_rights: tuple[int, ...] = ()
 
 
 @dataclass(slots=True)
@@ -165,6 +174,48 @@ def _get_text_detector(settings: AppSettings) -> Any:
             last_exc = exc
             break
     raise RuntimeError(f"PaddleOCR 文本检测模型初始化失败：{last_exc}") from last_exc
+
+
+def detect_text_polygons(
+    image: Image.Image, settings: AppSettings, *, limit_side_len: int = 2400,
+) -> list[np.ndarray]:
+    """Detect source-image text polygons without recognizing text.
+
+    This exposes the same PaddleOCR TextDetection primitive used by automatic
+    layout detection, but preserves each polygon instead of immediately
+    collapsing it to an axis-aligned box.  The preprocessing module uses those
+    original edges to estimate small page skew.
+    """
+    source = normalize_page_rgb(image)
+    detector = _get_text_detector(settings)
+    os.environ["FLAGS_enable_pir_api"] = "0"
+    try:
+        results = list(
+            detector.predict(
+                np.asarray(source), batch_size=1,
+                limit_side_len=max(256, int(limit_side_len)),
+            )
+        )
+    except TypeError:
+        results = list(detector.predict(np.asarray(source)))
+    if not results:
+        return []
+    payload = _result_payload(results[0])
+    raw_polys = payload.get("dt_polys")
+    if raw_polys is None:
+        raw_polys = payload.get("polys")
+    polygons: list[np.ndarray] = []
+    if raw_polys is None:
+        return polygons
+    for raw in list(raw_polys):
+        arr = np.asarray(raw, dtype=float)
+        if arr.ndim != 2 or arr.shape[0] < 3 or arr.shape[1] < 2:
+            continue
+        arr = arr[:, :2].copy()
+        arr[:, 0] = np.clip(arr[:, 0], 0, max(0, source.width - 1))
+        arr[:, 1] = np.clip(arr[:, 1], 0, max(0, source.height - 1))
+        polygons.append(arr)
+    return polygons
 
 
 def _boxes_from_detection(result: Any, width: int, height: int) -> list[tuple[int, int, int, int]]:
@@ -461,6 +512,46 @@ def infer_layout_from_boxes(
         col_widths.append(int(round(float(np.median(col_widths)))))
         gutter_source = int(round(float(np.median(gap_widths)))) if gap_widths else 0
 
+    # Keep a column-specific observed right edge for consumers that need the
+    # physical page envelope rather than the median designed column width.
+    # Assign boxes by center X so a long definition can extend well beyond the
+    # midpoint between adjacent column starts without being mistaken for the
+    # next column.  Restrict the population to the detected body so running
+    # headers do not widen the last column.
+    body_slack = max(4.0, median_h)
+    body_boxes = [
+        box for box in filtered
+        if box[1] >= body_top - body_slack
+        and box[1] <= body_bottom + body_slack
+    ] or filtered
+    column_rights_source: list[int] = []
+    for index, start in enumerate(starts):
+        lane_left = (
+            0.0 if index == 0
+            else (starts[index - 1] + start) / 2.0
+        )
+        lane_right = (
+            float(width) if index == len(starts) - 1
+            else (start + starts[index + 1]) / 2.0
+        )
+        observed_rights = [
+            box[2]
+            for box in body_boxes
+            if lane_left <= (box[0] + box[2]) / 2.0 < lane_right
+            and box[2] > start
+        ]
+        fallback_width = (
+            col_widths[min(index, len(col_widths) - 1)]
+            if col_widths else max(10, round((lane_right - start) * 0.9))
+        )
+        if observed_rights:
+            column_right = int(round(float(np.percentile(observed_rights, 98))))
+        else:
+            column_right = int(start) + max(1, int(fallback_width))
+        column_rights_source.append(
+            max(int(start) + 1, min(width, column_right))
+        )
+
     start_y_source = body_top
     bottom_y_source = body_bottom
     character_height_source = max(1, round(float(np.median([box[3] - box[1] for box in filtered]))))
@@ -481,6 +572,10 @@ def infer_layout_from_boxes(
         method="paddle",
         separator_x=(round(float(np.median(separators)) * scale) if separators else None),
         canonical_width=int(width),
+        column_starts=tuple(max(0, round(start * scale)) for start in starts),
+        column_rights=tuple(
+            max(1, round(right * scale)) for right in column_rights_source
+        ),
     )
 
 
@@ -540,6 +635,11 @@ def _analysis_ink_mask(gray: np.ndarray, settings: AppSettings) -> np.ndarray:
         return gray.astype(np.int16) < (local - 10)
     # "auto" and explicit "otsu" intentionally share the conservative Otsu path.
     return gray < _otsu_threshold(gray)
+
+
+def analysis_ink_mask(gray: np.ndarray, settings: AppSettings) -> np.ndarray:
+    """Public wrapper for the deterministic layout-analysis foreground mask."""
+    return _analysis_ink_mask(gray, settings)
 
 
 def _projection_layout_estimate(source: Image.Image, settings: AppSettings) -> LayoutEstimate:
@@ -726,6 +826,20 @@ def _projection_layout_estimate(source: Image.Image, settings: AppSettings) -> L
         method="projection_fallback",
         separator_x=(round(float(np.median(separator_centers)) * factor) if separator_centers else None),
         canonical_width=int(original_w),
+        column_starts=tuple(max(0, round(start * factor)) for start in starts),
+        column_rights=tuple(
+            max(
+                1,
+                round(
+                    (
+                        start
+                        + widths[min(index, len(widths) - 1)]
+                    )
+                    * factor
+                ),
+            )
+            for index, start in enumerate(starts)
+        ),
     )
 
 

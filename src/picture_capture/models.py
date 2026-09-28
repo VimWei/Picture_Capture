@@ -210,6 +210,28 @@ class AppSettings:
     show_illustration_labels: bool = False
     ocr_executable: str = "tesseract"
     image_suffix: str = ".png"
+    # Non-destructive first-stage scan preprocessing.  These settings affect
+    # only ImagePreprocess analysis/export and never rewrite source page files.
+    preprocess_auto_deskew: bool = True
+    preprocess_safety_margin_px: int = 20
+    # Geometry stage before final crop. "auto" may apply global deskew and
+    # projective correction, but never nonlinear OCR-derived mesh warping.
+    # Strong nonlinear deformation is reviewed and handled explicitly by UVDoc.
+    preprocess_geometry_mode: str = "auto"
+    # Export-only presentation canvas. These settings never alter crop_box or
+    # source-image geometry; they only place the retained crop on a white frame.
+    preprocess_export_canvas_enabled: bool = False
+    preprocess_export_canvas_mode: str = "batch_max"
+    preprocess_export_canvas_width: int = 0
+    preprocess_export_canvas_height: int = 0
+    # Fixed page margins define the page body (版心). Content alignment is
+    # resolved inside this body, not against the outer page edge.
+    preprocess_export_margin_top: int = 0
+    preprocess_export_margin_bottom: int = 0
+    preprocess_export_margin_left: int = 0
+    preprocess_export_margin_right: int = 0
+    preprocess_export_align_x: str = "center"
+    preprocess_export_align_y: str = "top"
     # Overlay editor presentation at 100% page scale. The page zoom multiplies
     # the base font, so text boxes zoom together with the scanned page.
     main_entry_font_family: str = "自动（系统推荐）"

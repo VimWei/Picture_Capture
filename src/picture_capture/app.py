@@ -72,6 +72,29 @@ from .profile_semantics import (
 )
 from .picdic import PicDicBuildCancelled, build_picdic_package
 from .image_utils import normalize_page_rgb
+from .image_preprocessing import (
+    PreprocessAnalysis,
+    analysis_is_current as preprocess_analysis_is_current,
+    analyze_preprocess_path,
+    clear_manual_perspective_quad,
+    geometry_corrected_image,
+    load_analysis as load_preprocess_analysis,
+    load_manual_perspective_quad,
+    overlay_excluded_regions,
+    output_canvas_info,
+    preprocess_metadata_output_root,
+    preview_output_root as preprocess_preview_output_root,
+    processed_output_root as preprocess_processed_output_root,
+    promote_processed_pages,
+    result_summary as preprocess_result_summary,
+    save_analysis as save_preprocess_analysis,
+    save_manual_perspective_quad,
+    save_processed_page,
+    save_review_preview,
+    export_diagnostic_json,
+    export_summary_csv,
+)
+from .preprocess_geometry import perspective_from_quad
 from .page_sections import (
     PageSection, read_page_sections, write_page_sections, v_is_inside_sections,
 )
@@ -9993,6 +10016,80 @@ class PictureCaptureApp(tk.Tk):
         self.binary_preview_var = tk.BooleanVar(value=False)
         self.display_mode_var = tk.StringVar(value="原图+标注")
         self._display_mode_syncing = False
+        # Non-destructive scan preprocessing reuses the main canvas and page list.
+        self.preprocess_mode_var = tk.BooleanVar(value=False)
+        self.preprocess_auto_deskew_var = tk.BooleanVar(
+            value=bool(self.settings.preprocess_auto_deskew)
+        )
+        self.preprocess_safety_var = tk.StringVar(
+            value=str(int(self.settings.preprocess_safety_margin_px))
+        )
+        self.preprocess_geometry_var = tk.StringVar(
+            value={
+                "deskew": "轻量：旋转+裁边",
+                "perspective": "自动透视",
+                "dewarp": "UVDoc展平（Paddle高级）",
+                "uvdoc": "UVDoc展平（Paddle高级）",
+                "auto": "自动几何（推荐）",
+            }.get(
+                str(getattr(self.settings, "preprocess_geometry_mode", "auto") or "auto"),
+                "自动几何（推荐）",
+            )
+        )
+        self.preprocess_export_canvas_var = tk.BooleanVar(
+            value=bool(getattr(self.settings, "preprocess_export_canvas_enabled", False))
+        )
+        self.preprocess_export_canvas_mode_var = tk.StringVar(
+            value={
+                "batch_max": "本批最大裁剪尺寸",
+                "custom": "自定义尺寸",
+            }.get(
+                str(getattr(self.settings, "preprocess_export_canvas_mode", "batch_max") or "batch_max"),
+                "本批最大裁剪尺寸",
+            )
+        )
+        self.preprocess_export_canvas_width_var = tk.StringVar(
+            value=str(int(getattr(self.settings, "preprocess_export_canvas_width", 0) or 0))
+        )
+        self.preprocess_export_canvas_height_var = tk.StringVar(
+            value=str(int(getattr(self.settings, "preprocess_export_canvas_height", 0) or 0))
+        )
+        self.preprocess_export_margin_top_var = tk.StringVar(
+            value=str(int(getattr(self.settings, "preprocess_export_margin_top", 0) or 0))
+        )
+        self.preprocess_export_margin_bottom_var = tk.StringVar(
+            value=str(int(getattr(self.settings, "preprocess_export_margin_bottom", 0) or 0))
+        )
+        self.preprocess_export_margin_left_var = tk.StringVar(
+            value=str(int(getattr(self.settings, "preprocess_export_margin_left", 0) or 0))
+        )
+        self.preprocess_export_margin_right_var = tk.StringVar(
+            value=str(int(getattr(self.settings, "preprocess_export_margin_right", 0) or 0))
+        )
+        self.preprocess_export_align_x_var = tk.StringVar(
+            value={
+                "left": "左对齐", "center": "居中", "right": "右对齐",
+            }.get(
+                str(getattr(self.settings, "preprocess_export_align_x", "center") or "center"),
+                "居中",
+            )
+        )
+        self.preprocess_export_align_y_var = tk.StringVar(
+            value={
+                "top": "顶端对齐", "center": "居中", "bottom": "底部对齐",
+            }.get(
+                str(getattr(self.settings, "preprocess_export_align_y", "top") or "top"),
+                "顶端对齐",
+            )
+        )
+        self.preprocess_status_var = tk.StringVar(value="未分析")
+        self._preprocess_results: dict[str, PreprocessAnalysis] = {}
+        self._preprocess_photo: ImageTk.PhotoImage | None = None
+        self._preprocess_photo_cache_key: tuple | None = None
+        self._preprocess_corrected_image: Image.Image | None = None
+        self._preprocess_corrected_image_key: tuple[int, int] | None = None
+        self._preprocess_locked_widgets: list[tuple[tk.Misc, object]] = []
+        self.preprocess_mode_button: ttk.Button | None = None
         self.polygon_draw_button: ttk.Button | None = None
         # PPP label editors and vertex-drag state are rebuilt with each canvas redraw.
         self.polygon_label_bindings: list[tuple[tk.Entry, PolygonRegion]] = []
@@ -10087,6 +10184,9 @@ class PictureCaptureApp(tk.Tk):
         # manual review. Page states are protected so background PDIC writes
         # never race a user's edits on the same page.
         self._batch_foreground_pages = False
+        # Read-only preprocessing batches may keep the page list navigable;
+        # mutating batches leave this False.
+        self._batch_allow_page_navigation = False
         self._batch_page_states: dict[int, str] = {}
         self._batch_state_lock = threading.Lock()
         self._batch_skipped_count = 0
@@ -10119,6 +10219,7 @@ class PictureCaptureApp(tk.Tk):
         self._light_ttk_theme = str(ttk.Style(self).theme_use())
         self._configure_global_appearance()
         self.section_expanded = {
+            "preprocess": True,
             "normal": True,
             "aux": False,
             "ocr": False,
@@ -10567,6 +10668,8 @@ class PictureCaptureApp(tk.Tk):
 
         self.photo = None
         self._display_photo_cache_key = None
+        self._preprocess_photo = None
+        self._preprocess_photo_cache_key = None
         self._schedule_page_cell_overlay_refresh()
         if self.image is not None:
             self.redraw()
@@ -10873,6 +10976,9 @@ class PictureCaptureApp(tk.Tk):
 
     def _toggle_section(self, section: ttk.LabelFrame) -> None:
         key = str(getattr(section, "_collapse_key", ""))
+        if self._preprocess_mode_active() and key not in {"preprocess", "pages"}:
+            self.status_var.set("预处理模式中：主界面仅保留图片预处理、页面浏览和缩放。")
+            return
         self._set_section_expanded(section, not bool(self.section_expanded.get(key, True)))
 
     def _apply_initial_section_states(self) -> None:
@@ -10882,6 +10988,7 @@ class PictureCaptureApp(tk.Tk):
     def _apply_new_project_sidebar_defaults(self) -> None:
         """Apply the release workspace layout only to a newly created project."""
         defaults = {
+            "preprocess": True,
             "normal": True,
             "aux": False,
             "ocr": False,
@@ -11263,6 +11370,7 @@ class PictureCaptureApp(tk.Tk):
         project_row.pack(fill="x")
         for col in range(4):
             project_row.columnconfigure(col, weight=1, uniform="project-footer-columns")
+        self.project_footer_buttons: list[ttk.Button] = []
         for col, (label, command) in enumerate((
             ("项目中心", self.open_recent_project),
             ("项目Profile", self.open_project_profile),
@@ -11276,6 +11384,7 @@ class PictureCaptureApp(tk.Tk):
                 row=0, column=col, sticky="ew",
                 padx=(0 if col == 0 else 4, 0),
             )
+            self.project_footer_buttons.append(button)
             footer_tooltips = {
                 "项目中心": "打开最近项目与项目管理；可从这里新建或切换词典项目。",
                 "项目Profile": "配置词典信息、阅读方向、页面模板和词头结构，并用代表页测试。",
@@ -11679,6 +11788,9 @@ class PictureCaptureApp(tk.Tk):
 
     def _page_list_section_double_click(self, event: tk.Event) -> str | None:
         """Edit the page-level Section count directly from the page list."""
+        if self._preprocess_mode_active():
+            self.status_var.set("预处理模式中：SECTION 编辑已锁定。")
+            return "break"
         if self.page_list.identify_region(event.x, event.y) != "cell":
             return None
         if self._page_list_column_at(event.x) != "section":
@@ -11716,11 +11828,19 @@ class PictureCaptureApp(tk.Tk):
         }
 
     def _page_list_bookmark_click(self, event: tk.Event) -> str | None:
-        """Toggle the bookmark cell without changing the active page."""
+        """Toggle only the bookmark cell; never swallow ordinary page clicks."""
+        # This handler is bound to every left click on the Treeview. Determine
+        # whether the click actually targets the bookmark column *before*
+        # applying the preprocess read-only guard. Otherwise returning "break"
+        # in preprocess mode suppresses Treeview selection on the 页面 column and
+        # makes the page list appear frozen while analysis is running.
         if self.page_list.identify_region(event.x, event.y) != "cell":
             return None
         if self.page_list.identify_column(event.x) != "#1":
             return None
+        if self._preprocess_mode_active():
+            self.status_var.set("预处理模式中：仅保留页面浏览，不修改书签或其他项目数据。")
+            return "break"
         iid = self.page_list.identify_row(event.y)
         if not iid or not self.project:
             return "break"
@@ -12172,6 +12292,221 @@ class PictureCaptureApp(tk.Tk):
                     style="PC.Compact.TEntry",
                 ).grid(row=row, column=col + 1, sticky="ew", padx=(0, 6), pady=1)
 
+        preprocess = self._section_frame(
+            parent, "图片预处理（前置）", padding=5, section_key="preprocess"
+        )
+        self.preprocess_panel = preprocess
+        preprocess.pack(fill="x")
+        preprocess.columnconfigure(0, weight=1)
+
+        preprocess_mode_row = ttk.Frame(preprocess)
+        preprocess_mode_row.grid(row=0, column=0, sticky="ew")
+        self.preprocess_mode_button = ttk.Button(
+            preprocess_mode_row,
+            text="进入预处理模式",
+            command=self.toggle_preprocess_mode,
+            style="PC.Compact.TButton",
+        )
+        self.preprocess_mode_button.pack(side="left", fill="x", expand=True)
+        ttk.Checkbutton(
+            preprocess_mode_row,
+            text="自动纠偏",
+            variable=self.preprocess_auto_deskew_var,
+            command=self._preprocess_settings_changed,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Label(preprocess_mode_row, text="安全边界：").pack(side="left", padx=(8, 2))
+        safety_spin = ttk.Spinbox(
+            preprocess_mode_row,
+            from_=0, to=500, increment=5, width=6,
+            textvariable=self.preprocess_safety_var,
+        )
+        safety_spin.pack(side="left")
+        ttk.Label(preprocess_mode_row, text="px").pack(side="left", padx=(2, 0))
+        safety_spin.bind("<Return>", self._preprocess_settings_changed)
+        safety_spin.bind("<FocusOut>", self._preprocess_settings_changed)
+
+        preprocess_geometry_row = ttk.Frame(preprocess)
+        preprocess_geometry_row.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        ttk.Label(preprocess_geometry_row, text="几何纠正：").pack(side="left")
+        geometry_combo = ttk.Combobox(
+            preprocess_geometry_row,
+            textvariable=self.preprocess_geometry_var,
+            values=(
+                "自动几何（推荐）",
+                "轻量：旋转+裁边",
+                "自动透视",
+                "UVDoc展平（Paddle高级）",
+            ),
+            state="readonly",
+            width=22,
+        )
+        geometry_combo.pack(side="left", fill="x", expand=True)
+        geometry_combo.bind("<<ComboboxSelected>>", self._preprocess_settings_changed)
+        manual_corner_button = ttk.Button(
+            preprocess_geometry_row,
+            text="手动四角",
+            command=self.edit_preprocess_corners,
+            style="PC.Compact.TButton",
+        )
+        manual_corner_button.pack(side="left", padx=(6, 0))
+        reset_corner_button = ttk.Button(
+            preprocess_geometry_row,
+            text="重置四角",
+            command=self.reset_preprocess_corners,
+            style="PC.Compact.TButton",
+        )
+        reset_corner_button.pack(side="left", padx=(4, 0))
+        self._attach_tooltip(
+            manual_corner_button,
+            "在原始整页图上拖动左上、右上、右下、左下四个控制点；手动四角优先于自动透视，也可在 UVDoc 前先做人工透视校正。",
+        )
+        self._attach_tooltip(
+            reset_corner_button,
+            "删除当前页的手动四角覆盖，恢复自动几何纠正。",
+        )
+
+        preprocess_action_row = ttk.Frame(preprocess)
+        preprocess_action_row.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        for col in range(4):
+            preprocess_action_row.columnconfigure(col, weight=1, uniform="preprocess-actions")
+        for col, (text_value, command) in enumerate((
+            ("分析所选范围", self.analyze_preprocess_selected),
+            ("上一需检查", lambda: self.jump_preprocess_review(-1)),
+            ("下一需检查", lambda: self.jump_preprocess_review(1)),
+            ("诊断信息", self.show_preprocess_diagnostics),
+        )):
+            ttk.Button(
+                preprocess_action_row, text=text_value, command=command,
+                style="PC.Compact.TButton",
+            ).grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 4, 0))
+
+        preprocess_canvas_row = ttk.Frame(preprocess)
+        preprocess_canvas_row.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        ttk.Checkbutton(
+            preprocess_canvas_row,
+            text="统一最终页面",
+            variable=self.preprocess_export_canvas_var,
+            command=self._preprocess_export_settings_changed,
+        ).pack(side="left")
+        canvas_mode_combo = ttk.Combobox(
+            preprocess_canvas_row,
+            textvariable=self.preprocess_export_canvas_mode_var,
+            values=("本批最大裁剪尺寸", "自定义尺寸"),
+            state="readonly",
+            width=15,
+        )
+        canvas_mode_combo.pack(side="left", padx=(6, 0))
+        canvas_mode_combo.bind(
+            "<<ComboboxSelected>>", self._preprocess_export_settings_changed
+        )
+        ttk.Label(preprocess_canvas_row, text="页面宽×高：").pack(side="left", padx=(8, 2))
+        canvas_width_spin = ttk.Spinbox(
+            preprocess_canvas_row,
+            from_=0, to=100000, increment=10, width=7,
+            textvariable=self.preprocess_export_canvas_width_var,
+        )
+        canvas_width_spin.pack(side="left")
+        ttk.Label(preprocess_canvas_row, text="×").pack(side="left", padx=2)
+        canvas_height_spin = ttk.Spinbox(
+            preprocess_canvas_row,
+            from_=0, to=100000, increment=10, width=7,
+            textvariable=self.preprocess_export_canvas_height_var,
+        )
+        canvas_height_spin.pack(side="left")
+        for widget in (canvas_width_spin, canvas_height_spin):
+            widget.bind("<Return>", self._preprocess_export_settings_changed)
+            widget.bind("<FocusOut>", self._preprocess_export_settings_changed)
+
+        preprocess_margin_row = ttk.Frame(preprocess)
+        preprocess_margin_row.grid(row=4, column=0, sticky="ew", pady=(4, 0))
+        ttk.Label(preprocess_margin_row, text="页边空(px)：").pack(side="left")
+        margin_widgets = []
+        for label, variable in (
+            ("上", self.preprocess_export_margin_top_var),
+            ("左", self.preprocess_export_margin_left_var),
+            ("下", self.preprocess_export_margin_bottom_var),
+            ("右", self.preprocess_export_margin_right_var),
+        ):
+            ttk.Label(preprocess_margin_row, text=f"{label}：").pack(
+                side="left", padx=(5, 1)
+            )
+            spin = ttk.Spinbox(
+                preprocess_margin_row,
+                from_=0, to=100000, increment=5, width=5,
+                textvariable=variable,
+            )
+            spin.pack(side="left")
+            margin_widgets.append(spin)
+        for widget in margin_widgets:
+            widget.bind("<Return>", self._preprocess_export_settings_changed)
+            widget.bind("<FocusOut>", self._preprocess_export_settings_changed)
+
+        preprocess_align_row = ttk.Frame(preprocess)
+        preprocess_align_row.grid(row=5, column=0, sticky="ew", pady=(4, 0))
+        ttk.Label(preprocess_align_row, text="内容框排版 X：").pack(side="left")
+        align_x_combo = ttk.Combobox(
+            preprocess_align_row,
+            textvariable=self.preprocess_export_align_x_var,
+            values=("左对齐", "居中", "右对齐"),
+            state="readonly",
+            width=8,
+        )
+        align_x_combo.pack(side="left")
+        align_x_combo.bind(
+            "<<ComboboxSelected>>", self._preprocess_export_settings_changed
+        )
+        ttk.Label(preprocess_align_row, text="Y：").pack(side="left", padx=(8, 2))
+        align_y_combo = ttk.Combobox(
+            preprocess_align_row,
+            textvariable=self.preprocess_export_align_y_var,
+            values=("顶端对齐", "居中", "底部对齐"),
+            state="readonly",
+            width=8,
+        )
+        align_y_combo.pack(side="left")
+        align_y_combo.bind(
+            "<<ComboboxSelected>>", self._preprocess_export_settings_changed
+        )
+        ttk.Label(
+            preprocess_align_row,
+            text="内容框在版心内排版；不足部分填白",
+            style="PC.FieldLabel.TLabel",
+        ).pack(side="left", padx=(10, 0))
+
+        preprocess_export_row = ttk.Frame(preprocess)
+        preprocess_export_row.grid(row=6, column=0, sticky="ew", pady=(4, 0))
+        for col in range(3):
+            preprocess_export_row.columnconfigure(
+                col, weight=1, uniform="preprocess-export"
+            )
+        ttk.Button(
+            preprocess_export_row, text="导出检查小图",
+            command=self.export_preprocess_previews,
+            style="PC.Compact.TButton",
+        ).grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            preprocess_export_row, text="导出预处理图片",
+            command=self.export_preprocess_images,
+            style="PC.Compact.TButton",
+        ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        promote_button = ttk.Button(
+            preprocess_export_row, text="所选设为工作图片",
+            command=self.promote_preprocessed_working_images,
+            style="PC.Compact.TButton",
+        )
+        promote_button.grid(row=0, column=2, sticky="ew", padx=(4, 0))
+        self._attach_tooltip(
+            promote_button,
+            "仅处理当前页面范围：所选页需已有 processed 导出。原扫描图"
+            "逐批移动到 __before__，处理后图片以原文件名成为后续工作图片；"
+            "未选页面保持不变，__before__ 中同名原图绝不覆盖。",
+        )
+
+        self._attach_tooltip(
+            self.preprocess_mode_button,
+            "进入后锁定画线/OCR/SECTION/后期制作，只保留预处理、翻页和缩放。原扫描图不会被覆盖。",
+        )
+
         normal = self._section_frame(
             parent,
             "一、版面参数",
@@ -12584,6 +12919,1340 @@ class PictureCaptureApp(tk.Tk):
                 pass
         self.lens_mode_var.trace_add("write", lambda *_args: self._quick_parameter_changed())
         self._quick_trace_ready = True
+
+    def _preprocess_mode_active(self) -> bool:
+        return bool(
+            hasattr(self, "preprocess_mode_var") and self.preprocess_mode_var.get()
+        )
+
+    def _preprocess_config(self) -> tuple[int, bool, str]:
+        try:
+            safety = int(round(float(str(self.preprocess_safety_var.get()).strip())))
+        except (TypeError, ValueError):
+            safety = int(getattr(self.settings, "preprocess_safety_margin_px", 20))
+        safety = max(0, min(500, safety))
+        geometry_label = str(self.preprocess_geometry_var.get() or "").strip()
+        geometry_mode = {
+            "自动几何（推荐）": "auto",
+            "轻量：旋转+裁边": "deskew",
+            "自动透视": "perspective",
+            "UVDoc展平（Paddle高级）": "uvdoc",
+        }.get(geometry_label, "auto")
+        return safety, bool(self.preprocess_auto_deskew_var.get()), geometry_mode
+
+    def _preprocess_export_config(
+        self,
+    ) -> tuple[bool, str, int, int, int, int, int, int, str, str]:
+        enabled = bool(self.preprocess_export_canvas_var.get())
+        mode_label = str(self.preprocess_export_canvas_mode_var.get() or "").strip()
+        mode = {
+            "本批最大裁剪尺寸": "batch_max",
+            "自定义尺寸": "custom",
+        }.get(mode_label, "batch_max")
+
+        def bounded_int(variable, setting_name: str) -> int:
+            try:
+                value = int(round(float(str(variable.get()).strip())))
+            except (TypeError, ValueError):
+                value = int(getattr(self.settings, setting_name, 0) or 0)
+            return max(0, min(100000, value))
+
+        width = bounded_int(
+            self.preprocess_export_canvas_width_var,
+            "preprocess_export_canvas_width",
+        )
+        height = bounded_int(
+            self.preprocess_export_canvas_height_var,
+            "preprocess_export_canvas_height",
+        )
+        margin_top = bounded_int(
+            self.preprocess_export_margin_top_var,
+            "preprocess_export_margin_top",
+        )
+        margin_bottom = bounded_int(
+            self.preprocess_export_margin_bottom_var,
+            "preprocess_export_margin_bottom",
+        )
+        margin_left = bounded_int(
+            self.preprocess_export_margin_left_var,
+            "preprocess_export_margin_left",
+        )
+        margin_right = bounded_int(
+            self.preprocess_export_margin_right_var,
+            "preprocess_export_margin_right",
+        )
+        align_x = {
+            "左对齐": "left",
+            "居中": "center",
+            "右对齐": "right",
+        }.get(str(self.preprocess_export_align_x_var.get() or "").strip(), "center")
+        align_y = {
+            "顶端对齐": "top",
+            "居中": "center",
+            "底部对齐": "bottom",
+        }.get(str(self.preprocess_export_align_y_var.get() or "").strip(), "top")
+        return (
+            enabled, mode, width, height,
+            margin_top, margin_bottom, margin_left, margin_right,
+            align_x, align_y,
+        )
+
+    def _preprocess_export_settings_changed(self, _event=None) -> None:
+        (
+            enabled, mode, width, height,
+            margin_top, margin_bottom, margin_left, margin_right,
+            align_x, align_y,
+        ) = self._preprocess_export_config()
+        self.preprocess_export_canvas_width_var.set(str(width))
+        self.preprocess_export_canvas_height_var.set(str(height))
+        self.preprocess_export_margin_top_var.set(str(margin_top))
+        self.preprocess_export_margin_bottom_var.set(str(margin_bottom))
+        self.preprocess_export_margin_left_var.set(str(margin_left))
+        self.preprocess_export_margin_right_var.set(str(margin_right))
+        self.settings.preprocess_export_canvas_enabled = enabled
+        self.settings.preprocess_export_canvas_mode = mode
+        self.settings.preprocess_export_canvas_width = width
+        self.settings.preprocess_export_canvas_height = height
+        self.settings.preprocess_export_margin_top = margin_top
+        self.settings.preprocess_export_margin_bottom = margin_bottom
+        self.settings.preprocess_export_margin_left = margin_left
+        self.settings.preprocess_export_margin_right = margin_right
+        self.settings.preprocess_export_align_x = align_x
+        self.settings.preprocess_export_align_y = align_y
+        if self.project is not None:
+            self.project.settings.preprocess_export_canvas_enabled = enabled
+            self.project.settings.preprocess_export_canvas_mode = mode
+            self.project.settings.preprocess_export_canvas_width = width
+            self.project.settings.preprocess_export_canvas_height = height
+            self.project.settings.preprocess_export_margin_top = margin_top
+            self.project.settings.preprocess_export_margin_bottom = margin_bottom
+            self.project.settings.preprocess_export_margin_left = margin_left
+            self.project.settings.preprocess_export_margin_right = margin_right
+            self.project.settings.preprocess_export_align_x = align_x
+            self.project.settings.preprocess_export_align_y = align_y
+            try:
+                self.settings.to_json(settings_path(self.project.root))
+            except OSError:
+                pass
+        if self._preprocess_mode_active():
+            self._set_current_preprocess_status(
+                self._preprocess_result_for_page(self.current_index)
+            )
+
+    def _preprocess_settings_changed(self, _event=None) -> None:
+        safety, auto_deskew, geometry_mode = self._preprocess_config()
+        self.preprocess_safety_var.set(str(safety))
+        self.settings.preprocess_safety_margin_px = safety
+        self.settings.preprocess_auto_deskew = auto_deskew
+        self.settings.preprocess_geometry_mode = geometry_mode
+        if self.project is not None:
+            self.project.settings.preprocess_safety_margin_px = safety
+            self.project.settings.preprocess_auto_deskew = auto_deskew
+            self.project.settings.preprocess_geometry_mode = geometry_mode
+            try:
+                self.settings.to_json(settings_path(self.project.root))
+            except OSError:
+                pass
+        self._preprocess_photo = None
+        self._preprocess_photo_cache_key = None
+        if self._preprocess_mode_active() and self.project and self.current_page:
+            self.preprocess_status_var.set("预处理参数已改变；当前页结果需要重新分析。")
+            self.analyze_preprocess_current(silent=True)
+
+    def _set_workspace_preprocess_locked(self, locked: bool) -> None:
+        """Disable ordinary-edit controls while preserving page navigation."""
+        section_keys = ("normal", "aux", "ocr", "actions", "postproduction")
+        if locked:
+            if self._preprocess_locked_widgets:
+                return
+            for key in section_keys:
+                section = self._collapsible_sections.get(key)
+                if section is None:
+                    continue
+                stack = list(section.winfo_children())
+                while stack:
+                    widget = stack.pop()
+                    try:
+                        stack.extend(widget.winfo_children())
+                    except tk.TclError:
+                        pass
+                    if isinstance(widget, ttk.Widget):
+                        try:
+                            was_disabled = "disabled" in widget.state()
+                            widget.state(["disabled"])
+                            self._preprocess_locked_widgets.append((widget, was_disabled))
+                        except tk.TclError:
+                            pass
+                    else:
+                        try:
+                            if "state" in widget.keys():
+                                old_state = widget.cget("state")
+                                widget.configure(state="disabled")
+                                self._preprocess_locked_widgets.append((widget, old_state))
+                        except tk.TclError:
+                            pass
+            for widget in getattr(self, "project_footer_buttons", ()):
+                try:
+                    was_disabled = "disabled" in widget.state()
+                    widget.state(["disabled"])
+                    self._preprocess_locked_widgets.append((widget, was_disabled))
+                except tk.TclError:
+                    pass
+            return
+
+        remembered = self._preprocess_locked_widgets
+        self._preprocess_locked_widgets = []
+        for widget, previous in remembered:
+            try:
+                if isinstance(widget, ttk.Widget):
+                    widget.state(["disabled" if bool(previous) else "!disabled"])
+                else:
+                    widget.configure(state=previous)
+            except tk.TclError:
+                pass
+
+    def _preprocess_blocking_window_name(self) -> str | None:
+        candidates = (
+            ("review_window", "词条校对"),
+            ("ocr_review_window", "OCR词头冲突复核"),
+            ("old_new_compare_window", "新旧比较"),
+            ("_settings_dialog", "设置中心"),
+            ("_project_profile_wizard", "项目Profile"),
+        )
+        for attr, label in candidates:
+            window = self.__dict__.get(attr)
+            if window is None:
+                continue
+            try:
+                if window.winfo_exists():
+                    return label
+            except tk.TclError:
+                continue
+        return None
+
+    def toggle_preprocess_mode(self) -> None:
+        self._set_preprocess_mode(not self._preprocess_mode_active())
+
+    def _set_preprocess_mode(self, active: bool, *, analyze: bool = True) -> None:
+        active = bool(active)
+        if active and (not self.project or self.current_page is None or self.image is None):
+            self.preprocess_mode_var.set(False)
+            messagebox.showinfo(
+                "图片预处理", "请先打开包含扫描图片的项目目录。", parent=self,
+            )
+            return
+        if active:
+            blocker = self._preprocess_blocking_window_name()
+            if blocker is not None:
+                self.preprocess_mode_var.set(False)
+                messagebox.showinfo(
+                    "图片预处理",
+                    f"请先关闭【{blocker}】，再进入预处理模式。\n\n"
+                    "预处理模式不会与其他可修改项目数据的窗口并行运行。",
+                    parent=self,
+                )
+                return
+        if active and self._batch_active:
+            self.preprocess_mode_var.set(False)
+            self.status_var.set("当前批量任务运行中；结束后再进入预处理模式。")
+            return
+
+        self.preprocess_mode_var.set(active)
+        if self.preprocess_mode_button is not None:
+            self.preprocess_mode_button.configure(
+                text="退出预处理模式" if active else "进入预处理模式"
+            )
+        if active:
+            self._section_editing = False
+            self._drag_section_boundary = None
+            self.polygon_draw_var.set(False)
+            self.new_polygon.clear()
+            self._set_workspace_preprocess_locked(True)
+            section = self._collapsible_sections.get("preprocess")
+            if section is not None:
+                self._set_section_expanded(section, True)
+            self.status_var.set(
+                "已进入预处理模式：几何纠正后重新检测版面并裁边；画线、OCR、SECTION 和后期制作已锁定。"
+            )
+            self.redraw()
+            if analyze:
+                self.analyze_preprocess_current(silent=True)
+        else:
+            self._invalidate_ui_worker("preprocess-current")
+            self._set_workspace_preprocess_locked(False)
+            self._preprocess_photo = None
+            self._preprocess_photo_cache_key = None
+            self.preprocess_status_var.set("未进入预处理模式")
+            if self.image is not None:
+                self.redraw()
+            self.status_var.set("已退出预处理模式，恢复普通编辑功能。")
+
+    @staticmethod
+    def _default_preprocess_corner_quad(image: Image.Image) -> tuple[float, ...]:
+        width, height = image.size
+        inset = max(4, round(min(width, height) * 0.012))
+        return (
+            float(inset), float(inset),
+            float(max(inset + 1, width - 1 - inset)), float(inset),
+            float(max(inset + 1, width - 1 - inset)),
+            float(max(inset + 1, height - 1 - inset)),
+            float(inset), float(max(inset + 1, height - 1 - inset)),
+        )
+
+    def edit_preprocess_corners(self) -> None:
+        if not self.project or self.current_page is None or self.image is None:
+            messagebox.showinfo("手动四角", "请先打开包含扫描图片的项目。", parent=self)
+            return
+        if self._ui_worker_key_active("preprocess-current") or self._batch_active:
+            self.status_var.set("预处理任务正在运行；完成后再编辑手动四角。")
+            return
+        if not self._preprocess_mode_active():
+            self._set_preprocess_mode(True, analyze=False)
+            if not self._preprocess_mode_active():
+                return
+
+        project = self.project
+        page = self.current_page
+        source = normalize_page_rgb(self.image)
+        existing = load_manual_perspective_quad(project.root, page)
+        initial = existing or self._default_preprocess_corner_quad(source)
+        points = [
+            [float(initial[index]), float(initial[index + 1])]
+            for index in range(0, 8, 2)
+        ]
+
+        window = tk.Toplevel(self)
+        window.title(f"手动四角透视｜{page.name}")
+        window.transient(self)
+        work_x, work_y, work_w, work_h = _screen_work_area(self)
+        max_w = max(640, min(1280, work_w - 120))
+        max_h = max(520, min(920, work_h - 180))
+        scale = min(
+            1.0,
+            max_w / max(1, source.width),
+            (max_h - 90) / max(1, source.height),
+        )
+        display_size = (
+            max(1, round(source.width * scale)),
+            max(1, round(source.height * scale)),
+        )
+
+        body = ttk.Frame(window, padding=8)
+        body.pack(fill="both", expand=True)
+        canvas = tk.Canvas(
+            body,
+            width=display_size[0],
+            height=display_size[1],
+            highlightthickness=1,
+            highlightbackground="#888888",
+            cursor="crosshair",
+        )
+        canvas.pack(fill="both", expand=True)
+        photo = ImageTk.PhotoImage(
+            source.resize(display_size, Image.Resampling.LANCZOS)
+        )
+        canvas.create_image(0, 0, image=photo, anchor="nw", tags=("page",))
+        window._manual_corner_photo = photo  # type: ignore[attr-defined]
+
+        labels = ("左上", "右上", "右下", "左下")
+        drag_state: dict[str, int | None] = {"index": None}
+
+        def redraw_handles() -> None:
+            canvas.delete("manual-corners")
+            coords = [
+                coordinate * scale
+                for point in points
+                for coordinate in point
+            ]
+            canvas.create_polygon(
+                *coords,
+                fill="",
+                outline="#ff7a00",
+                width=3,
+                tags=("manual-corners",),
+            )
+            radius = 7
+            for index, (x, y) in enumerate(points):
+                cx = x * scale
+                cy = y * scale
+                canvas.create_oval(
+                    cx - radius, cy - radius,
+                    cx + radius, cy + radius,
+                    fill="#ff7a00",
+                    outline="white",
+                    width=2,
+                    tags=("manual-corners",),
+                )
+                canvas.create_text(
+                    cx + 11, cy - 11,
+                    text=labels[index],
+                    fill="#d35400",
+                    anchor="sw",
+                    font=(AUTO_FONT_FAMILY, 10, "bold"),
+                    tags=("manual-corners",),
+                )
+
+        def nearest_handle(event: tk.Event) -> int | None:
+            best: tuple[float, int] | None = None
+            for index, (x, y) in enumerate(points):
+                dx = float(event.x) - x * scale
+                dy = float(event.y) - y * scale
+                distance = dx * dx + dy * dy
+                if best is None or distance < best[0]:
+                    best = (distance, index)
+            if best is not None and best[0] <= 22.0 * 22.0:
+                return best[1]
+            return None
+
+        def press(event: tk.Event) -> str:
+            drag_state["index"] = nearest_handle(event)
+            return "break"
+
+        def drag(event: tk.Event) -> str:
+            index = drag_state.get("index")
+            if index is None:
+                return "break"
+            x = max(0.0, min(float(source.width - 1), float(event.x) / max(scale, 1e-9)))
+            y = max(0.0, min(float(source.height - 1), float(event.y) / max(scale, 1e-9)))
+            points[int(index)] = [x, y]
+            redraw_handles()
+            return "break"
+
+        def release(_event: tk.Event) -> str:
+            drag_state["index"] = None
+            return "break"
+
+        canvas.bind("<ButtonPress-1>", press)
+        canvas.bind("<B1-Motion>", drag)
+        canvas.bind("<ButtonRelease-1>", release)
+        redraw_handles()
+
+        ttk.Label(
+            body,
+            text=(
+                "拖动四个橙色控制点到页面/正文平面的四角。坐标保存在原扫描图上；"
+                "小角度纠偏后会同步变换四点，再做透视纠正，最后重新检测版面并裁边。"
+            ),
+            wraplength=max(560, display_size[0]),
+            anchor="w",
+        ).pack(fill="x", pady=(7, 4))
+
+        controls = ttk.Frame(body)
+        controls.pack(fill="x")
+
+        def reset_handles() -> None:
+            defaults = self._default_preprocess_corner_quad(source)
+            for index in range(4):
+                points[index] = [
+                    float(defaults[index * 2]),
+                    float(defaults[index * 2 + 1]),
+                ]
+            redraw_handles()
+
+        def apply_handles() -> None:
+            quad = tuple(coordinate for point in points for coordinate in point)
+            try:
+                perspective_from_quad(quad, source.size)
+            except Exception as exc:
+                messagebox.showerror(
+                    "手动四角无效", str(exc), parent=window,
+                )
+                return
+            save_manual_perspective_quad(project.root, page, quad)
+            self._preprocess_results.pop(page.name, None)
+            self._preprocess_photo = None
+            self._preprocess_photo_cache_key = None
+            window.destroy()
+            self.status_var.set(f"已保存 {page.name} 手动四角；正在重新分析。")
+            self.analyze_preprocess_current(silent=True)
+
+        ttk.Button(
+            controls, text="恢复整页四角", command=reset_handles,
+            style="PC.Compact.TButton",
+        ).pack(side="left")
+        ttk.Button(
+            controls, text="取消", command=window.destroy,
+            style="PC.Compact.TButton",
+        ).pack(side="right")
+        ttk.Button(
+            controls, text="应用四角", command=apply_handles,
+            style="PC.Primary.TButton",
+        ).pack(side="right", padx=(0, 6))
+
+        window.update_idletasks()
+        target_w = min(work_w, max(660, window.winfo_reqwidth()))
+        target_h = min(work_h, max(560, window.winfo_reqheight()))
+        x = work_x + max(0, (work_w - target_w) // 2)
+        y = work_y + max(0, (work_h - target_h) // 2)
+        window.geometry(f"{target_w}x{target_h}+{x}+{y}")
+        window.grab_set()
+        window.focus_force()
+
+    def reset_preprocess_corners(self) -> None:
+        if not self.project or self.current_page is None:
+            return
+        page = self.current_page
+        clear_manual_perspective_quad(self.project.root, page)
+        self._preprocess_results.pop(page.name, None)
+        self._preprocess_photo = None
+        self._preprocess_photo_cache_key = None
+        self.status_var.set(f"已重置 {page.name} 手动四角；恢复自动几何纠正。")
+        if self._preprocess_mode_active():
+            self.analyze_preprocess_current(silent=True)
+
+    def _preprocess_result_for_page(self, index: int) -> PreprocessAnalysis | None:
+        if not self.project or not (0 <= index < len(self.project.images)):
+            return None
+        page = self.project.images[index]
+        safety, auto_deskew, geometry_mode = self._preprocess_config()
+        manual_quad = load_manual_perspective_quad(self.project.root, page)
+        cached = self._preprocess_results.get(page.name)
+        if cached is not None and preprocess_analysis_is_current(
+            cached, page,
+            safety_margin_px=safety,
+            auto_deskew=auto_deskew,
+            geometry_mode=geometry_mode,
+            manual_perspective_quad=manual_quad,
+        ):
+            return cached
+        loaded = load_preprocess_analysis(self.project.root, page)
+        if loaded is not None and preprocess_analysis_is_current(
+            loaded, page,
+            safety_margin_px=safety,
+            auto_deskew=auto_deskew,
+            geometry_mode=geometry_mode,
+            manual_perspective_quad=manual_quad,
+        ):
+            self._preprocess_results[page.name] = loaded
+            return loaded
+        self._preprocess_results.pop(page.name, None)
+        return None
+
+    def _set_current_preprocess_status(self, analysis: PreprocessAnalysis | None) -> None:
+        if analysis is None:
+            self.preprocess_status_var.set("当前页尚未分析")
+            return
+        warning = ""
+        if analysis.warnings:
+            warning = "｜" + "；".join(analysis.warnings[:2])
+            if len(analysis.warnings) > 2:
+                warning += f"；另 {len(analysis.warnings) - 2} 项"
+        x0, y0, x1, y1 = analysis.crop_box
+        content_width = max(1, int(x1) - int(x0))
+        content_height = max(1, int(y1) - int(y0))
+        layout_note = f"｜内容框 {content_width}×{content_height}px"
+        try:
+            (
+                canvas_enabled, canvas_mode, page_width, page_height,
+                margin_top, margin_bottom, margin_left, margin_right,
+                _align_x, _align_y,
+            ) = self._preprocess_export_config()
+        except (AttributeError, tk.TclError):
+            canvas_enabled = False
+        if canvas_enabled:
+            if canvas_mode == "custom" and page_width > 0 and page_height > 0:
+                effective_width = max(
+                    page_width, content_width + margin_left + margin_right
+                )
+                effective_height = max(
+                    page_height, content_height + margin_top + margin_bottom
+                )
+                layout_note += (
+                    f"｜页面 {effective_width}×{effective_height}px"
+                    f"｜版心 {effective_width - margin_left - margin_right}"
+                    f"×{effective_height - margin_top - margin_bottom}px"
+                )
+            else:
+                layout_note += "｜页面=按本批最大内容框+页边空"
+        self.preprocess_status_var.set(
+            preprocess_result_summary(analysis) + layout_note + warning
+        )
+
+    def analyze_preprocess_current(self, *, silent: bool = False) -> None:
+        if not self.project or self.current_page is None:
+            if not silent:
+                messagebox.showinfo("图片预处理", "请先打开项目。", parent=self)
+            return
+        if not self._preprocess_mode_active():
+            self._set_preprocess_mode(True, analyze=False)
+            if not self._preprocess_mode_active():
+                return
+        if self._batch_active:
+            self.status_var.set("批量任务运行中，当前页分析将在任务结束后进行。")
+            return
+
+        page = self.current_page
+        page_index = self.current_index
+        project = self.project
+        settings = replace(self.settings)
+        safety, auto_deskew, geometry_mode = self._preprocess_config()
+        manual_quad = load_manual_perspective_quad(project.root, page)
+        current = self._preprocess_result_for_page(page_index)
+        if current is not None:
+            self._set_current_preprocess_status(current)
+            self.redraw()
+            return
+
+        if self._ui_worker_key_active("preprocess-current"):
+            self.preprocess_status_var.set(
+                f"{page.name} 尚未分析｜正在完成上一页分析，完成后将继续当前页。"
+            )
+            return
+
+        self.preprocess_status_var.set(f"正在分析 {page.name}…")
+        self.status_var.set(f"图片预处理：正在后台分析 {page.name}…")
+
+        def worker():
+            return analyze_preprocess_path(
+                page, settings,
+                safety_margin_px=safety,
+                auto_deskew=auto_deskew,
+                geometry_mode=geometry_mode,
+                manual_perspective_quad=manual_quad,
+            )
+
+        def done(analysis: PreprocessAnalysis) -> None:
+            if self.project is not project:
+                return
+            save_preprocess_analysis(project.root, page, analysis)
+            self._preprocess_results[page.name] = analysis
+            if self.current_index == page_index and self.current_page == page:
+                self._preprocess_photo = None
+                self._preprocess_photo_cache_key = None
+                self._set_current_preprocess_status(analysis)
+                self.redraw()
+                self.status_var.set(
+                    f"图片预处理分析完成：{page.name}｜{preprocess_result_summary(analysis)}"
+                )
+            elif self._preprocess_mode_active() and self.current_page is not None:
+                self.after_idle(lambda: self.analyze_preprocess_current(silent=True))
+
+        def failed(exc, detail) -> None:
+            if detail:
+                print(detail)
+            if self.project is project and self.current_page == page:
+                self.preprocess_status_var.set(f"分析失败：{exc}")
+                if not silent:
+                    self.show_error("图片预处理分析失败", exc)
+            elif self.project is project and self._preprocess_mode_active():
+                self.after_idle(lambda: self.analyze_preprocess_current(silent=True))
+
+        self._start_ui_worker("preprocess-current", worker, done, failed)
+
+    def analyze_preprocess_selected(self) -> None:
+        if not self.project:
+            messagebox.showinfo("图片预处理", "请先打开项目。", parent=self)
+            return
+        if not self._preprocess_mode_active():
+            self._set_preprocess_mode(True, analyze=False)
+            if not self._preprocess_mode_active():
+                return
+        if self._ui_worker_key_active("preprocess-current"):
+            self.status_var.set("当前页预处理分析仍在进行；完成后再启动范围分析。")
+            return
+        try:
+            indices = self.selected_page_indices()
+        except ValueError as exc:
+            self.show_error("页面范围无效", exc)
+            return
+        project = self.project
+        settings = replace(self.settings)
+        safety, auto_deskew, geometry_mode = self._preprocess_config()
+
+        def worker(index, _position, _total):
+            page = project.images[int(index)]
+            manual_quad = load_manual_perspective_quad(project.root, page)
+            analysis = analyze_preprocess_path(
+                page, settings,
+                safety_margin_px=safety,
+                auto_deskew=auto_deskew,
+                geometry_mode=geometry_mode,
+                manual_perspective_quad=manual_quad,
+            )
+            save_preprocess_analysis(project.root, page, analysis)
+            return int(index), analysis
+
+        def done(_completed, _total, _stopped, results, error):
+            if error is not None or self.project is not project:
+                return
+            normal = 0
+            review = 0
+            for index, analysis in results:
+                page = project.images[int(index)]
+                self._preprocess_results[page.name] = analysis
+                if analysis.status == "review":
+                    review += 1
+                else:
+                    normal += 1
+            current = self._preprocess_result_for_page(self.current_index)
+            self._preprocess_photo = None
+            self._preprocess_photo_cache_key = None
+            self._set_current_preprocess_status(current)
+            self.redraw()
+            self.status_var.set(
+                f"预处理分析完成：正常 {normal} 页｜需检查 {review} 页。"
+            )
+
+        self._start_batch_task(
+            "图片预处理分析", indices, worker,
+            on_done=done,
+            item_label=lambda index: project.images[int(index)].name,
+            refresh_page_quality=False,
+            allow_page_navigation=True,
+        )
+
+    def show_preprocess_diagnostics(self) -> None:
+        """Show the current page's detailed preprocessing diagnostics on demand."""
+        if not self.project or self.current_page is None:
+            messagebox.showinfo("诊断信息", "请先打开项目。", parent=self)
+            return
+        analysis = self._preprocess_result_for_page(self.current_index)
+        if analysis is None:
+            messagebox.showinfo(
+                "诊断信息",
+                "当前页尚无预处理结果。请先执行【分析所选范围】。",
+                parent=self,
+            )
+            return
+
+        existing = getattr(self, "_preprocess_diagnostics_window", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.destroy()
+            except tk.TclError:
+                pass
+
+        window = tk.Toplevel(self)
+        self._preprocess_diagnostics_window = window
+        window.title(f"预处理诊断信息｜{self.current_page.name}")
+        window.transient(self)
+        fit_window_to_work_area(
+            window, 920, 720, min_width=700, min_height=500,
+        )
+
+        body = ttk.Frame(window, padding=10)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(1, weight=1)
+
+        ttk.Label(
+            body,
+            text=preprocess_result_summary(analysis),
+            style="PC.FieldLabel.TLabel",
+            wraplength=860,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+
+        text_frame = ttk.Frame(body)
+        text_frame.grid(row=1, column=0, sticky="nsew")
+        text_frame.columnconfigure(0, weight=1)
+        text_frame.rowconfigure(0, weight=1)
+        text_widget = tk.Text(
+            text_frame,
+            wrap="none",
+            undo=False,
+            padx=8,
+            pady=8,
+        )
+        yscroll = ttk.Scrollbar(
+            text_frame, orient="vertical", command=text_widget.yview,
+        )
+        xscroll = ttk.Scrollbar(
+            text_frame, orient="horizontal", command=text_widget.xview,
+        )
+        text_widget.configure(
+            yscrollcommand=yscroll.set,
+            xscrollcommand=xscroll.set,
+        )
+        text_widget.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+
+        warnings = list(analysis.warnings or ())
+        header_lines = [
+            f"页面：{self.current_page.name}",
+            f"状态：{'需检查' if analysis.status == 'review' else '正常'}",
+            f"方法：{analysis.method}",
+            f"几何模式：{analysis.geometry_mode}",
+        ]
+
+        valid_indices = tuple(
+            int(value)
+            for value in analysis.perspective_row_valid_column_indices
+        )
+        if valid_indices:
+            header_lines.extend(
+                [
+                    "",
+                    "分栏水平诊断（before → after）：",
+                ]
+            )
+            top_before = analysis.perspective_row_before_column_top_angles_deg
+            top_after = analysis.perspective_row_after_column_top_angles_deg
+            mid_before = analysis.perspective_row_before_column_middle_angles_deg
+            mid_after = analysis.perspective_row_after_column_middle_angles_deg
+            bottom_before = analysis.perspective_row_before_column_bottom_angles_deg
+            bottom_after = analysis.perspective_row_after_column_bottom_angles_deg
+            trend_before = analysis.perspective_row_before_column_trends_deg
+            trend_after = analysis.perspective_row_after_column_trends_deg
+            row_counts = analysis.perspective_row_column_row_counts
+            for pos, column_index in enumerate(valid_indices):
+                def value(seq, default=0.0):
+                    return float(seq[pos]) if pos < len(seq) else float(default)
+
+                rows = (
+                    int(row_counts[column_index])
+                    if 0 <= column_index < len(row_counts)
+                    else 0
+                )
+                header_lines.append(
+                    f"- 第 {column_index + 1} 栏"
+                    f"（{rows} 行）："
+                    f"上 {value(top_before):+.3f}°→{value(top_after):+.3f}°；"
+                    f"中 {value(mid_before):+.3f}°→{value(mid_after):+.3f}°；"
+                    f"下 {value(bottom_before):+.3f}°→{value(bottom_after):+.3f}°；"
+                    f"趋势 {value(trend_before):+.3f}°→{value(trend_after):+.3f}°"
+                )
+            header_lines.append(
+                "最差残余区域："
+                f"{analysis.perspective_row_after_worst_region_deg:.3f}°"
+                + (
+                    f"（第 {analysis.perspective_row_after_worst_column_index + 1} 栏）"
+                    if analysis.perspective_row_after_worst_column_index >= 0
+                    else ""
+                )
+            )
+            if analysis.perspective_horizontal_vp_column_spread_deg > 0:
+                header_lines.append(
+                    "各栏 VP 方向分歧 P90："
+                    f"{analysis.perspective_horizontal_vp_column_spread_deg:.3f}°"
+                )
+        elif analysis.line_geometry_valid_columns:
+            indices = tuple(
+                int(value)
+                for value in analysis.line_geometry_valid_column_indices
+            )
+            header_lines.extend(["", "原始分栏行几何："])
+            for pos, column_index in enumerate(indices):
+                rows = (
+                    int(analysis.line_geometry_column_row_counts[column_index])
+                    if 0 <= column_index < len(analysis.line_geometry_column_row_counts)
+                    else 0
+                )
+                trend = (
+                    float(analysis.line_geometry_column_trends_deg[pos])
+                    if pos < len(analysis.line_geometry_column_trends_deg)
+                    else 0.0
+                )
+                header_lines.append(
+                    f"- 第 {column_index + 1} 栏：{rows} 行，趋势 {trend:+.3f}°"
+                )
+            header_lines.append(
+                "最差局部角："
+                f"{analysis.line_geometry_worst_region_angle_deg:.3f}°"
+            )
+
+        header_lines.extend(
+            [
+                "",
+                "警告：" if warnings else "警告：无",
+            ]
+        )
+        if warnings:
+            header_lines.extend(f"- {item}" for item in warnings)
+        header_lines.extend(
+            [
+                "",
+                "完整诊断参数（JSON）：",
+                json.dumps(
+                    analysis.to_dict(),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ),
+            ]
+        )
+        diagnostic_text = "\n".join(header_lines)
+        text_widget.insert("1.0", diagnostic_text)
+        text_widget.configure(state="disabled")
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=2, column=0, sticky="e", pady=(8, 0))
+
+        def copy_all() -> None:
+            try:
+                self.clipboard_clear()
+                self.clipboard_append(diagnostic_text)
+                self.status_var.set(
+                    f"已复制预处理诊断信息：{self.current_page.name}"
+                )
+            except tk.TclError:
+                pass
+
+        ttk.Button(
+            buttons, text="复制全部", command=copy_all,
+            style="PC.Compact.TButton",
+        ).pack(side="left")
+        ttk.Button(
+            buttons, text="关闭", command=window.destroy,
+            style="PC.Compact.TButton",
+        ).pack(side="left", padx=(6, 0))
+        window.bind("<Escape>", lambda _event: window.destroy())
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+
+    def promote_preprocessed_working_images(self) -> None:
+        """Replace root working scans with the verified processed export set."""
+        if not self.project:
+            messagebox.showinfo("设为工作图片", "请先打开项目。", parent=self)
+            return
+        if self._batch_active or self._ui_worker_key_active("preprocess-current"):
+            self.status_var.set("预处理任务仍在运行；完成后再设为工作图片。")
+            return
+
+        project = self.project
+        try:
+            indices = self.selected_page_indices()
+        except ValueError as exc:
+            self.show_error("页面范围无效", exc)
+            return
+        pages = [project.images[int(index)] for index in indices]
+        if not pages:
+            return
+
+        # Any existing coordinate-bearing work may no longer match after crop/
+        # projective correction. Warn explicitly, but do not silently delete it.
+        ordinary_data_pages = 0
+        for page in pages:
+            try:
+                has_data = (
+                    pdic_path(page).is_file()
+                    or ppp_read_path_for_image(page).is_file()
+                    or (ocr_cache_root(project.root) / f"{page.stem}.json").is_file()
+                )
+            except OSError:
+                has_data = False
+            if has_data:
+                ordinary_data_pages += 1
+
+        warning = (
+            "\n\n注意：检测到 "
+            f"{ordinary_data_pages} 页已有 PDIC/PPP/OCR 坐标数据。"
+            "预处理会改变页面坐标，这些旧坐标可能不再适用；软件不会自动删除它们。"
+            if ordinary_data_pages
+            else ""
+        )
+        confirmed = messagebox.askyesno(
+            "设为工作图片",
+            "将只把当前所选范围的预处理图片设为后续工作图片。\n\n"
+            f"所选页面：{len(pages)} 页\n"
+            "所选原扫描图：移动到项目根目录下的 __before__\n"
+            "所选处理后图片：以相同文件名写回项目根目录\n"
+            "未选页面：保持原样，可之后采用其他预处理方式\n"
+            "预处理导出和诊断文件：继续保留，不会删除\n\n"
+            "__before__ 可逐批累积不同页面的首代原图；"
+            "其中已经存在的同名页面绝不覆盖。"
+            f"{warning}\n\n"
+            "确认继续吗？",
+            parent=self,
+        )
+        if not confirmed:
+            return
+
+        root = project.root
+        target_page = self.current_page.name if self.current_page is not None else None
+        target_index = self.current_index
+        target_view_scale = float(self.view_scale)
+        suffix = str(self.settings.image_suffix or "").strip() or None
+
+        try:
+            backup, promoted = promote_processed_pages(root, pages)
+        except Exception as exc:
+            self.show_error("设为工作图片失败", exc)
+            return
+
+        messagebox.showinfo(
+            "设为工作图片",
+            f"已切换所选 {len(promoted)} 页。\n\n"
+            f"这些页面的原扫描图已保存在：{backup}\n"
+            "处理后图片现在位于项目根目录，并将作为这些页面后续 OCR、画线和切图的工作图片；"
+            "其他未选页面保持原样。\n\n"
+            "建议接下来重新检测版面参数；旧坐标型结果如来自原图，应重新生成。",
+            parent=self,
+        )
+
+        # Reload the same project from disk so page dimensions, thumbnails and
+        # all downstream geometry use the promoted images immediately.
+        if self._preprocess_mode_active():
+            self._set_preprocess_mode(False, analyze=False)
+        self._preprocess_results.clear()
+        self.current_page = None
+        self.image = None
+        self.photo = None
+        self.current_index = -1
+        self.project = None
+        self._load_project(
+            root,
+            requested_suffix=suffix,
+            target_page=target_page,
+            target_index=target_index,
+            target_view_scale=target_view_scale,
+        )
+
+    def jump_preprocess_review(self, delta: int) -> None:
+        if not self.project:
+            return
+        if not self._preprocess_mode_active():
+            self._set_preprocess_mode(True, analyze=False)
+            if not self._preprocess_mode_active():
+                return
+        step = -1 if int(delta) < 0 else 1
+        start = self.current_index + step
+        stop = -1 if step < 0 else len(self.project.images)
+        for index in range(start, stop, step):
+            analysis = self._preprocess_result_for_page(index)
+            if analysis is not None and analysis.status == "review":
+                self._request_page_load(index)
+                return
+        self.status_var.set(
+            "后面没有已分析的“需检查”页面。" if step > 0
+            else "前面没有已分析的“需检查”页面。"
+        )
+
+    def _preprocess_analysis_for_export(
+        self, project: ProjectState, page: Path, settings: AppSettings,
+        safety: float, auto_deskew: bool, geometry_mode: str,
+    ) -> PreprocessAnalysis:
+        manual_quad = load_manual_perspective_quad(project.root, page)
+        analysis = load_preprocess_analysis(project.root, page)
+        if analysis is None or not preprocess_analysis_is_current(
+            analysis, page,
+            safety_margin_px=safety,
+            auto_deskew=auto_deskew,
+            geometry_mode=geometry_mode,
+            manual_perspective_quad=manual_quad,
+        ):
+            analysis = analyze_preprocess_path(
+                page, settings,
+                safety_margin_px=safety,
+                auto_deskew=auto_deskew,
+                geometry_mode=geometry_mode,
+                manual_perspective_quad=manual_quad,
+            )
+            save_preprocess_analysis(project.root, page, analysis)
+        return analysis
+
+    def export_preprocess_previews(self) -> None:
+        if not self.project:
+            messagebox.showinfo("图片预处理", "请先打开项目。", parent=self)
+            return
+        if self._ui_worker_key_active("preprocess-current"):
+            self.status_var.set("当前页预处理分析仍在进行；完成后再导出检查小图。")
+            return
+        try:
+            indices = self.selected_page_indices()
+        except ValueError as exc:
+            self.show_error("页面范围无效", exc)
+            return
+        project = self.project
+        settings = replace(self.settings)
+        safety, auto_deskew, geometry_mode = self._preprocess_config()
+        output = preprocess_preview_output_root(project.root)
+
+        def worker(index, _position, _total):
+            page = project.images[int(index)]
+            analysis = self._preprocess_analysis_for_export(
+                project, page, settings, safety, auto_deskew, geometry_mode,
+            )
+            destination = output / f"{page.stem}_preview.jpg"
+            save_review_preview(page, analysis, destination)
+            return int(index), analysis, destination
+
+        def done(_completed, _total, _stopped, results, error):
+            if error is not None or self.project is not project:
+                return
+            for index, analysis, _destination in results:
+                self._preprocess_results[project.images[int(index)].name] = analysis
+            self.status_var.set(f"检查小图已导出：{output}")
+
+        self._start_batch_task(
+            "导出预处理检查小图", indices, worker,
+            on_done=done,
+            item_label=lambda index: project.images[int(index)].name,
+            refresh_page_quality=False,
+            allow_page_navigation=True,
+        )
+
+    def export_preprocess_images(self) -> None:
+        if not self.project:
+            messagebox.showinfo("图片预处理", "请先打开项目。", parent=self)
+            return
+        if self._ui_worker_key_active("preprocess-current"):
+            self.status_var.set("当前页预处理分析仍在进行；完成后再导出预处理图片。")
+            return
+        try:
+            indices = self.selected_page_indices()
+        except ValueError as exc:
+            self.show_error("页面范围无效", exc)
+            return
+
+        project = self.project
+        settings = replace(self.settings)
+        safety, auto_deskew, geometry_mode = self._preprocess_config()
+        (
+            canvas_enabled,
+            canvas_mode,
+            canvas_width,
+            canvas_height,
+            margin_top,
+            margin_bottom,
+            margin_left,
+            margin_right,
+            align_x,
+            align_y,
+        ) = self._preprocess_export_config()
+        if canvas_enabled and canvas_mode == "custom":
+            if canvas_width <= 0 or canvas_height <= 0:
+                messagebox.showerror(
+                    "统一最终页面",
+                    "指定页面尺寸时，宽度和高度都必须大于 0 px。",
+                    parent=self,
+                )
+                return
+
+        output = preprocess_processed_output_root(project.root)
+        metadata_output = preprocess_metadata_output_root(project.root)
+
+        # Stage 1 analyzes every page before writing images. This makes it
+        # possible to resolve one common batch canvas that is guaranteed to fit
+        # the largest retained crop, even when a custom requested size is too
+        # small. No scan content is rescaled.
+        def analyze_worker(index, _position, _total):
+            page = project.images[int(index)]
+            analysis = self._preprocess_analysis_for_export(
+                project, page, settings, safety, auto_deskew, geometry_mode,
+            )
+            return int(index), analysis
+
+        def analyzed(_completed, _total, stopped, results, error):
+            if error is not None or self.project is not project:
+                return
+            for index, analysis in results:
+                self._preprocess_results[project.images[int(index)].name] = analysis
+            if stopped or not results:
+                self.status_var.set("预处理图片导出已停止在分析阶段；尚未写入最终图片。")
+                return
+
+            analysis_by_index = {
+                int(index): analysis for index, analysis in results
+            }
+            content_widths = [
+                max(1, analysis.crop_box[2] - analysis.crop_box[0])
+                for analysis in analysis_by_index.values()
+            ]
+            content_heights = [
+                max(1, analysis.crop_box[3] - analysis.crop_box[1])
+                for analysis in analysis_by_index.values()
+            ]
+            max_content_width = max(content_widths)
+            max_content_height = max(content_heights)
+
+            minimum_page_width = (
+                max_content_width + margin_left + margin_right
+            )
+            minimum_page_height = (
+                max_content_height + margin_top + margin_bottom
+            )
+            if canvas_enabled:
+                if canvas_mode == "batch_max":
+                    requested_width = minimum_page_width
+                    requested_height = minimum_page_height
+                else:
+                    requested_width = canvas_width
+                    requested_height = canvas_height
+                effective_width = max(requested_width, minimum_page_width)
+                effective_height = max(requested_height, minimum_page_height)
+            else:
+                requested_width = 0
+                requested_height = 0
+                effective_width = 0
+                effective_height = 0
+
+            export_items = [
+                int(index) for index, _analysis in results
+            ]
+
+            def export_worker(index, _position, _total):
+                page = project.images[int(index)]
+                analysis = analysis_by_index[int(index)]
+                canvas = output_canvas_info(
+                    analysis,
+                    enabled=canvas_enabled,
+                    mode=canvas_mode,
+                    requested_width=requested_width,
+                    requested_height=requested_height,
+                    canvas_width=effective_width if canvas_enabled else None,
+                    canvas_height=effective_height if canvas_enabled else None,
+                    margin_top=margin_top,
+                    margin_bottom=margin_bottom,
+                    margin_left=margin_left,
+                    margin_right=margin_right,
+                    align_x=align_x,
+                    align_y=align_y,
+                )
+                destination = output / page.name
+                save_processed_page(
+                    page, analysis, destination, canvas=canvas,
+                )
+                metadata_destination = (
+                    metadata_output / f"{page.stem}.preprocess.json"
+                )
+                export_diagnostic_json(
+                    page,
+                    analysis,
+                    metadata_destination,
+                    output_path=destination,
+                    canvas=canvas,
+                    settings=settings,
+                )
+                return (
+                    int(index), analysis, destination, canvas,
+                    metadata_destination,
+                )
+
+            def exported(_done, _export_total, export_stopped, export_results, export_error):
+                if export_error is not None or self.project is not project:
+                    return
+                summary_records = []
+                for (
+                    index,
+                    analysis,
+                    destination,
+                    canvas,
+                    _metadata_destination,
+                ) in sorted(export_results, key=lambda item: int(item[0])):
+                    page = project.images[int(index)]
+                    self._preprocess_results[page.name] = analysis
+                    summary_records.append(
+                        (page, analysis, destination, canvas)
+                    )
+                summary_path = output.parent / "preprocess_summary.csv"
+                export_summary_csv(summary_records, summary_path)
+
+                canvas_note = ""
+                if canvas_enabled:
+                    body_width = (
+                        effective_width - margin_left - margin_right
+                    )
+                    body_height = (
+                        effective_height - margin_top - margin_bottom
+                    )
+                    canvas_note = (
+                        f"｜最终页面 {effective_width}×{effective_height}px"
+                        f"｜版心 {body_width}×{body_height}px"
+                        f"（页边 上{margin_top}/左{margin_left}/"
+                        f"下{margin_bottom}/右{margin_right}px；"
+                        f"X {self.preprocess_export_align_x_var.get()} / "
+                        f"Y {self.preprocess_export_align_y_var.get()}）"
+                    )
+                    if (
+                        canvas_mode == "custom"
+                        and (
+                            effective_width > requested_width
+                            or effective_height > requested_height
+                        )
+                    ):
+                        canvas_note += (
+                            f"｜自定义 {requested_width}×{requested_height}px "
+                            "不足，已整批扩容且未缩放正文"
+                        )
+                stop_note = "｜已安全停止，汇总仅含已完成页" if export_stopped else ""
+                self.status_var.set(
+                    f"预处理图片已导出：{output}"
+                    f"｜诊断参数：{metadata_output}"
+                    f"｜汇总：{summary_path.name}"
+                    f"{canvas_note}{stop_note}｜原扫描图未修改。"
+                )
+
+            def start_export_stage() -> None:
+                self._start_batch_task(
+                    "导出预处理图片", export_items, export_worker,
+                    on_done=exported,
+                    item_label=lambda index: project.images[int(index)].name,
+                    refresh_page_quality=False,
+                    allow_page_navigation=True,
+                )
+
+            # _finish_batch_task clears the current batch callback/thread after
+            # invoking us, so schedule stage 2 for the next Tk turn instead of
+            # starting it re-entrantly inside the stage-1 completion callback.
+            self.after_idle(start_export_stage)
+
+        self._start_batch_task(
+            "分析预处理导出范围", indices, analyze_worker,
+            on_done=analyzed,
+            item_label=lambda index: project.images[int(index)].name,
+            refresh_page_quality=False,
+            allow_page_navigation=True,
+        )
+
+    def _get_preprocess_display_photo(
+        self, size: tuple[int, int], analysis: PreprocessAnalysis | None,
+    ) -> ImageTk.PhotoImage:
+        if self.image is None:
+            raise RuntimeError("没有可显示的页面图像")
+        analysis_key = (
+            None if analysis is None else round(float(analysis.applied_angle_deg), 4),
+            None if analysis is None else analysis.geometry_mode,
+            None if analysis is None else round(float(analysis.geometry_strength_px), 3),
+            None if analysis is None else tuple(int(value) for value in analysis.crop_box),
+        )
+        key = (
+            id(self.image), int(size[0]), int(size[1]),
+            analysis_key, self.appearance_mode,
+        )
+        if self._preprocess_photo is not None and self._preprocess_photo_cache_key == key:
+            return self._preprocess_photo
+
+        if analysis is not None:
+            corrected_key = (id(self.image), id(analysis))
+            if (
+                self._preprocess_corrected_image is None
+                or self._preprocess_corrected_image_key != corrected_key
+            ):
+                self._preprocess_corrected_image = geometry_corrected_image(
+                    self.image, analysis,
+                )
+                self._preprocess_corrected_image_key = corrected_key
+            display = self._preprocess_corrected_image.resize(
+                size, Image.Resampling.LANCZOS
+            )
+        else:
+            self._preprocess_corrected_image = None
+            self._preprocess_corrected_image_key = None
+            display = self.image.resize(size, Image.Resampling.LANCZOS)
+        display = themed_display_image(display, self.appearance_mode)
+        if analysis is not None:
+            sx = size[0] / max(1, analysis.source_width)
+            sy = size[1] / max(1, analysis.source_height)
+            x0, y0, x1, y1 = analysis.crop_box
+            display = overlay_excluded_regions(
+                display,
+                (
+                    round(x0 * sx), round(y0 * sy),
+                    round(x1 * sx), round(y1 * sy),
+                ),
+            )
+        self._preprocess_photo = ImageTk.PhotoImage(display)
+        self._preprocess_photo_cache_key = key
+        return self._preprocess_photo
+
+    def _redraw_preprocess_preview(self, size: tuple[int, int]) -> None:
+        analysis = self._preprocess_result_for_page(self.current_index)
+        photo = self._get_preprocess_display_photo(size, analysis)
+        self.canvas.create_image(0, 0, image=photo, anchor="nw", tags="page")
+        self.canvas.configure(scrollregion=(0, 0, size[0], size[1]))
+        self._set_current_preprocess_status(analysis)
 
     @staticmethod
     def _style_color_button(button: tk.Button, color: str) -> None:
@@ -13599,6 +15268,7 @@ class PictureCaptureApp(tk.Tk):
         self, title: str, items, worker, on_done=None, item_label=None,
         *, foreground_page_edit: bool = False, page_indexer=None,
         refresh_page_quality: bool = True,
+        allow_page_navigation: bool = False,
     ) -> bool:
         """Run a multi-page task without blocking Tk.
 
@@ -13629,6 +15299,7 @@ class PictureCaptureApp(tk.Tk):
         self._batch_active = True
         self._batch_refresh_page_quality = bool(refresh_page_quality)
         self._batch_foreground_pages = bool(foreground_page_edit)
+        self._batch_allow_page_navigation = bool(allow_page_navigation)
         self._batch_skipped_count = 0
         indexer = page_indexer or (lambda item: int(item))
         with self._batch_state_lock:
@@ -13973,6 +15644,7 @@ class PictureCaptureApp(tk.Tk):
         self._batch_on_done = None
         self._batch_title = ""
         self._batch_foreground_pages = False
+        self._batch_allow_page_navigation = False
         with self._batch_state_lock:
             self._batch_page_states = {}
         if getattr(self, "_batch_refresh_page_quality", True):
@@ -14023,6 +15695,9 @@ class PictureCaptureApp(tk.Tk):
             self.status_var.set("停止请求已发出：当前页处理完成后安全停止；已完成页面结果会保留。")
 
     def guard(self) -> bool:
+        if self._preprocess_mode_active():
+            self.status_var.set("预处理模式中：普通编辑已锁定，请先退出预处理模式。")
+            return False
         if getattr(self, "_batch_active", False):
             if not self._claim_page_for_manual_edit():
                 return False
@@ -14608,6 +16283,8 @@ class PictureCaptureApp(tk.Tk):
         if self._ui_worker_key_active("profile-validation"):
             self.status_var.set("Project Profile 测试仍在安全结束；完成后再切换项目。")
             return
+        if self._preprocess_mode_active():
+            self._set_preprocess_mode(False, analyze=False)
         root = root.expanduser().resolve()
         if self.project is not None and root == Path(self.project.root).expanduser().resolve():
             self.status_var.set("当前项目已经打开；保留当前编辑状态，不执行后台重载。")
@@ -14757,6 +16434,122 @@ class PictureCaptureApp(tk.Tk):
             self.project = project
             self._project_words = set(project.words)
             self.settings = project.settings
+            self._preprocess_results.clear()
+            self._preprocess_photo = None
+            self._preprocess_photo_cache_key = None
+            self.preprocess_auto_deskew_var.set(
+                bool(self.settings.preprocess_auto_deskew)
+            )
+            self.preprocess_safety_var.set(
+                str(int(self.settings.preprocess_safety_margin_px))
+            )
+            self.preprocess_geometry_var.set(
+                {
+                    "deskew": "轻量：旋转+裁边",
+                    "perspective": "自动透视",
+                    "dewarp": "UVDoc展平（Paddle高级）",
+                    "uvdoc": "UVDoc展平（Paddle高级）",
+                    "auto": "自动几何（推荐）",
+                }.get(
+                    str(
+                        getattr(
+                            self.settings, "preprocess_geometry_mode", "auto"
+                        ) or "auto"
+                    ),
+                    "自动几何（推荐）",
+                )
+            )
+            self.preprocess_export_canvas_var.set(
+                bool(
+                    getattr(
+                        self.settings,
+                        "preprocess_export_canvas_enabled",
+                        False,
+                    )
+                )
+            )
+            self.preprocess_export_canvas_mode_var.set(
+                {
+                    "batch_max": "本批最大裁剪尺寸",
+                    "custom": "自定义尺寸",
+                }.get(
+                    str(
+                        getattr(
+                            self.settings,
+                            "preprocess_export_canvas_mode",
+                            "batch_max",
+                        ) or "batch_max"
+                    ),
+                    "本批最大裁剪尺寸",
+                )
+            )
+            self.preprocess_export_canvas_width_var.set(
+                str(
+                    int(
+                        getattr(
+                            self.settings,
+                            "preprocess_export_canvas_width",
+                            0,
+                        ) or 0
+                    )
+                )
+            )
+            self.preprocess_export_canvas_height_var.set(
+                str(
+                    int(
+                        getattr(
+                            self.settings,
+                            "preprocess_export_canvas_height",
+                            0,
+                        ) or 0
+                    )
+                )
+            )
+            self.preprocess_export_margin_top_var.set(
+                str(int(getattr(self.settings, "preprocess_export_margin_top", 0) or 0))
+            )
+            self.preprocess_export_margin_bottom_var.set(
+                str(int(getattr(self.settings, "preprocess_export_margin_bottom", 0) or 0))
+            )
+            self.preprocess_export_margin_left_var.set(
+                str(int(getattr(self.settings, "preprocess_export_margin_left", 0) or 0))
+            )
+            self.preprocess_export_margin_right_var.set(
+                str(int(getattr(self.settings, "preprocess_export_margin_right", 0) or 0))
+            )
+            self.preprocess_export_align_x_var.set(
+                {
+                    "left": "左对齐",
+                    "center": "居中",
+                    "right": "右对齐",
+                }.get(
+                    str(
+                        getattr(
+                            self.settings,
+                            "preprocess_export_align_x",
+                            "center",
+                        ) or "center"
+                    ),
+                    "居中",
+                )
+            )
+            self.preprocess_export_align_y_var.set(
+                {
+                    "top": "顶端对齐",
+                    "center": "居中",
+                    "bottom": "底部对齐",
+                }.get(
+                    str(
+                        getattr(
+                            self.settings,
+                            "preprocess_export_align_y",
+                            "top",
+                        ) or "top"
+                    ),
+                    "顶端对齐",
+                )
+            )
+            self.preprocess_status_var.set("未分析")
             if recent_warning:
                 self._recent_projects_warning = recent_warning
             if hasattr(self, "_page_column_vars"):
@@ -14838,7 +16631,11 @@ class PictureCaptureApp(tk.Tk):
         )
 
     def on_page_select(self, _event: tk.Event) -> None:
-        if getattr(self, "_batch_active", False) and not self._batch_foreground_pages:
+        if (
+            getattr(self, "_batch_active", False)
+            and not self._batch_foreground_pages
+            and not getattr(self, "_batch_allow_page_navigation", False)
+        ):
             if self.current_index >= 0:
                 self._set_page_list_selection(self.current_index, ensure_visible=True)
             self.status_var.set("当前批量任务运行中，暂不允许切换页面；可先暂停/停止。")
@@ -14939,7 +16736,10 @@ class PictureCaptureApp(tk.Tk):
         self._pending_page_index = None
         self._invalidate_ui_worker("page-load")
         self._flush_deferred_page_save()
-        if self.current_page and self.image and index != self.current_index and not skip_current_save:
+        if (
+            self.current_page and self.image and index != self.current_index
+            and not skip_current_save and not self._preprocess_mode_active()
+        ):
             if self._can_save_current_during_batch_navigation():
                 self._save_current_page_by_mode()
         self.current_index = index; self.current_page = self.project.images[index]
@@ -14968,6 +16768,8 @@ class PictureCaptureApp(tk.Tk):
             self._load_ocr_review_candidates()
             self.polygons = read_ppp(self._ppp_read_path(self.current_page))
         self.new_polygon = []
+        self._preprocess_photo = None
+        self._preprocess_photo_cache_key = None
         self._section_editing = False
         self._drag_section_boundary = None
         self.update_idletasks()
@@ -15006,6 +16808,11 @@ class PictureCaptureApp(tk.Tk):
         quality = self._current_page_quality_text()
         suffix = f"｜{quality}" if quality else ""
         self.status_var.set(f"{self.current_page.name}｜{self.image.width}×{self.image.height}｜{len(self.entries)} 个词条{suffix}")
+        if self._preprocess_mode_active():
+            existing_preprocess = self._preprocess_result_for_page(index)
+            self._set_current_preprocess_status(existing_preprocess)
+            if existing_preprocess is None:
+                self.after_idle(lambda: self.analyze_preprocess_current(silent=True))
         if self._pending_section_editor_index == index:
             self._pending_section_editor_index = None
             if self.page_sections:
@@ -15028,7 +16835,11 @@ class PictureCaptureApp(tk.Tk):
         self, delta: int, *, preloaded: dict | None = None,
         current_already_saved: bool = False, async_allowed: bool = True,
     ) -> bool:
-        if getattr(self, "_batch_active", False) and not self._batch_foreground_pages:
+        if (
+            getattr(self, "_batch_active", False)
+            and not self._batch_foreground_pages
+            and not getattr(self, "_batch_allow_page_navigation", False)
+        ):
             self.status_var.set("当前批量任务运行中，暂不允许切换页面；可先暂停/停止。")
             return False
         if not self.project:
@@ -15812,6 +17623,9 @@ class PictureCaptureApp(tk.Tk):
         if self.image is None:
             return
         size = (max(1, round(self.image.width * self.view_scale)), max(1, round(self.image.height * self.view_scale)))
+        if self._preprocess_mode_active():
+            self._redraw_preprocess_preview(size)
+            return
         photo = self._get_cached_display_photo(size)
         self.canvas.create_image(0, 0, image=photo, anchor="nw", tags="page")
         if self.crop_preview_var.get():
@@ -16104,7 +17918,10 @@ class PictureCaptureApp(tk.Tk):
 
     def _set_idle_cursor_status(self) -> None:
         zoom = round(self.view_scale * 100)
-        self.cursor_status_var.set(f"坐标：—｜缩放 {zoom}%｜词条 {len(self.entries)}")
+        if self._preprocess_mode_active():
+            self.cursor_status_var.set(f"坐标：—｜预处理预览｜缩放 {zoom}%")
+        else:
+            self.cursor_status_var.set(f"坐标：—｜缩放 {zoom}%｜词条 {len(self.entries)}")
 
     @staticmethod
     def _polygon_display_name(region: PolygonRegion, index: int) -> str:
@@ -16563,6 +18380,8 @@ class PictureCaptureApp(tk.Tk):
 
     def canvas_left_double_click(self, event: tk.Event) -> str | None:
         """Finish SECTION editing by double-clicking anywhere on the page image."""
+        if self._preprocess_mode_active():
+            return "break"
         if not self._section_editing or self.image is None:
             return None
         x, y = self.original_xy(event)
@@ -16629,6 +18448,8 @@ class PictureCaptureApp(tk.Tk):
         self.redraw()
 
     def canvas_left_drag(self, event: tk.Event) -> str | None:
+        if self._preprocess_mode_active():
+            return "break"
         if self.image is None:
             return None
         x, y = self.original_xy(event)
@@ -16660,6 +18481,8 @@ class PictureCaptureApp(tk.Tk):
         return None
 
     def canvas_left_release(self, _event: tk.Event) -> str | None:
+        if self._preprocess_mode_active():
+            return "break"
         if self._drag_section_boundary is not None:
             self._drag_section_boundary = None
             try:
@@ -16715,7 +18538,7 @@ class PictureCaptureApp(tk.Tk):
             display_width = self.image.width * self.view_scale
             display_height = self.image.height * self.view_scale
             if 0 <= canvas_x < display_width and 0 <= canvas_y < display_height:
-                if self._section_editing:
+                if self._section_editing or self._preprocess_mode_active():
                     self.cursor_canvas_xy = None
                     self.canvas.delete("cursor-guide")
                 else:
@@ -16725,15 +18548,22 @@ class PictureCaptureApp(tk.Tk):
                 source_y = round(canvas_y / self.view_scale)
                 if (
                     not self._section_editing
+                    and not self._preprocess_mode_active()
                     and self._ruler_hit_id(source_x, source_y) is not None
                 ):
                     self._show_ruler_hint(event)
                 else:
                     self._hide_ruler_hint()
-                self.cursor_status_var.set(
-                    f"原图 X,Y {source_x}, {source_y}｜"
-                    f"缩放 {round(self.view_scale * 100)}%｜词条 {len(self.entries)}"
-                )
+                if self._preprocess_mode_active():
+                    self.cursor_status_var.set(
+                        f"预处理预览 X,Y {source_x}, {source_y}｜"
+                        f"缩放 {round(self.view_scale * 100)}%"
+                    )
+                else:
+                    self.cursor_status_var.set(
+                        f"原图 X,Y {source_x}, {source_y}｜"
+                        f"缩放 {round(self.view_scale * 100)}%｜词条 {len(self.entries)}"
+                    )
             else:
                 self.cursor_canvas_xy = None
                 self.canvas.delete("cursor-guide")

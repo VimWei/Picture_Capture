@@ -1,0 +1,1469 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import math
+from typing import Iterable
+
+import numpy as np
+from PIL import Image, ImageOps
+
+from .image_utils import normalize_page_rgb
+from .layout_detection import analysis_ink_mask
+from .models import AppSettings
+from .preprocess_geometry import horizontal_column_rows
+from .text_line_geometry import (
+    horizontal_rule_track_points,
+    separator_track_points,
+)
+
+
+ORTHOGONAL_WARP_MIN_ROWS = 12
+ORTHOGONAL_WARP_MIN_DRIVER_DEG = 0.14
+ORTHOGONAL_WARP_MIN_SEPARATOR_SHIFT_PX = 2.0
+ORTHOGONAL_WARP_MAX_ANGLE_DEG = 2.0
+# This is a catastrophic local-Jacobian ceiling, not the normal acceptance
+# threshold. Candidate acceptance also requires paired text-box scale stability
+# in image_preprocessing, which is the more relevant protection for glyphs.
+ORTHOGONAL_WARP_MAX_SCALE_DEVIATION = 0.065
+ORTHOGONAL_WARP_MAX_SEPARATOR_SHIFT_RATIO = 0.02
+ORTHOGONAL_WARP_MESH_STEP_PX = 40
+PIXEL_ANGLE_SEARCH_RADIUS_DEG = 0.45
+PIXEL_ANGLE_COARSE_STEP_DEG = 0.08
+PIXEL_ANGLE_FINE_STEP_DEG = 0.02
+PIXEL_ANGLE_MAX_PATCH_DIM = 720
+PIXEL_ANGLE_MIN_CONFIDENCE = 0.08
+PIXEL_ANGLE_MIN_INK_PIXELS = 800
+PIXEL_COLUMN_SAMPLE_FRACTIONS = (0.22, 0.50, 0.78)
+PIXEL_LOCAL_WINDOW_FRACTION = 0.38
+PIXEL_ROW_PROFILE_MAX_SHIFT_PX = 8
+PIXEL_ROW_PROFILE_MIN_CORRELATION = 0.72
+PIXEL_ROW_PROFILE_P90_MAX_PX = 1.5
+PIXEL_ROW_PROFILE_WORST_MAX_PX = 2.5
+PIXEL_ROW_BOTTOM_TAIL_ANCHOR_PERCENTILES = (94.0, 97.0, 99.0)
+PIXEL_ROW_BOTTOM_TAIL_HALF_WINDOW_PX = 52
+PIXEL_ROW_BOTTOM_TAIL_P90_MAX_PX = 1.5
+PIXEL_ROW_BOTTOM_TAIL_WORST_MAX_PX = 2.5
+
+HORIZONTAL_RULE_MAX_ANGLE_DEG = 0.10
+HORIZONTAL_RULE_MAX_RESIDUAL_MIN_PX = 2.5
+HORIZONTAL_RULE_MAX_RESIDUAL_WIDTH_RATIO = 0.0015
+
+
+@dataclass(frozen=True, slots=True)
+class OrthogonalWarpEstimate:
+    """Small, structure-anchored 2-D warp for horizontal dictionary pages.
+
+    Two orthogonal constraints are estimated independently:
+
+    * X correction is a scanline translation derived from a persistent vertical
+      separator x(y). It straightens the column separator without bending rows.
+    * Y correction is a 2-D displacement field obtained by integrating the
+      measured text-row slope m(x, y) across X. Each populated column therefore
+      gets its own local row-angle trajectory; disagreement between columns is
+      modeled instead of treated as a veto.
+
+    A persistent page-header horizontal rule is inserted as a structural anchor
+    row when available. This prevents the common failure where OCR-based global
+    deskew makes the middle body level but visibly tilts an originally straight
+    running-header rule.
+    """
+
+    y_knots: tuple[float, ...] = ()
+    angle_knots_deg: tuple[float, ...] = ()
+    x_knots: tuple[float, ...] = ()
+    row_grid_rows: int = 0
+    row_grid_cols: int = 0
+    row_angle_grid_deg: tuple[float, ...] = ()
+    row_displacement_grid_px: tuple[float, ...] = ()
+    separator_y_knots: tuple[float, ...] = ()
+    separator_shift_knots_px: tuple[float, ...] = ()
+    reference_x: float = 0.0
+    row_count: int = 0
+    valid_column_count: int = 0
+    column_spread_deg: float = 0.0
+    separator_point_count: int = 0
+    horizontal_rule_point_count: int = 0
+    horizontal_rule_y: float = 0.0
+    horizontal_rule_angle_deg: float = 0.0
+    horizontal_rule_residual_span_px: float = 0.0
+    pixel_angle_sample_count: int = 0
+    pixel_angle_used_count: int = 0
+    pixel_angle_confidence: float = 0.0
+    max_row_angle_deg: float = 0.0
+    row_angle_span_deg: float = 0.0
+    max_horizontal_shift_px: float = 0.0
+    max_vertical_shift_px: float = 0.0
+    max_scale_deviation: float = 0.0
+    confidence: float = 0.0
+    active: bool = False
+
+
+def _weighted_median(values: list[tuple[float, float]]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(
+        (float(value), max(0.0, float(weight)))
+        for value, weight in values
+    )
+    total = sum(weight for _value, weight in ordered)
+    if total <= 1e-12:
+        return float(np.median([value for value, _weight in ordered]))
+    target = total / 2.0
+    running = 0.0
+    for value, weight in ordered:
+        running += weight
+        if running >= target:
+            return value
+    return ordered[-1][0]
+
+
+def _smooth_knots(values: np.ndarray) -> np.ndarray:
+    """Suppress local noise while preserving the first/last measured values."""
+    raw = values.astype(float, copy=True)
+    if raw.size < 3:
+        return raw
+    median = raw.copy()
+    for index in range(1, raw.size - 1):
+        median[index] = float(np.median(raw[index - 1:index + 2]))
+    if raw.size < 4:
+        return median
+    smooth = median.copy()
+    for index in range(1, raw.size - 1):
+        smooth[index] = (
+            0.25 * median[index - 1]
+            + 0.50 * median[index]
+            + 0.25 * median[index + 1]
+        )
+    smooth[0] = raw[0]
+    smooth[-1] = raw[-1]
+    return smooth
+
+
+def _interp(
+    y: float | np.ndarray,
+    knots_y: tuple[float, ...],
+    knots_v: tuple[float, ...],
+) -> float | np.ndarray:
+    if not knots_y or not knots_v:
+        if isinstance(y, np.ndarray):
+            return np.zeros_like(y, dtype=float)
+        return 0.0
+    return np.interp(
+        y,
+        np.asarray(knots_y, dtype=float),
+        np.asarray(knots_v, dtype=float),
+        left=float(knots_v[0]),
+        right=float(knots_v[-1]),
+    )
+
+
+def _local_column_angle(
+    rows: list[tuple[float, float, float, float]],
+    y: float,
+    radius: float,
+) -> float | None:
+    """Estimate row angle at Y without extrapolating past real row support.
+
+    Interior knots may use a local robust linear fit because rows exist on both
+    sides of the target Y. Near the first/last text rows that assumption breaks:
+    a one-sided fit extrapolates the trend and can even reverse sign at the page
+    edge. That exact failure left the lower-right tail of real page 0014 tilted.
+
+    Boundary knots therefore use a robust weighted angle from the nearest real
+    rows. This keeps the correction anchored to measured text rather than to an
+    unconstrained regression beyond the data.
+    """
+    samples: list[tuple[float, float, float]] = []
+    for _x, row_y, angle, weight in rows:
+        distance = abs(float(row_y) - float(y))
+        if distance > radius:
+            continue
+        locality = max(0.05, 1.0 - distance / max(1e-6, radius))
+        samples.append(
+            (
+                float(row_y) - float(y),
+                float(angle),
+                math.sqrt(max(1.0, float(weight))) * locality,
+            )
+        )
+    if len(samples) < 2:
+        return None
+
+    has_above = any(item[0] < -1e-6 for item in samples)
+    has_below = any(item[0] > 1e-6 for item in samples)
+    if not (has_above and has_below):
+        nearest = sorted(samples, key=lambda item: abs(item[0]))[
+            : min(5, len(samples))
+        ]
+        return _weighted_median(
+            [(angle, weight) for _dy, angle, weight in nearest]
+        )
+
+    if len(samples) == 2:
+        dy0, angle0, _weight0 = samples[0]
+        dy1, angle1, _weight1 = samples[1]
+        denominator = dy1 - dy0
+        if abs(denominator) < 1e-9:
+            return float((angle0 + angle1) / 2.0)
+        slope = (angle1 - angle0) / denominator
+        return float(angle0 - slope * dy0)
+
+    dy = np.asarray([item[0] for item in samples], dtype=float)
+    angles = np.asarray([item[1] for item in samples], dtype=float)
+    weights = np.asarray([item[2] for item in samples], dtype=float)
+    keep = np.ones(len(samples), dtype=bool)
+    intercept = float(np.median(angles))
+    for _ in range(3):
+        if int(keep.sum()) < 3:
+            break
+        slope, intercept = np.polyfit(
+            dy[keep],
+            angles[keep],
+            1,
+            w=weights[keep],
+        )
+        residual = angles - (slope * dy + intercept)
+        centre = float(np.median(residual[keep]))
+        mad = float(np.median(np.abs(residual[keep] - centre)))
+        threshold = max(0.08, mad * 3.5)
+        new_keep = np.abs(residual - centre) <= threshold
+        if int(new_keep.sum()) == int(keep.sum()):
+            keep = new_keep
+            break
+        keep = new_keep
+    if int(keep.sum()) >= 3:
+        _slope, intercept = np.polyfit(
+            dy[keep],
+            angles[keep],
+            1,
+            w=weights[keep],
+        )
+    return float(intercept)
+
+
+def _robust_track_fit(
+    points: Iterable[tuple[float, float]],
+) -> tuple[int, float, float, float]:
+    """Fit y(x); return count, angle degrees, residual span, median Y."""
+    raw = [
+        (float(x), float(y))
+        for x, y in points
+        if math.isfinite(float(x)) and math.isfinite(float(y))
+    ]
+    if len(raw) < 7:
+        return 0, 0.0, 0.0, 0.0
+    x = np.asarray([item[0] for item in raw], dtype=float)
+    y = np.asarray([item[1] for item in raw], dtype=float)
+    keep = np.ones(len(raw), dtype=bool)
+    for _ in range(4):
+        if int(keep.sum()) < 7:
+            break
+        slope, intercept = np.polyfit(x[keep], y[keep], 1)
+        residual = y - (slope * x + intercept)
+        centre = float(np.median(residual[keep]))
+        mad = float(np.median(np.abs(residual[keep] - centre)))
+        new_keep = np.abs(residual - centre) <= max(1.2, mad * 3.5)
+        if int(new_keep.sum()) == int(keep.sum()):
+            keep = new_keep
+            break
+        keep = new_keep
+    if int(keep.sum()) < 7:
+        return 0, 0.0, 0.0, 0.0
+    slope, intercept = np.polyfit(x[keep], y[keep], 1)
+    residual = y[keep] - (slope * x[keep] + intercept)
+    residual_span = float(
+        np.percentile(residual, 90) - np.percentile(residual, 10)
+    )
+    return (
+        int(keep.sum()),
+        float(math.degrees(math.atan(float(slope)))),
+        max(0.0, residual_span),
+        float(np.median(y[keep])),
+    )
+
+
+def horizontal_rule_metrics(
+    image: Image.Image,
+    polygons: Iterable[np.ndarray],
+    settings: AppSettings,
+) -> tuple[int, float, float, float]:
+    """Return count, signed angle, residual span and median Y of header rule."""
+    points = horizontal_rule_track_points(image, polygons, settings)
+    return _robust_track_fit(points)
+
+
+def horizontal_rule_is_level(
+    image: Image.Image,
+    polygons: Iterable[np.ndarray],
+    settings: AppSettings,
+) -> tuple[bool, int, float, float]:
+    count, angle, residual, _y = horizontal_rule_metrics(
+        image, polygons, settings,
+    )
+    if count < 7:
+        return False, count, angle, residual
+    limit = max(
+        HORIZONTAL_RULE_MAX_RESIDUAL_MIN_PX,
+        image.width * HORIZONTAL_RULE_MAX_RESIDUAL_WIDTH_RATIO,
+    )
+    return (
+        abs(float(angle)) <= HORIZONTAL_RULE_MAX_ANGLE_DEG
+        and float(residual) <= limit,
+        count,
+        angle,
+        residual,
+    )
+
+
+def _local_track_angle(
+    points: list[tuple[float, float]],
+    x: float,
+    radius: float,
+    fallback: float,
+) -> float:
+    samples = [
+        (px - float(x), py)
+        for px, py in points
+        if abs(px - float(x)) <= radius
+    ]
+    if len(samples) < 4:
+        return float(fallback)
+    dx = np.asarray([item[0] for item in samples], dtype=float)
+    ys = np.asarray([item[1] for item in samples], dtype=float)
+    keep = np.ones(len(samples), dtype=bool)
+    slope = math.tan(math.radians(float(fallback)))
+    intercept = float(np.median(ys))
+    for _ in range(3):
+        if int(keep.sum()) < 4:
+            break
+        slope, intercept = np.polyfit(dx[keep], ys[keep], 1)
+        residual = ys - (slope * dx + intercept)
+        centre = float(np.median(residual[keep]))
+        mad = float(np.median(np.abs(residual[keep] - centre)))
+        new_keep = np.abs(residual - centre) <= max(1.0, mad * 3.5)
+        if int(new_keep.sum()) == int(keep.sum()):
+            keep = new_keep
+            break
+        keep = new_keep
+    return float(math.degrees(math.atan(float(slope))))
+
+
+def _pixel_column_bounds(
+    rows: list[tuple[float, float, float, float]],
+    width: int,
+) -> tuple[int, int]:
+    """Return a robust full text-bearing X span for one reconstructed column."""
+    left = np.asarray(
+        [float(row[0]) - float(row[3]) / 2.0 for row in rows],
+        dtype=float,
+    )
+    right = np.asarray(
+        [float(row[0]) + float(row[3]) / 2.0 for row in rows],
+        dtype=float,
+    )
+    x0 = float(np.percentile(left, 8.0))
+    x1 = float(np.percentile(right, 92.0))
+    if x1 - x0 < max(120.0, width * 0.12):
+        centre = _weighted_median(
+            [(float(row[0]), max(1.0, float(row[3]))) for row in rows]
+        )
+        half = max(100.0, float(np.median([row[3] for row in rows])) * 0.8)
+        x0 = centre - half
+        x1 = centre + half
+    pad = max(8.0, (x1 - x0) * 0.03)
+    return (
+        max(0, int(math.floor(x0 - pad))),
+        min(width, int(math.ceil(x1 + pad))),
+    )
+
+
+def _pixel_projection_score(mask: Image.Image, angle_deg: float) -> float:
+    rotated = mask.rotate(
+        float(angle_deg),
+        resample=Image.Resampling.NEAREST,
+        expand=False,
+        fillcolor=0,
+    )
+    array = np.asarray(rotated, dtype=np.float32) / 255.0
+    h, w = array.shape
+    my = max(2, round(h * 0.04))
+    mx = max(2, round(w * 0.04))
+    if h > my * 2 + 2 and w > mx * 2 + 2:
+        array = array[my:h - my, mx:w - mx]
+    ink_per_row = float(array.sum()) / max(1, array.shape[0])
+    if ink_per_row <= 1e-6:
+        return 0.0
+    projection = array.sum(axis=1)
+    return float(np.square(np.diff(projection)).sum() / ink_per_row)
+
+
+def _pixel_projection_angle(
+    image: Image.Image,
+    rows: list[tuple[float, float, float, float]],
+    y: float,
+    radius: float,
+    settings: AppSettings,
+    fallback: float,
+    *,
+    x_center: float | None = None,
+    x_window: float | None = None,
+) -> tuple[float, float]:
+    """Measure local text-row correction directly from page pixels.
+
+    OCR polygons are useful for column membership and a safe search centre, but
+    the actual local angle is selected by maximizing horizontal projection
+    sharpness of the ink pixels. Keeping the search close to the OCR angle
+    avoids sparse-page aliases while still correcting systematic OCR-box bias.
+    """
+    source = normalize_page_rgb(image)
+    column_x0, column_x1 = _pixel_column_bounds(rows, source.width)
+    if x_center is None or x_window is None:
+        x0, x1 = column_x0, column_x1
+    else:
+        half_window = max(70.0, float(x_window) / 2.0)
+        x0 = max(column_x0, int(math.floor(float(x_center) - half_window)))
+        x1 = min(column_x1, int(math.ceil(float(x_center) + half_window)))
+    half_height = max(180.0, min(300.0, float(radius) * 0.70))
+    y0 = max(0, int(math.floor(float(y) - half_height)))
+    y1 = min(source.height, int(math.ceil(float(y) + half_height)))
+    if x1 - x0 < 120 or y1 - y0 < 160:
+        return float(fallback), 0.0
+
+    patch = ImageOps.grayscale(source.crop((x0, y0, x1, y1)))
+    scale = min(
+        1.0,
+        PIXEL_ANGLE_MAX_PATCH_DIM
+        / max(1.0, float(max(patch.size))),
+    )
+    if scale < 1.0:
+        patch = patch.resize(
+            (
+                max(1, round(patch.width * scale)),
+                max(1, round(patch.height * scale)),
+            ),
+            Image.Resampling.BILINEAR,
+        )
+    gray = np.asarray(patch, dtype=np.uint8)
+    ink = analysis_ink_mask(gray, settings)
+    if int(ink.sum()) < PIXEL_ANGLE_MIN_INK_PIXELS:
+        return float(fallback), 0.0
+    mask = Image.fromarray(ink.astype(np.uint8) * 255, mode="L")
+
+    centre = float(np.clip(
+        fallback,
+        -ORTHOGONAL_WARP_MAX_ANGLE_DEG,
+        ORTHOGONAL_WARP_MAX_ANGLE_DEG,
+    ))
+    coarse = np.arange(
+        centre - PIXEL_ANGLE_SEARCH_RADIUS_DEG,
+        centre + PIXEL_ANGLE_SEARCH_RADIUS_DEG + 1e-9,
+        PIXEL_ANGLE_COARSE_STEP_DEG,
+        dtype=float,
+    )
+    coarse = np.clip(
+        coarse,
+        -ORTHOGONAL_WARP_MAX_ANGLE_DEG,
+        ORTHOGONAL_WARP_MAX_ANGLE_DEG,
+    )
+    coarse = np.unique(np.round(coarse, 6))
+    scores = np.asarray(
+        [_pixel_projection_score(mask, float(angle)) for angle in coarse],
+        dtype=float,
+    )
+    if not scores.size or float(scores.max()) <= 0.0:
+        return float(fallback), 0.0
+    best_coarse = float(coarse[int(np.argmax(scores))])
+    fine = np.arange(
+        best_coarse - PIXEL_ANGLE_COARSE_STEP_DEG,
+        best_coarse + PIXEL_ANGLE_COARSE_STEP_DEG + 1e-9,
+        PIXEL_ANGLE_FINE_STEP_DEG,
+        dtype=float,
+    )
+    fine = np.clip(
+        fine,
+        centre - PIXEL_ANGLE_SEARCH_RADIUS_DEG,
+        centre + PIXEL_ANGLE_SEARCH_RADIUS_DEG,
+    )
+    fine = np.clip(
+        fine,
+        -ORTHOGONAL_WARP_MAX_ANGLE_DEG,
+        ORTHOGONAL_WARP_MAX_ANGLE_DEG,
+    )
+    fine = np.unique(np.round(fine, 6))
+    fine_scores = np.asarray(
+        [_pixel_projection_score(mask, float(angle)) for angle in fine],
+        dtype=float,
+    )
+    best_index = int(np.argmax(fine_scores))
+    best = float(fine[best_index])
+    baseline = max(
+        1e-6,
+        float(np.median(scores)),
+    )
+    confidence = max(
+        0.0,
+        (float(fine_scores[best_index]) - baseline) / baseline,
+    )
+    return best, float(confidence)
+
+
+@dataclass(frozen=True, slots=True)
+class PixelRowProfileAudit:
+    sample_count: int = 0
+    p90_shift_px: float = 0.0
+    worst_shift_px: float = 0.0
+    median_correlation: float = 0.0
+    valid_column_count: int = 0
+    bottom_tail_sample_count: int = 0
+    bottom_tail_p90_shift_px: float = 0.0
+    bottom_tail_worst_shift_px: float = 0.0
+    bottom_tail_median_correlation: float = 0.0
+    bottom_tail_valid_column_count: int = 0
+    bottom_tail_passed: bool = False
+    passed: bool = False
+
+
+def _smooth_profile(values: np.ndarray, width: int) -> np.ndarray:
+    width = max(1, int(width))
+    if width <= 1:
+        return values.astype(float, copy=False)
+    if width % 2 == 0:
+        width += 1
+    kernel = np.ones(width, dtype=float) / float(width)
+    return np.convolve(values.astype(float, copy=False), kernel, mode="same")
+
+
+def _pixel_row_profile(
+    source: Image.Image,
+    x0: int,
+    x1: int,
+    settings: AppSettings,
+) -> np.ndarray:
+    gray = np.asarray(
+        ImageOps.grayscale(source.crop((x0, 0, x1, source.height))),
+        dtype=np.uint8,
+    )
+    ink = analysis_ink_mask(gray, settings).astype(float)
+    profile = ink.mean(axis=1)
+    profile = _smooth_profile(profile, 5)
+    return profile - _smooth_profile(profile, 35)
+
+
+def audit_pixel_row_profiles(
+    image: Image.Image,
+    polygons: Iterable[np.ndarray],
+    settings: AppSettings,
+) -> PixelRowProfileAudit:
+    """Audit actual row straightness from physical ink, not OCR box edges.
+
+    Each text column is split into left/middle/right strips. In several Y
+    windows the outer strip row profiles are cross-correlated with the middle
+    strip. A tilted or bowed text row appears as a non-zero vertical lag. This
+    catches exactly the lower-page curvature that can be hidden by one average
+    OCR angle or by glyph-dependent polygon edges.
+    """
+    source = normalize_page_rgb(image)
+    columns = horizontal_column_rows(polygons, source.size, settings)
+    valid_columns = [rows for rows in columns if len(rows) >= 5]
+    shifts: list[float] = []
+    correlations: list[float] = []
+    tail_shifts: list[float] = []
+    tail_correlations: list[float] = []
+    valid_count = 0
+    tail_valid_count = 0
+    for rows in valid_columns:
+        x0, x1 = _pixel_column_bounds(rows, source.width)
+        span = float(x1 - x0)
+        if span < 240.0:
+            continue
+        strip_ranges: list[tuple[int, int]] = []
+        for centre_fraction in PIXEL_COLUMN_SAMPLE_FRACTIONS:
+            centre = x0 + span * float(centre_fraction)
+            half = span * 0.14
+            sx0 = max(x0, int(round(centre - half)))
+            sx1 = min(x1, int(round(centre + half)))
+            if sx1 - sx0 < 60:
+                break
+            strip_ranges.append((sx0, sx1))
+        if len(strip_ranges) != 3:
+            continue
+        profiles = [
+            _pixel_row_profile(source, sx0, sx1, settings)
+            for sx0, sx1 in strip_ranges
+        ]
+        ys = np.asarray([row[1] for row in rows], dtype=float)
+        y_lo = float(np.percentile(ys, 8.0))
+        y_hi = float(np.percentile(ys, 92.0))
+        if y_hi - y_lo < 180.0:
+            continue
+        anchors = np.linspace(y_lo, y_hi, 7)
+        column_samples = 0
+        for anchor in anchors:
+            half_window = 130
+            start = max(0, int(round(anchor)) - half_window)
+            end = min(source.height, int(round(anchor)) + half_window)
+            if end - start < 140:
+                continue
+            reference = profiles[1][start:end]
+            reference_std = float(reference.std())
+            if reference_std <= 1e-6:
+                continue
+            reference = (reference - reference.mean()) / reference_std
+            for profile_index in (0, 2):
+                best_correlation = -1.0
+                best_shift = 0
+                profile = profiles[profile_index]
+                for shift in range(
+                    -PIXEL_ROW_PROFILE_MAX_SHIFT_PX,
+                    PIXEL_ROW_PROFILE_MAX_SHIFT_PX + 1,
+                ):
+                    shifted_start = start + shift
+                    shifted_end = end + shift
+                    if shifted_start < 0 or shifted_end > source.height:
+                        continue
+                    candidate = profile[shifted_start:shifted_end]
+                    candidate_std = float(candidate.std())
+                    if candidate_std <= 1e-6:
+                        continue
+                    candidate = (
+                        candidate - candidate.mean()
+                    ) / candidate_std
+                    correlation = float(np.mean(reference * candidate))
+                    if correlation > best_correlation:
+                        best_correlation = correlation
+                        best_shift = shift
+                if best_correlation >= PIXEL_ROW_PROFILE_MIN_CORRELATION:
+                    shifts.append(abs(float(best_shift)))
+                    correlations.append(float(best_correlation))
+                    column_samples += 1
+        if column_samples >= 6:
+            valid_count += 1
+
+        tail_column_samples = 0
+        for percentile in PIXEL_ROW_BOTTOM_TAIL_ANCHOR_PERCENTILES:
+            anchor = float(np.percentile(ys, percentile))
+            half_window = PIXEL_ROW_BOTTOM_TAIL_HALF_WINDOW_PX
+            start = max(0, int(round(anchor)) - half_window)
+            end = min(source.height, int(round(anchor)) + half_window)
+            if end - start < 70:
+                continue
+            reference = profiles[1][start:end]
+            reference_std = float(reference.std())
+            if reference_std <= 1e-6:
+                continue
+            reference = (reference - reference.mean()) / reference_std
+            for profile_index in (0, 2):
+                best_correlation = -1.0
+                best_shift = 0
+                profile = profiles[profile_index]
+                for shift in range(
+                    -PIXEL_ROW_PROFILE_MAX_SHIFT_PX,
+                    PIXEL_ROW_PROFILE_MAX_SHIFT_PX + 1,
+                ):
+                    shifted_start = start + shift
+                    shifted_end = end + shift
+                    if shifted_start < 0 or shifted_end > source.height:
+                        continue
+                    candidate = profile[shifted_start:shifted_end]
+                    candidate_std = float(candidate.std())
+                    if candidate_std <= 1e-6:
+                        continue
+                    candidate = (
+                        candidate - candidate.mean()
+                    ) / candidate_std
+                    correlation = float(np.mean(reference * candidate))
+                    if correlation > best_correlation:
+                        best_correlation = correlation
+                        best_shift = shift
+                if best_correlation >= PIXEL_ROW_PROFILE_MIN_CORRELATION:
+                    tail_shifts.append(abs(float(best_shift)))
+                    tail_correlations.append(float(best_correlation))
+                    tail_column_samples += 1
+        if tail_column_samples >= 2:
+            tail_valid_count += 1
+
+    if not shifts:
+        return PixelRowProfileAudit(
+            valid_column_count=valid_count,
+            bottom_tail_valid_column_count=tail_valid_count,
+        )
+    p90 = float(np.percentile(np.asarray(shifts, dtype=float), 90))
+    worst = float(max(shifts))
+    median_corr = float(np.median(np.asarray(correlations, dtype=float)))
+    tail_p90 = (
+        float(np.percentile(np.asarray(tail_shifts, dtype=float), 90))
+        if tail_shifts else 0.0
+    )
+    tail_worst = float(max(tail_shifts)) if tail_shifts else 0.0
+    tail_median_corr = (
+        float(np.median(np.asarray(tail_correlations, dtype=float)))
+        if tail_correlations else 0.0
+    )
+    tail_passed = bool(
+        tail_valid_count >= 1
+        and len(tail_shifts) >= 2
+        and tail_p90 <= PIXEL_ROW_BOTTOM_TAIL_P90_MAX_PX
+        and tail_worst <= PIXEL_ROW_BOTTOM_TAIL_WORST_MAX_PX
+    )
+    return PixelRowProfileAudit(
+        sample_count=len(shifts),
+        p90_shift_px=p90,
+        worst_shift_px=worst,
+        median_correlation=median_corr,
+        valid_column_count=valid_count,
+        bottom_tail_sample_count=len(tail_shifts),
+        bottom_tail_p90_shift_px=tail_p90,
+        bottom_tail_worst_shift_px=tail_worst,
+        bottom_tail_median_correlation=tail_median_corr,
+        bottom_tail_valid_column_count=tail_valid_count,
+        bottom_tail_passed=tail_passed,
+        passed=bool(
+            valid_count >= 1
+            and len(shifts) >= 8
+            and p90 <= PIXEL_ROW_PROFILE_P90_MAX_PX
+            and worst <= PIXEL_ROW_PROFILE_WORST_MAX_PX
+        ),
+    )
+
+
+def _column_center(
+    rows: list[tuple[float, float, float, float]],
+) -> float:
+    return _weighted_median(
+        [(float(row[0]), max(1.0, float(row[3]))) for row in rows]
+    )
+
+
+def _unique_sorted(values: Iterable[float], tolerance: float = 1.0) -> np.ndarray:
+    ordered = sorted(float(value) for value in values if math.isfinite(float(value)))
+    if not ordered:
+        return np.asarray([], dtype=float)
+    result = [ordered[0]]
+    for value in ordered[1:]:
+        if abs(value - result[-1]) <= tolerance:
+            result[-1] = (result[-1] + value) / 2.0
+        else:
+            result.append(value)
+    return np.asarray(result, dtype=float)
+
+
+def _integrated_row_displacement(
+    x_knots: np.ndarray,
+    angle_deg: np.ndarray,
+    reference_x: float,
+) -> np.ndarray:
+    slopes = np.tan(np.radians(angle_deg))
+    displacement = np.zeros(len(x_knots), dtype=float)
+    for index in range(1, len(x_knots)):
+        dx = float(x_knots[index] - x_knots[index - 1])
+        displacement[index] = (
+            displacement[index - 1]
+            + 0.5 * float(slopes[index - 1] + slopes[index]) * dx
+        )
+    reference = float(np.interp(reference_x, x_knots, displacement))
+    return displacement - reference
+
+
+def _row_grid_matrix(
+    estimate: OrthogonalWarpEstimate,
+    values: tuple[float, ...],
+) -> np.ndarray | None:
+    rows = int(estimate.row_grid_rows)
+    cols = int(estimate.row_grid_cols)
+    if (
+        rows < 2
+        or cols < 2
+        or len(estimate.y_knots) != rows
+        or len(estimate.x_knots) != cols
+        or len(values) != rows * cols
+    ):
+        return None
+    return np.asarray(values, dtype=float).reshape(rows, cols)
+
+
+def _integral_at_x(
+    x: float,
+    xs: np.ndarray,
+    slopes: np.ndarray,
+) -> float:
+    """Integral of a piecewise-linear slope field from xs[0] to x."""
+    px = float(x)
+    if px <= float(xs[0]):
+        return (px - float(xs[0])) * float(slopes[0])
+
+    cumulative = 0.0
+    for index in range(len(xs) - 1):
+        x0 = float(xs[index])
+        x1 = float(xs[index + 1])
+        s0 = float(slopes[index])
+        s1 = float(slopes[index + 1])
+        dx = x1 - x0
+        if dx <= 1e-9:
+            continue
+        if px >= x1:
+            cumulative += 0.5 * (s0 + s1) * dx
+            continue
+        u = max(0.0, min(1.0, (px - x0) / dx))
+        cumulative += dx * (
+            s0 * u + 0.5 * (s1 - s0) * u * u
+        )
+        return cumulative
+
+    return cumulative + (
+        px - float(xs[-1])
+    ) * float(slopes[-1])
+
+
+def _row_displacement(
+    x: float | np.ndarray,
+    y: float | np.ndarray,
+    estimate: OrthogonalWarpEstimate,
+) -> float | np.ndarray:
+    angle_grid = _row_grid_matrix(
+        estimate,
+        estimate.row_angle_grid_deg,
+    )
+    if angle_grid is None:
+        displacement_grid = _row_grid_matrix(
+            estimate,
+            estimate.row_displacement_grid_px,
+        )
+        if displacement_grid is None:
+            # Backward-compatible shared-angle field.
+            angles = np.asarray(
+                _interp(y, estimate.y_knots, estimate.angle_knots_deg),
+                dtype=float,
+            )
+            return np.tan(np.radians(angles)) * (
+                np.asarray(x, dtype=float) - float(estimate.reference_x)
+            )
+
+        # Legacy 2-D saved results used linear interpolation of the displacement
+        # grid. Retain replay compatibility for those results.
+        xs = np.asarray(estimate.x_knots, dtype=float)
+        ys = np.asarray(estimate.y_knots, dtype=float)
+        x_array, y_array = np.broadcast_arrays(
+            np.asarray(x, dtype=float),
+            np.asarray(y, dtype=float),
+        )
+        flat_x = x_array.ravel()
+        flat_y = y_array.ravel()
+        result = np.empty_like(flat_x, dtype=float)
+        y_indices = np.searchsorted(ys, flat_y, side="right") - 1
+        y_indices = np.clip(y_indices, 0, len(ys) - 2)
+        for index, (px, py, iy) in enumerate(zip(flat_x, flat_y, y_indices)):
+            iy = int(iy)
+            y0 = float(ys[iy])
+            y1 = float(ys[iy + 1])
+            v0 = float(np.interp(px, xs, displacement_grid[iy]))
+            v1 = float(np.interp(px, xs, displacement_grid[iy + 1]))
+            if py <= ys[0]:
+                result[index] = float(
+                    np.interp(px, xs, displacement_grid[0])
+                )
+            elif py >= ys[-1]:
+                result[index] = float(
+                    np.interp(px, xs, displacement_grid[-1])
+                )
+            elif y1 - y0 <= 1e-9:
+                result[index] = v0
+            else:
+                t = (float(py) - y0) / (y1 - y0)
+                result[index] = v0 * (1.0 - t) + v1 * t
+        shaped = result.reshape(x_array.shape)
+        if np.isscalar(x) and np.isscalar(y):
+            return float(shaped)
+        return shaped
+
+    xs = np.asarray(estimate.x_knots, dtype=float)
+    ys = np.asarray(estimate.y_knots, dtype=float)
+    x_array, y_array = np.broadcast_arrays(
+        np.asarray(x, dtype=float),
+        np.asarray(y, dtype=float),
+    )
+    flat_x = x_array.ravel()
+    flat_y = y_array.ravel()
+    result = np.empty_like(flat_x, dtype=float)
+
+    # Interpolate the *angle/slope field* in Y, then integrate it analytically
+    # across X. This preserves the requested local derivative at each measured
+    # column centre. Interpolating an already-integrated displacement across a
+    # wide X interval would instead replace the local slope by the interval
+    # average, leaving exactly the right-upper-corner residual seen on 0014.
+    for index, (px, py) in enumerate(zip(flat_x, flat_y)):
+        if py <= ys[0]:
+            angles = angle_grid[0]
+        elif py >= ys[-1]:
+            angles = angle_grid[-1]
+        else:
+            iy = int(np.searchsorted(ys, py, side="right") - 1)
+            iy = max(0, min(len(ys) - 2, iy))
+            y0 = float(ys[iy])
+            y1 = float(ys[iy + 1])
+            t = 0.0 if y1 - y0 <= 1e-9 else (float(py) - y0) / (y1 - y0)
+            angles = angle_grid[iy] * (1.0 - t) + angle_grid[iy + 1] * t
+        slopes = np.tan(np.radians(angles))
+        result[index] = (
+            _integral_at_x(float(px), xs, slopes)
+            - _integral_at_x(float(estimate.reference_x), xs, slopes)
+        )
+
+    shaped = result.reshape(x_array.shape)
+    if np.isscalar(x) and np.isscalar(y):
+        return float(shaped)
+    return shaped
+
+
+def estimate_orthogonal_warp(
+    image: Image.Image,
+    polygons: Iterable[np.ndarray],
+    settings: AppSettings,
+) -> OrthogonalWarpEstimate:
+    """Estimate a structure-anchored 2-D residual straightening field."""
+    source = normalize_page_rgb(image)
+    width, height = source.size
+    polygon_list = [np.asarray(poly, dtype=float) for poly in polygons]
+    columns = horizontal_column_rows(polygon_list, source.size, settings)
+    valid_columns = [rows for rows in columns if len(rows) >= 5]
+    all_rows = [row for column in valid_columns for row in column]
+    if len(all_rows) < ORTHOGONAL_WARP_MIN_ROWS:
+        return OrthogonalWarpEstimate(
+            row_count=len(all_rows),
+            valid_column_count=len(valid_columns),
+        )
+
+    separator_points = separator_track_points(
+        source, polygon_list, settings,
+    )
+    separator_y: tuple[float, ...] = ()
+    separator_shift: tuple[float, ...] = ()
+    reference_x = (width - 1.0) / 2.0
+    if len(separator_points) >= 7:
+        ordered = sorted(
+            (float(y), float(x))
+            for y, x in separator_points
+        )
+        sep_y = np.asarray([item[0] for item in ordered], dtype=float)
+        sep_x = _smooth_knots(
+            np.asarray([item[1] for item in ordered], dtype=float)
+        )
+        target_x = float(np.median(sep_x))
+        shifts = sep_x - target_x
+        max_allowed = max(
+            3.0,
+            width * ORTHOGONAL_WARP_MAX_SEPARATOR_SHIFT_RATIO,
+        )
+        shifts = np.clip(shifts, -max_allowed, max_allowed)
+        separator_y = tuple(float(v) for v in sep_y)
+        separator_shift = tuple(float(v) for v in shifts)
+        reference_x = target_x
+
+    column_centres = np.asarray(
+        [_column_center(rows) for rows in valid_columns],
+        dtype=float,
+    )
+    order = np.argsort(column_centres)
+    column_centres = column_centres[order]
+    valid_columns = [valid_columns[int(index)] for index in order]
+
+    ys = np.asarray([row[1] for row in all_rows], dtype=float)
+    y_lo = float(np.percentile(ys, 2.0))
+    y_hi = float(np.percentile(ys, 98.0))
+    span = max(1.0, y_hi - y_lo)
+    knot_count = int(max(7, min(13, round(span / 260.0) + 1)))
+    body_y_knots = np.linspace(y_lo, y_hi, knot_count)
+    radius = max(
+        90.0,
+        span / max(4.0, float(knot_count - 2)) * 1.35,
+    )
+
+    rule_points_raw = horizontal_rule_track_points(
+        source, polygon_list, settings,
+    )
+    rule_points = [
+        (float(x), float(y))
+        for x, y in rule_points_raw
+    ]
+    (
+        rule_count,
+        rule_angle,
+        rule_residual,
+        rule_y,
+    ) = _robust_track_fit(rule_points)
+
+    y_values: list[float] = list(float(v) for v in body_y_knots)
+    # Add a per-column lower support knot only when that column genuinely ends
+    # far from every regular body knot. Near-duplicate knots create an
+    # artificially steep d(displacement)/dy and can trip the scale-safety gate.
+    # Normal edge cases are handled by _local_column_angle's no-extrapolation
+    # rule without inserting extra knots.
+    boundary_gap_min = max(18.0, radius * 0.45)
+    for rows in valid_columns:
+        column_ys = np.asarray([row[1] for row in rows], dtype=float)
+        if column_ys.size >= 5:
+            lower_support = float(np.percentile(column_ys, 95.0))
+            if float(np.min(np.abs(body_y_knots - lower_support))) >= boundary_gap_min:
+                y_values.append(lower_support)
+    if rule_count >= 7 and rule_y < y_hi:
+        y_values.append(float(rule_y))
+    knot_ys = _unique_sorted(y_values, tolerance=3.0)
+    if knot_ys.size < 2:
+        return OrthogonalWarpEstimate(
+            row_count=len(all_rows),
+            valid_column_count=len(valid_columns),
+        )
+
+    # A displacement grid stores the integral of the local row slope.
+    # If X knots exist only at the two column centres, linear interpolation of
+    # that integral turns one large interval into its average slope and leaves
+    # a visible residual at the column centres. Add a modest uniform support
+    # grid, then insert the measured centres/reference exactly.
+    column_pixel_samples: list[
+        tuple[list[tuple[float, float, float, float]], tuple[float, ...], float]
+    ] = []
+    x_values: list[float] = [
+        float(v) for v in np.linspace(0.0, float(width - 1), 11)
+    ]
+    x_values.append(float(reference_x))
+    x_values.extend(float(v) for v in column_centres)
+    for rows in valid_columns:
+        column_x0, column_x1 = _pixel_column_bounds(rows, width)
+        column_span = max(1.0, float(column_x1 - column_x0))
+        sample_xs = tuple(
+            float(column_x0) + column_span * float(fraction)
+            for fraction in PIXEL_COLUMN_SAMPLE_FRACTIONS
+        )
+        sample_window = max(
+            180.0,
+            column_span * PIXEL_LOCAL_WINDOW_FRACTION,
+        )
+        column_pixel_samples.append((rows, sample_xs, sample_window))
+        x_values.extend(sample_xs)
+    x_knots = _unique_sorted(x_values, tolerance=2.0)
+    if x_knots.size < 2:
+        return OrthogonalWarpEstimate(
+            row_count=len(all_rows),
+            valid_column_count=len(valid_columns),
+        )
+
+    angle_grid = np.zeros((len(knot_ys), len(x_knots)), dtype=float)
+    spreads: list[float] = []
+    median_angles: list[float] = []
+    pixel_confidences: list[float] = []
+    pixel_angle_sample_count = 0
+    pixel_angle_used_count = 0
+    rule_radius = max(160.0, width * 0.18)
+
+    for yi, knot_y in enumerate(knot_ys):
+        is_rule_row = (
+            rule_count >= 7
+            and abs(float(knot_y) - float(rule_y)) <= 3.0
+        )
+        if is_rule_row:
+            row_angles = np.asarray(
+                [
+                    _local_track_angle(
+                        rule_points,
+                        float(x),
+                        rule_radius,
+                        rule_angle,
+                    )
+                    for x in x_knots
+                ],
+                dtype=float,
+            )
+            spread = float(row_angles.max() - row_angles.min())
+        else:
+            local_samples: list[tuple[float, float]] = []
+            for centre, (rows, sample_xs, sample_window) in zip(
+                column_centres,
+                column_pixel_samples,
+            ):
+                local = _local_column_angle(
+                    rows,
+                    float(knot_y),
+                    radius,
+                )
+                if local is None:
+                    continue
+                column_samples: list[tuple[float, float]] = []
+                for sample_x in sample_xs:
+                    pixel_angle_sample_count += 1
+                    pixel_local, pixel_confidence = _pixel_projection_angle(
+                        source,
+                        rows,
+                        float(knot_y),
+                        radius,
+                        settings,
+                        float(local),
+                        x_center=float(sample_x),
+                        x_window=float(sample_window),
+                    )
+                    measured = float(local)
+                    if pixel_confidence >= PIXEL_ANGLE_MIN_CONFIDENCE:
+                        measured = float(pixel_local)
+                        pixel_angle_used_count += 1
+                        pixel_confidences.append(float(pixel_confidence))
+                    elif (
+                        pixel_confidence
+                        >= PIXEL_ANGLE_MIN_CONFIDENCE * 0.5
+                    ):
+                        measured = (
+                            0.65 * float(pixel_local)
+                            + 0.35 * float(local)
+                        )
+                        pixel_angle_used_count += 1
+                        pixel_confidences.append(float(pixel_confidence))
+                    column_samples.append(
+                        (float(sample_x), float(measured))
+                    )
+
+                # Keep the OCR-derived centre as a weak continuity anchor only
+                # when the three local pixel windows are all uninformative.
+                if not column_samples:
+                    local_samples.append(
+                        (float(centre), float(local))
+                    )
+                else:
+                    local_samples.extend(column_samples)
+            if not local_samples:
+                row_angles = np.zeros(len(x_knots), dtype=float)
+                spread = 0.0
+            else:
+                sample_x = np.asarray(
+                    [item[0] for item in local_samples],
+                    dtype=float,
+                )
+                sample_a = np.asarray(
+                    [item[1] for item in local_samples],
+                    dtype=float,
+                )
+                if len(sample_x) == 1:
+                    row_angles = np.full(
+                        len(x_knots),
+                        float(sample_a[0]),
+                        dtype=float,
+                    )
+                    spread = 0.0
+                else:
+                    row_angles = np.interp(
+                        x_knots,
+                        sample_x,
+                        sample_a,
+                        left=float(sample_a[0]),
+                        right=float(sample_a[-1]),
+                    )
+                    spread = float(sample_a.max() - sample_a.min())
+
+        angle_grid[yi] = np.clip(
+            row_angles,
+            -ORTHOGONAL_WARP_MAX_ANGLE_DEG,
+            ORTHOGONAL_WARP_MAX_ANGLE_DEG,
+        )
+        spreads.append(max(0.0, spread))
+        median_angles.append(float(np.median(angle_grid[yi])))
+
+    # Smooth the body field independently from the header-rule anchor.
+    #
+    # The header rule is often only a few dozen pixels above the first body
+    # rows and can legitimately have a different residual angle. Mixing that
+    # structural anchor into a median/weighted smoother biases the first body
+    # knots toward the rule and leaves the upper-right text visibly tilted.
+    # First smooth OCR-derived body rows alone, then restore/insert the header
+    # rule unchanged; interpolation between the two provides the geometric
+    # transition without contaminating either measurement.
+    rule_index = -1
+    if rule_count >= 7:
+        rule_index = int(np.argmin(np.abs(knot_ys - rule_y)))
+    for xi in range(angle_grid.shape[1]):
+        raw_column = angle_grid[:, xi].copy()
+        if rule_index >= 0:
+            body_indices = np.asarray(
+                [
+                    index
+                    for index in range(len(knot_ys))
+                    if index != rule_index
+                ],
+                dtype=int,
+            )
+            if body_indices.size:
+                body_smoothed = _smooth_knots(
+                    raw_column[body_indices]
+                )
+                angle_grid[body_indices, xi] = body_smoothed
+            angle_grid[rule_index, xi] = raw_column[rule_index]
+        else:
+            angle_grid[:, xi] = _smooth_knots(raw_column)
+
+    median_angles = [
+        float(np.median(angle_grid[yi]))
+        for yi in range(angle_grid.shape[0])
+    ]
+
+    displacement_grid = np.vstack(
+        [
+            _integrated_row_displacement(
+                x_knots,
+                angle_grid[yi],
+                reference_x,
+            )
+            for yi in range(len(knot_ys))
+        ]
+    )
+
+    max_angle = float(np.max(np.abs(angle_grid)))
+    angle_span = float(angle_grid.max() - angle_grid.min())
+    max_horizontal_shift = max(
+        (abs(v) for v in separator_shift),
+        default=0.0,
+    )
+    max_vertical_shift = float(np.max(np.abs(displacement_grid)))
+
+    if len(knot_ys) >= 2:
+        drow_dy = np.diff(displacement_grid, axis=0) / np.maximum(
+            1.0,
+            np.diff(knot_ys)[:, None],
+        )
+        max_drow_dy = float(np.max(np.abs(drow_dy)))
+    else:
+        max_drow_dy = 0.0
+    if len(separator_y) >= 2:
+        dx_dy = np.diff(
+            np.asarray(separator_shift, dtype=float)
+        ) / np.maximum(
+            1.0,
+            np.diff(np.asarray(separator_y, dtype=float)),
+        )
+        max_dx_dy = float(np.max(np.abs(dx_dy)))
+    else:
+        max_dx_dy = 0.0
+    max_local_slope = float(
+        np.max(np.abs(np.tan(np.radians(angle_grid))))
+    )
+    max_scale_deviation = (
+        max_drow_dy + max_local_slope * max_dx_dy
+    )
+
+    column_spread = max(spreads, default=0.0)
+    row_factor = min(1.0, len(all_rows) / 36.0)
+    column_factor = min(1.0, len(valid_columns) / 2.0)
+    rule_factor = 1.0 if rule_count >= 7 else 0.0
+    confidence = (
+        row_factor
+        * (0.75 + 0.25 * column_factor)
+        * (0.92 + 0.08 * rule_factor)
+    )
+    # active describes whether there is enough reliable geometry to attempt a
+    # correction. The actual deformation safety budget is enforced later by
+    # gain limiting plus before/after text-scale audits. This lets pages whose
+    # unit-gain field is only slightly too strong (e.g. 0004) be corrected
+    # progressively instead of being rejected before a safer gain is tried.
+    active = bool(
+        len(all_rows) >= ORTHOGONAL_WARP_MIN_ROWS
+        and len(valid_columns) >= 1
+        and (
+            max_angle >= ORTHOGONAL_WARP_MIN_DRIVER_DEG
+            or angle_span >= ORTHOGONAL_WARP_MIN_DRIVER_DEG * 1.5
+            or max_horizontal_shift
+            >= ORTHOGONAL_WARP_MIN_SEPARATOR_SHIFT_PX
+        )
+    )
+
+    return OrthogonalWarpEstimate(
+        y_knots=tuple(float(v) for v in knot_ys),
+        angle_knots_deg=tuple(float(v) for v in median_angles),
+        x_knots=tuple(float(v) for v in x_knots),
+        row_grid_rows=int(displacement_grid.shape[0]),
+        row_grid_cols=int(displacement_grid.shape[1]),
+        row_angle_grid_deg=tuple(
+            float(v) for v in angle_grid.ravel()
+        ),
+        row_displacement_grid_px=tuple(
+            float(v) for v in displacement_grid.ravel()
+        ),
+        separator_y_knots=separator_y,
+        separator_shift_knots_px=separator_shift,
+        reference_x=float(reference_x),
+        row_count=len(all_rows),
+        valid_column_count=len(valid_columns),
+        column_spread_deg=float(column_spread),
+        separator_point_count=len(separator_points),
+        horizontal_rule_point_count=int(rule_count),
+        horizontal_rule_y=float(rule_y),
+        horizontal_rule_angle_deg=float(rule_angle),
+        horizontal_rule_residual_span_px=float(rule_residual),
+        pixel_angle_sample_count=int(pixel_angle_sample_count),
+        pixel_angle_used_count=int(pixel_angle_used_count),
+        pixel_angle_confidence=(
+            float(np.median(pixel_confidences))
+            if pixel_confidences else 0.0
+        ),
+        max_row_angle_deg=float(max_angle),
+        row_angle_span_deg=float(angle_span),
+        max_horizontal_shift_px=float(max_horizontal_shift),
+        max_vertical_shift_px=float(max_vertical_shift),
+        max_scale_deviation=float(max_scale_deviation),
+        confidence=max(0.0, min(1.0, float(confidence))),
+        active=active,
+    )
+
+
+def transform_points_orthogonal(
+    points: np.ndarray,
+    estimate: OrthogonalWarpEstimate,
+    *,
+    row_gain: float = 1.0,
+    separator_gain: float = 1.0,
+) -> np.ndarray:
+    raw = np.asarray(points, dtype=float)
+    shape = raw.shape
+    flat = raw.reshape(-1, 2).copy()
+    if flat.size == 0:
+        return flat.reshape(shape)
+
+    ys = flat[:, 1]
+    shifts = np.asarray(
+        _interp(
+            ys,
+            estimate.separator_y_knots,
+            estimate.separator_shift_knots_px,
+        ),
+        dtype=float,
+    ) * float(separator_gain)
+    x_out = flat[:, 0] - shifts
+    displacement = np.asarray(
+        _row_displacement(x_out, ys, estimate),
+        dtype=float,
+    ) * float(row_gain)
+    y_out = flat[:, 1] - displacement
+    flat[:, 0] = x_out
+    flat[:, 1] = y_out
+    return flat.reshape(shape)
+
+
+def transform_polygons_orthogonal(
+    polygons: Iterable[np.ndarray],
+    estimate: OrthogonalWarpEstimate,
+    *,
+    row_gain: float = 1.0,
+    separator_gain: float = 1.0,
+) -> list[np.ndarray]:
+    return [
+        transform_points_orthogonal(
+            np.asarray(poly, dtype=float),
+            estimate,
+            row_gain=row_gain,
+            separator_gain=separator_gain,
+        )
+        for poly in polygons
+    ]
+
+
+def _paper_fill(image: Image.Image) -> tuple[int, int, int]:
+    source = normalize_page_rgb(image)
+    width, height = source.size
+    pw = max(1, round(width * 0.04))
+    ph = max(1, round(height * 0.04))
+    samples = [
+        np.asarray(source.crop((0, 0, pw, ph)), dtype=np.uint8).reshape(-1, 3),
+        np.asarray(
+            source.crop((max(0, width - pw), 0, width, ph)),
+            dtype=np.uint8,
+        ).reshape(-1, 3),
+        np.asarray(
+            source.crop((0, max(0, height - ph), pw, height)),
+            dtype=np.uint8,
+        ).reshape(-1, 3),
+        np.asarray(
+            source.crop((
+                max(0, width - pw),
+                max(0, height - ph),
+                width,
+                height,
+            )),
+            dtype=np.uint8,
+        ).reshape(-1, 3),
+    ]
+    median = np.median(np.concatenate(samples, axis=0), axis=0)
+    return tuple(int(round(v)) for v in median[:3])
+
+
+def _inverse_corner(
+    x_out: float,
+    y_out: float,
+    estimate: OrthogonalWarpEstimate,
+    row_gain: float,
+    separator_gain: float,
+) -> tuple[float, float]:
+    """Invert the small residual warp by fixed-point iteration."""
+    y_source = float(y_out)
+    x_source = float(x_out)
+    for _ in range(5):
+        shift = float(
+            _interp(
+                y_source,
+                estimate.separator_y_knots,
+                estimate.separator_shift_knots_px,
+            )
+        ) * float(separator_gain)
+        x_source = float(x_out) + shift
+        displacement = float(
+            _row_displacement(
+                float(x_out),
+                y_source,
+                estimate,
+            )
+        ) * float(row_gain)
+        y_source = float(y_out) + displacement
+    return x_source, y_source
+
+
+def apply_orthogonal_warp_image(
+    image: Image.Image,
+    estimate: OrthogonalWarpEstimate,
+    *,
+    row_gain: float = 1.0,
+    separator_gain: float = 1.0,
+    mesh_step_px: int = ORTHOGONAL_WARP_MESH_STEP_PX,
+) -> Image.Image:
+    """Apply the saved 2-D warp as a true X/Y mesh, not full-width strips."""
+    source = normalize_page_rgb(image)
+    width, height = source.size
+    step = max(16, int(mesh_step_px))
+    mesh: list[
+        tuple[tuple[int, int, int, int], tuple[float, ...]]
+    ] = []
+    for y0 in range(0, height, step):
+        y1 = min(height, y0 + step)
+        for x0 in range(0, width, step):
+            x1 = min(width, x0 + step)
+            ul = _inverse_corner(
+                float(x0), float(y0), estimate, row_gain, separator_gain,
+            )
+            ll = _inverse_corner(
+                float(x0), float(y1), estimate, row_gain, separator_gain,
+            )
+            lr = _inverse_corner(
+                float(x1), float(y1), estimate, row_gain, separator_gain,
+            )
+            ur = _inverse_corner(
+                float(x1), float(y0), estimate, row_gain, separator_gain,
+            )
+            mesh.append(
+                (
+                    (x0, y0, x1, y1),
+                    (
+                        ul[0], ul[1],
+                        ll[0], ll[1],
+                        lr[0], lr[1],
+                        ur[0], ur[1],
+                    ),
+                )
+            )
+    return source.transform(
+        source.size,
+        Image.Transform.MESH,
+        mesh,
+        resample=Image.Resampling.BICUBIC,
+        fillcolor=_paper_fill(source),
+    )
