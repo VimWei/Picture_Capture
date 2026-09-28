@@ -111,8 +111,9 @@ HEADWORD_HELP_LINES = {
         "主要依据：严格栏左缘 + 词性/词后结构优先；若小号斜体词性被 OCR 漏掉或错认，可由明显粗体词形保守补救，普通定义续行仍排除。",
     ),
     "cjk_visual": (
-        "识别对象：大字单字、【】/〔〕/［］括号词等视觉上明显突出的词头。",
-        "主要依据：字号/粗体、括号结构与词条起始位置。",
+        "识别对象：默认同时识别“大字单字”和“【括号词头】”。两者是两套独立证据：大字靠字号/版式，括号词靠括号结构。",
+        "重要：【是括号起始 bracket_open，不是 ○ / ● / ◆ 那种独立入口标记 entry_marker。只有词典真的用独立符号开头时，才勾选“固定符号开头”。",
+        "OCR 已能读出【时直接按括号结构解析；视觉样本只用于 OCR 漏掉/错认括号时补救，并建议保持 marker lane 过滤开启。",
     ),
     "numbered_prefix": (
         "识别对象：词头前有稳定数字编号，例如“1. word”“00［词头］”。",
@@ -169,6 +170,60 @@ VISUAL_TEMPLATE_GROUP_LABEL_TO_VALUE = {
     "按角色合并（推荐）": "role",
     "按具体符号区分": "literal",
 }
+BRACKET_ROLE_SYMBOLS = frozenset("【〔［[「『〈《")
+
+
+def _normalize_cjk_visual_symbol_roles(
+    entry_text: str,
+    bracket_text: str,
+    samples: list[dict] | None = None,
+) -> tuple[str, str, list[dict]]:
+    """Keep bracket openers out of the standalone entry-marker role."""
+    entry = list(split_configured_symbols(entry_text))
+    bracket = list(split_configured_symbols(bracket_text))
+    bracket_set = set(bracket)
+    moved = [
+        symbol for symbol in entry
+        if symbol in BRACKET_ROLE_SYMBOLS or symbol in bracket_set
+    ]
+    entry = [symbol for symbol in entry if symbol not in moved]
+    bracket = list(dict.fromkeys([*bracket, *moved]))
+    bracket_set = set(bracket)
+    normalized_samples: list[dict] = []
+    for sample in samples or []:
+        item = dict(sample)
+        literal = str(item.get("literal") or "")
+        if (
+            str(item.get("role") or "") == "entry_marker"
+            and literal
+            and literal in bracket_set
+        ):
+            item["role"] = "bracket_open"
+        normalized_samples.append(item)
+    return " ".join(entry), " ".join(bracket), normalized_samples
+
+
+def _visual_marker_capture_defaults(
+    *,
+    marker_prefix_enabled: bool,
+    bracket_enabled: bool,
+    entry_text: str,
+    bracket_text: str,
+) -> tuple[str, str]:
+    """Choose the semantically correct initial sample role in the capture UI."""
+    entry = split_configured_symbols(entry_text)
+    bracket = split_configured_symbols(bracket_text)
+    if marker_prefix_enabled and entry:
+        return "entry_marker", entry[0]
+    if bracket_enabled and bracket:
+        return "bracket_open", bracket[0]
+    if entry:
+        return "entry_marker", entry[0]
+    if bracket:
+        return "bracket_open", bracket[0]
+    return ("bracket_open", "") if bracket_enabled else ("entry_marker", "")
+
+
 def _label_for_value(mapping: dict[str, str], value: str, fallback: str) -> str:
     for label, mapped in mapping.items():
         if mapped == value:
@@ -1630,7 +1685,7 @@ class ProjectProfileWizard(tk.Toplevel):
             ("普通左缘短词可以作为词头", self.ordinary_left_edge_var),
             ("【括号词】可以作为词头", self.cjk_allow_bracketed_var),
             ("大字单字可以作为词头", self.cjk_allow_single_var),
-            ("固定符号开头（○ / ● / ◆ …）可以作为词头", self.marker_prefix_var),
+            ("固定符号开头（○ / ● / ◆ …；不包括【括号】）可以作为词头", self.marker_prefix_var),
             ("编号开头（1. / 2. / …）可以作为词头", self.numbered_prefix_var),
         )):
             ttk.Checkbutton(
@@ -1720,7 +1775,7 @@ class ProjectProfileWizard(tk.Toplevel):
             command=self._headword_structure_changed,
         ).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
         ttk.Label(
-            self.symbol_inventory_frame, text="入口标记：",
+            self.symbol_inventory_frame, text="独立入口标记：",
         ).grid(row=1, column=0, sticky="e", padx=(0, 6), pady=3)
         ttk.Entry(
             self.symbol_inventory_frame,
@@ -1728,11 +1783,11 @@ class ProjectProfileWizard(tk.Toplevel):
         ).grid(row=1, column=1, sticky="ew", pady=3)
         ttk.Label(
             self.symbol_inventory_frame,
-            text="例如 ○●◉◯；可连续输入，也可用空格/逗号分隔",
+            text="仅指 ○●◆ 等独立前缀；【不要填这里】。可连续输入，也可用空格/逗号分隔",
             foreground="#666666",
         ).grid(row=1, column=2, sticky="w", padx=(6, 0), pady=3)
         ttk.Label(
-            self.symbol_inventory_frame, text="括号起始：",
+            self.symbol_inventory_frame, text="括号词头起始：",
         ).grid(row=2, column=0, sticky="e", padx=(0, 6), pady=3)
         ttk.Entry(
             self.symbol_inventory_frame,
@@ -1740,12 +1795,12 @@ class ProjectProfileWizard(tk.Toplevel):
         ).grid(row=2, column=1, sticky="ew", pady=3)
         ttk.Label(
             self.symbol_inventory_frame,
-            text="例如 【 〔 ［ [ 「 『 〈 《",
+            text="默认【；括号内文字才是词头。若词典使用〔［「等，再按实际版式添加。",
             foreground="#666666",
         ).grid(row=2, column=2, sticky="w", padx=(6, 0), pady=3)
         ttk.Checkbutton(
             self.symbol_inventory_frame,
-            text="OCR 漏掉/错认符号时允许视觉形状补救",
+            text="OCR 漏掉/错认符号时允许视觉形状补救（默认关；确认经常漏括号再开；括号仍按 bracket_open 处理）",
             variable=self.symbol_visual_rescue_var,
             command=self._headword_structure_changed,
         ).grid(row=3, column=0, columnspan=3, sticky="w", pady=2)
@@ -1856,7 +1911,7 @@ class ProjectProfileWizard(tk.Toplevel):
         ).pack(side="left", padx=(6, 0))
         ttk.Label(
             visual_templates,
-            text="直接框选这本词典真实印刷的入口标记；每类建议采 2–5 个不同页面样本。",
+            text="直接框选真实印刷符号。采【时按“括号起始”保存，不会当成独立入口标记；每类建议采 2–5 个不同页面样本。",
             foreground="#666666",
         ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(5, 0))
 
@@ -2123,6 +2178,20 @@ class ProjectProfileWizard(tk.Toplevel):
         self._set_structure_defaults_for_profile(key)
         self._set_tail_defaults_for_profile(key)
         self._set_symbol_defaults_for_profile(key)
+        if key == "cjk_visual":
+            (
+                normalized_entry,
+                normalized_bracket,
+                normalized_samples,
+            ) = _normalize_cjk_visual_symbol_roles(
+                self.entry_marker_symbols_var.get(),
+                self.bracket_open_symbols_var.get(),
+                list(getattr(self, "visual_marker_samples", []) or []),
+            )
+            self.entry_marker_symbols_var.set(normalized_entry)
+            self.bracket_open_symbols_var.set(normalized_bracket)
+            self.visual_marker_samples = normalized_samples
+            self._refresh_symbol_template_summary()
         self._reset_specificity_for_profile(key)
         self._profile_revision += 1
         self._mark_validation_stale()
@@ -2185,13 +2254,18 @@ class ProjectProfileWizard(tk.Toplevel):
                 initial_index = 0
         elif self.sample_indices:
             initial_index = int(self.sample_indices[0])
-        entry = split_configured_symbols(self.entry_marker_symbols_var.get())
+        initial_role, initial_literal = _visual_marker_capture_defaults(
+            marker_prefix_enabled=bool(self.marker_prefix_var.get()),
+            bracket_enabled=bool(self.cjk_allow_bracketed_var.get()),
+            entry_text=self.entry_marker_symbols_var.get(),
+            bracket_text=self.bracket_open_symbols_var.get(),
+        )
         VisualMarkerCaptureDialog(
             self,
             self.project.images,
             initial_index=initial_index,
-            initial_role="entry_marker",
-            initial_literal=entry[0] if entry else "",
+            initial_role=initial_role,
+            initial_literal=initial_literal,
             on_saved=self._visual_marker_sample_saved,
         )
 
@@ -2523,16 +2597,35 @@ class ProjectProfileWizard(tk.Toplevel):
         s.profile_tail_allow_visual_rescue = bool(
             self.tail_allow_visual_rescue_var.get()
         )
+        profile_key = self._current_profile_key()
         s.profile_symbol_inventory_version = 1
         s.profile_symbol_inventory_enabled = bool(
             self.symbol_inventory_enabled_var.get()
         )
-        s.profile_entry_marker_symbols = " ".join(
+        entry_symbols = " ".join(
             split_configured_symbols(self.entry_marker_symbols_var.get())
         )
-        s.profile_bracket_open_symbols = " ".join(
+        bracket_symbols = " ".join(
             split_configured_symbols(self.bracket_open_symbols_var.get())
         )
+        visual_samples = [
+            dict(item)
+            for item in getattr(self, "visual_marker_samples", []) or []
+        ]
+        if profile_key == "cjk_visual":
+            entry_symbols, bracket_symbols, visual_samples = (
+                _normalize_cjk_visual_symbol_roles(
+                    entry_symbols,
+                    bracket_symbols,
+                    visual_samples,
+                )
+            )
+            # A CJK bracket opener never becomes an independent prefix merely
+            # because the old buggy Profile once stored it in both roles.
+            if not entry_symbols:
+                s.profile_allow_marker_prefix = False
+        s.profile_entry_marker_symbols = entry_symbols
+        s.profile_bracket_open_symbols = bracket_symbols
         s.profile_symbol_visual_rescue_enabled = bool(
             self.symbol_visual_rescue_var.get()
         )
@@ -2555,7 +2648,7 @@ class ProjectProfileWizard(tk.Toplevel):
             0.35, min(0.95, float(self.symbol_template_threshold_var.get()))
         )
         s.profile_symbol_templates_json = serialize_visual_marker_samples(
-            self.visual_marker_samples
+            visual_samples
         )
         s.profile_symbol_template_debug_enabled = bool(
             self.symbol_template_debug_var.get()
@@ -2571,7 +2664,6 @@ class ProjectProfileWizard(tk.Toplevel):
         s.profile_cjk_right_context_width_percent = max(
             30, min(200, int(self.cjk_right_context_width_var.get()))
         )
-        profile_key = self._current_profile_key()
         apply_headword_profile(s, profile_key)
         for name, value in language_effective_settings(s.ocr_language, s.layout_writing_mode).items():
             if hasattr(s, name):

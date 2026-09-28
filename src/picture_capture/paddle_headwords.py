@@ -7,6 +7,7 @@ import difflib
 import gc
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -46,6 +47,12 @@ class OCRRecord:
     text: str
     confidence: float
     box: tuple[int, int, int, int]
+    # Synthetic records created when one pathological OCR detection box spans
+    # multiple physically separate display-head glyphs. Ordinary OCR records
+    # keep these fields empty, preserving existing constructors/equality.
+    recovery: str = ""
+    recovery_source_text: str = ""
+    parent_box: tuple[int, int, int, int] | None = None
 
 
 @dataclass(slots=True)
@@ -1069,7 +1076,21 @@ def _records_to_canonical_band(
 
     transform = LayoutTransform(transform_kind)
     return [
-        OCRRecord(record.text, record.confidence, transform.source_box_to_canonical(record.box, source_band_size))
+        OCRRecord(
+            record.text,
+            record.confidence,
+            transform.source_box_to_canonical(
+                record.box, source_band_size
+            ),
+            recovery=record.recovery,
+            recovery_source_text=record.recovery_source_text,
+            parent_box=(
+                transform.source_box_to_canonical(
+                    record.parent_box, source_band_size
+                )
+                if record.parent_box is not None else None
+            ),
+        )
         for record in records
     ]
 
@@ -3437,6 +3458,261 @@ def _cjk_word_for_visual_run(
     ranked.sort(key=lambda item: (item[1], item[0], item[2]))
     _distance, _quality, _neg_conf, word, record = ranked[0]
     return word, float(record.confidence), record
+
+
+def _robust_record_line_height(
+    records: list[OCRRecord],
+    settings: AppSettings,
+) -> float:
+    """Estimate ordinary OCR-line height while ignoring giant merged boxes."""
+    heights = sorted(
+        max(1, int(record.box[3]) - int(record.box[1]))
+        for record in records
+        if record.text
+    )
+    if not heights:
+        return max(8.0, float(settings.character_height))
+    keep = max(1, int(math.ceil(len(heights) * 0.80)))
+    sample = heights[:keep]
+    return max(
+        8.0,
+        float(np.median(np.asarray(sample, dtype=float))),
+    )
+
+
+def _single_cjk_from_local_records(
+    records: list[OCRRecord],
+    settings: AppSettings,
+    profile: DictionaryProfile,
+    *,
+    max_left_x: int | None = None,
+) -> tuple[str, float, str]:
+    """Return the best single-Han head from a tightly cropped local OCR pass."""
+    ranked: list[tuple[int, int, float, str, str]] = []
+    for record in records:
+        if max_left_x is not None and int(record.box[0]) > int(max_left_x):
+            continue
+        text = str(record.text or "").strip()
+        if not text:
+            continue
+        parsed = parse_headword_text(text, settings, profile=profile)
+        if parsed is not None and _is_single_cjk_ideograph(parsed.normalized):
+            word = parsed.normalized
+            quality = 0
+        else:
+            word = _leading_cjk_ideograph(text)
+            quality = 1
+        if not word:
+            continue
+        ranked.append((
+            quality,
+            max(0, int(record.box[0])),
+            -float(record.confidence),
+            word,
+            text,
+        ))
+    if not ranked:
+        return "", 0.0, ""
+    ranked.sort()
+    _quality, _x0, neg_conf, word, source_text = ranked[0]
+    return word, max(0.0, -neg_conf), source_text
+
+
+def _recover_oversized_cjk_ocr_records(
+    records: list[OCRRecord],
+    band: Image.Image,
+    settings: AppSettings,
+    profile: DictionaryProfile,
+    *,
+    engine: Any | None = None,
+    pixel_scale: float = 1.0,
+) -> tuple[list[OCRRecord], list[dict[str, Any]]]:
+    """Split one pathological multi-entry OCR box into physical CJK heads.
+
+    This path is intentionally narrow. It runs only when a left-edge OCR box is
+    far taller than normal text *and* the page pixels show at least two separate
+    oversized-glyph runs inside that same box. Each physical run then receives
+    a small local Paddle pass, so a head entirely omitted from the giant-box
+    transcription can still be recovered.
+    """
+    if (
+        not records
+        or not _is_chinese_ocr(settings)
+        or str(
+            getattr(settings, "layout_writing_mode", "horizontal-tb")
+        ).startswith("vertical")
+    ):
+        return list(records), []
+
+    parser_controls = int(
+        getattr(settings, "profile_parser_controls_version", 0) or 0
+    ) >= 1
+    if parser_controls and not bool(
+        getattr(settings, "profile_cjk_allow_single_headword", True)
+    ):
+        return list(records), []
+
+    gray = np.asarray(ImageOps.grayscale(band), dtype=np.uint8)
+    scale = max(0.01, float(pixel_scale))
+    header_cutoff = _header_cutoff(gray, settings, scale)
+    zone_width, visual_runs = _cjk_visual_projection_runs(
+        gray, header_cutoff, settings, scale
+    )
+    if len(visual_runs) < 2 or zone_width <= 0:
+        return list(records), []
+
+    normal_height = _robust_record_line_height(records, settings)
+    giant_height_floor = max(
+        normal_height * 2.8,
+        float(settings.character_height) * 2.5,
+    )
+    output = list(records)
+    details: list[dict[str, Any]] = []
+
+    for parent in list(records):
+        x0, y0, _x1, y1 = (int(value) for value in parent.box)
+        parent_height = max(1, y1 - y0)
+        if x0 > zone_width * 1.25 or parent_height < giant_height_floor:
+            continue
+
+        runs = [
+            run for run in visual_runs
+            if max(
+                0,
+                min(y1, run[1]) - max(y0, run[0]),
+            ) >= max(1, run[1] - run[0]) * 0.55
+        ]
+        if len(runs) < 2:
+            continue
+
+        local_engine = engine
+        if local_engine is None:
+            try:
+                local_engine = get_paddle_engine(settings)
+            except Exception:
+                local_engine = None
+
+        parent_chars = [
+            ch for ch in str(parent.text or "")
+            if _is_single_cjk_ideograph(ch)
+        ]
+        exact_parent_fallback = (
+            parent_chars if len(parent_chars) == len(runs) else []
+        )
+
+        recovered: list[OCRRecord] = []
+        run_debug: list[dict[str, Any]] = []
+        for run_index, (run_start, run_end) in enumerate(runs):
+            run_height = max(1, int(run_end) - int(run_start))
+            pad_y = max(6, round(run_height * 0.12))
+            crop_top = max(0, int(run_start) - pad_y)
+            crop_bottom = min(band.height, int(run_end) + pad_y)
+            crop_right = min(
+                band.width,
+                max(
+                    zone_width * 2,
+                    round(run_height * 2.2),
+                    zone_width + round(run_height * 1.25),
+                ),
+            )
+            word = ""
+            confidence = 0.0
+            source_text = ""
+            local_records: list[OCRRecord] = []
+            if (
+                local_engine is not None
+                and crop_bottom > crop_top
+                and crop_right >= 24
+            ):
+                try:
+                    local_crop = normalize_page_rgb(band).crop(
+                        (0, crop_top, crop_right, crop_bottom)
+                    )
+                    local_records = run_paddle_band(
+                        local_crop, settings, engine=local_engine
+                    )
+                    word, confidence, source_text = (
+                        _single_cjk_from_local_records(
+                            local_records,
+                            settings,
+                            profile,
+                            max_left_x=max(
+                                12, round(zone_width * 1.15)
+                            ),
+                        )
+                    )
+                except Exception:
+                    local_records = []
+
+            if not word and exact_parent_fallback:
+                word = exact_parent_fallback[run_index]
+                confidence = float(parent.confidence)
+                source_text = str(parent.text or "")
+
+            if not word:
+                run_debug.append({
+                    "run": [int(run_start), int(run_end)],
+                    "status": "local_ocr_no_single_cjk",
+                    "local_texts": [
+                        str(record.text) for record in local_records
+                    ],
+                })
+                continue
+
+            synthetic_right = min(
+                band.width,
+                max(zone_width, round(run_height * 1.10)),
+            )
+            recovered_confidence = (
+                float(confidence)
+                if local_records
+                else float(parent.confidence)
+            )
+            recovered.append(OCRRecord(
+                text=word,
+                confidence=max(0.0, min(1.0, recovered_confidence)),
+                box=(
+                    max(0, min(x0, round(zone_width * 0.15))),
+                    int(run_start),
+                    max(1, int(synthetic_right)),
+                    int(run_end),
+                ),
+                recovery="oversized_multi_entry_local_ocr",
+                recovery_source_text=source_text,
+                parent_box=tuple(int(v) for v in parent.box),
+            ))
+            run_debug.append({
+                "run": [int(run_start), int(run_end)],
+                "status": "recovered",
+                "word": word,
+                "local_text": source_text,
+                "confidence": round(
+                    max(0.0, min(1.0, recovered_confidence)), 6
+                ),
+            })
+
+        fully_recovered = len(recovered) == len(runs)
+        details.append({
+            "parent_box": [int(v) for v in parent.box],
+            "parent_text": str(parent.text or ""),
+            "parent_height": int(parent_height),
+            "normal_line_height": round(float(normal_height), 3),
+            "visual_run_count": len(runs),
+            "recovered_count": len(recovered),
+            "applied": bool(fully_recovered),
+            "runs": run_debug,
+        })
+        # Do not partially replace a giant box. Losing one physical head is
+        # worse than retaining the original imperfect record; a future forced
+        # refresh/local OCR pass may recover all runs.
+        if not fully_recovered:
+            continue
+
+        output = [record for record in output if record is not parent]
+        output.extend(recovered)
+
+    output.sort(key=lambda item: (item.box[1], item.box[0]))
+    return output, details
 
 
 def refine_separator_y(
@@ -7069,14 +7345,40 @@ def detect_paddle_headwords(
 
         if cached_columns is not None and col < len(cached_columns):
             records = [OCRRecord(
-                text=str(item["text"]), confidence=float(item["confidence"]),
+                text=str(item["text"]),
+                confidence=float(item["confidence"]),
                 box=tuple(int(value) for value in item["box"]),  # type: ignore[arg-type]
+                recovery=str(item.get("recovery", "") or ""),
+                recovery_source_text=str(
+                    item.get("recovery_source_text", "") or ""
+                ),
+                parent_box=(
+                    tuple(int(value) for value in item["parent_box"])
+                    if item.get("parent_box") else None
+                ),
             ) for item in cached_columns[col].get("ocr_records", [])]
         elif use_paddle:
             source_records = run_paddle_band(band, settings, engine=engine)
-            records = _records_to_canonical_band(source_records, band.size, transform_kind)
+            records = _records_to_canonical_band(
+                source_records, band.size, transform_kind
+            )
         else:
             records = []
+
+        # Preserve raw Paddle records as the cache contract. Multi-entry CJK
+        # recovery is Profile-dependent candidate interpretation and therefore
+        # must be recomputed from raw records whenever Profile settings change.
+        raw_paddle_records = list(records)
+        oversized_recovery: list[dict[str, Any]] = []
+        if use_paddle and records:
+            records, oversized_recovery = _recover_oversized_cjk_ocr_records(
+                records,
+                analysis_band,
+                settings,
+                profile,
+                engine=engine,
+                pixel_scale=pixel_scale,
+            )
 
         paddle_lines = _records_as_merged_lines(records, settings)
         paddle_full_text = "\n".join(line.text for line in paddle_lines)
@@ -7085,6 +7387,10 @@ def detect_paddle_headwords(
             separator_band=analysis_separator_band, user_rules=user_rules, engine_name="paddle", profile=profile,
             pixel_scale=pixel_scale,
         )
+        if oversized_recovery and diagnostics:
+            meta = diagnostics[0].get("meta")
+            if isinstance(meta, dict):
+                meta["oversized_multi_entry_recovery"] = oversized_recovery
         _attach_source_candidate_coordinates(diagnostics, geometry, col)
         for entry in paddle_entries:
             entry.x, entry.y = geometry.canonical_to_source(entry.x, entry.y)
@@ -7226,7 +7532,10 @@ def detect_paddle_headwords(
             "_column_axis_u": int(canonical_u),
             "_top_axis_v": int(source_top),
             "band_size": list(band.size),
-            "ocr_records": [asdict(record) for record in records],
+            "ocr_records": [asdict(record) for record in raw_paddle_records],
+            "paddle_effective_records": [
+                asdict(record) for record in records
+            ],
             "paddle_full_text": paddle_full_text,
             "paddle_merged_lines": [
                 {
