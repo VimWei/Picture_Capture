@@ -1490,6 +1490,17 @@ def test_project_profile_wizard_uses_analysis_as_a_setup_aid_then_stable_columns
     assert "括号词头起始：" in text
     assert "OCR 漏掉/错认符号时允许视觉形状补救" in text
     assert "使用同栏 marker lane 过滤正文中的相似符号" in text
+    assert "self.symbol_inventory_frame.columnconfigure(1, weight=1, minsize=180)" in text
+    assert "symbol_hint_wrap = max(220, self._wizard_content_width - 140)" in text
+    assert "symbol_full_wrap = max(280, self._wizard_content_width - 40)" in text
+    assert "textvariable=self.entry_marker_symbols_var" in text
+    assert "textvariable=self.bracket_open_symbols_var" in text
+    assert "width=24" in text
+    assert 'grid(row=1, column=1, columnspan=2, sticky="ew", pady=3)' in text
+    assert 'grid(row=3, column=1, columnspan=2, sticky="ew", pady=3)' in text
+    assert "wraplength=symbol_hint_wrap" in text
+    assert "wraplength=symbol_full_wrap" in text
+    assert "OCR 漏掉/错认符号时允许视觉形状补救（默认关；" not in text
     assert "本词典视觉标记样本" in text
     assert "字符符号集 + 视觉样本" in text
     assert "视觉样本优先" in text
@@ -3491,6 +3502,184 @@ def test_oversized_cjk_box_recovers_each_physical_display_head(monkeypatch):
     assert details[0]["visual_run_count"] == 4
     assert details[0]["recovered_count"] == 4
     assert details[0]["applied"] is True
+
+
+
+def test_recovered_oversized_cjk_children_are_auto_selected_and_refined(
+    monkeypatch,
+):
+    """Recovered physical heads must not be rejected by a second size-ratio gate."""
+    settings = AppSettings(
+        ocr_language="chi_tra",
+        character_height=100,
+        profile_parser_controls_version=1,
+        profile_cjk_allow_single_headword=True,
+        profile_cjk_require_visual_evidence=True,
+        profile_cjk_require_left_edge=True,
+        paddle_auto_header_rule=False,
+        paddle_left_tolerance=40,
+        paddle_band_left_margin=8,
+        paddle_rec_score_threshold=0.20,
+    )
+    profile = load_dictionary_profile(
+        preset="cjk_visual", language="chi_tra",
+    )
+    recovered = [
+        OCRRecord(
+            word,
+            0.96,
+            box,
+            recovery="oversized_multi_entry_local_ocr",
+            recovery_source_text=word,
+            parent_box=(0, 80, 317, 850),
+        )
+        for word, box in zip(
+            ("暖", "厂", "广", "安"),
+            (
+                (0, 100, 90, 190),
+                (0, 285, 90, 380),
+                (0, 480, 90, 575),
+                (0, 675, 90, 775),
+            ),
+        )
+    ]
+
+    # The recovery provenance itself is the physical oversized-run proof.  The
+    # downstream filter must not depend on re-detecting those same runs.
+    monkeypatch.setattr(
+        paddle_headwords,
+        "_cjk_visual_projection_runs",
+        lambda *_args, **_kwargs: (90, []),
+    )
+    monkeypatch.setattr(
+        paddle_headwords,
+        "_header_cutoff",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    def fake_refine(_gray, coarse_y, *_args, **_kwargs):
+        refined = int(coarse_y) + 7
+        return refined, {
+            "enabled": True,
+            "reason": "test_recovered_refined",
+            "anchor_y": int(coarse_y) + 3,
+            "refined_y": refined,
+            "shift": 7,
+        }
+
+    monkeypatch.setattr(
+        paddle_headwords, "refine_first_content_y", fake_refine,
+    )
+    monkeypatch.setattr(
+        paddle_headwords, "refine_separator_y_adaptive", fake_refine,
+    )
+
+    entries, diagnostics = filter_headword_records(
+        recovered,
+        Image.new("RGB", (360, 900), "white"),
+        0,
+        0,
+        settings,
+        profile=profile,
+    )
+
+    assert [entry.word for entry in entries] == ["暖", "厂", "广", "安"]
+    rows = [
+        row for row in diagnostics
+        if "meta" not in row and row.get("normalized_headword") in {"暖", "厂", "广", "安"}
+    ]
+    assert len(rows) == 4
+    assert all(row["accepted"] is True for row in rows)
+    assert all(row["features"]["cjk_oversized_recovery"] is True for row in rows)
+    assert all(
+        row["features"]["cjk_oversized_recovery_kind"]
+        == "oversized_multi_entry_local_ocr"
+        for row in rows
+    )
+    assert all(
+        row["separator_refinement"]["reason"] == "test_recovered_refined"
+        for row in rows
+    )
+    assert all(row["source_y"] == row["coarse_source_y"] + 7 for row in rows)
+
+
+def test_recovered_oversized_cjk_manual_promotion_keeps_refined_geometry(
+    monkeypatch,
+):
+    """An explicitly rejected recovered head stays unchecked but keeps refined Y."""
+    settings = AppSettings(
+        ocr_language="chi_tra",
+        character_height=100,
+        profile_parser_controls_version=1,
+        profile_cjk_allow_single_headword=True,
+        profile_cjk_require_visual_evidence=True,
+        profile_cjk_require_left_edge=True,
+        paddle_auto_header_rule=False,
+        paddle_left_tolerance=40,
+        paddle_band_left_margin=8,
+        paddle_rec_score_threshold=0.20,
+    )
+    profile = load_dictionary_profile(
+        preset="cjk_visual", language="chi_tra",
+    )
+    record = OCRRecord(
+        "广",
+        0.96,
+        (0, 220, 90, 315),
+        recovery="oversized_multi_entry_local_ocr",
+        recovery_source_text="广",
+        parent_box=(0, 80, 317, 850),
+    )
+    monkeypatch.setattr(
+        paddle_headwords,
+        "_cjk_visual_projection_runs",
+        lambda *_args, **_kwargs: (90, []),
+    )
+    monkeypatch.setattr(
+        paddle_headwords,
+        "_header_cutoff",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    def fake_refine(_gray, coarse_y, *_args, **_kwargs):
+        refined = int(coarse_y) + 9
+        return refined, {
+            "enabled": True,
+            "reason": "test_rejected_recovered_refined",
+            "anchor_y": int(coarse_y) + 4,
+            "refined_y": refined,
+            "shift": 9,
+        }
+
+    monkeypatch.setattr(
+        paddle_headwords, "refine_first_content_y", fake_refine,
+    )
+    monkeypatch.setattr(
+        paddle_headwords, "refine_separator_y_adaptive", fake_refine,
+    )
+
+    entries, diagnostics = filter_headword_records(
+        [record],
+        Image.new("RGB", (360, 500), "white"),
+        0,
+        0,
+        settings,
+        user_rules=parse_headword_filter_rules("reject_lemma_exact: 广"),
+        profile=profile,
+    )
+
+    assert entries == []
+    rows = [
+        row for row in diagnostics
+        if "meta" not in row and row.get("normalized_headword") == "广"
+    ]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["accepted"] is False
+    assert row["reject_reason"] == "user_reject_rule"
+    assert row["features"]["cjk_oversized_recovery"] is True
+    assert row["separator_refinement"]["reason"] == "test_rejected_recovered_refined"
+    assert row["source_y"] == row["coarse_source_y"] + 9
 
 
 def test_oversized_cjk_box_never_guesses_missing_children_from_parent_text(
