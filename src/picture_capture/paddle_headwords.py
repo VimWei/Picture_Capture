@@ -2733,6 +2733,120 @@ def _classify_visual_symbol_component(
     return None
 
 
+def _trusted_visual_marker_lanes(
+    lines: list[OCRLine],
+    inventory: dict[str, Any],
+    median_height: float,
+) -> dict[str, dict[str, Any]]:
+    """Derive stable marker lanes from OCR rows with explicit printed symbols.
+
+    Bracket-like CJK radicals are common enough that candidate symbols must not
+    define their own bracket lane.  When OCR explicitly sees the configured
+    opener (for example 【) on at least two rows, those rows provide an
+    independent X anchor for visual rescue.  Generic bracket shapes are then
+    allowed only near this trusted lane.
+    """
+    if not bool(inventory.get("lane_required", False)):
+        return {}
+
+    openers = tuple(
+        str(symbol)
+        for symbol in inventory.get("bracket_openers", ())
+        if str(symbol)
+    )
+    if not openers:
+        return {}
+
+    anchors: list[int] = []
+    for line in lines:
+        text = unicodedata.normalize("NFKC", str(line.text or "")).lstrip()
+        if not any(text.startswith(opener) for opener in openers):
+            continue
+        try:
+            anchors.append(int(line.box[0]))
+        except (TypeError, ValueError):
+            continue
+
+    # One OCR row can itself be a segmentation outlier.  Two independent rows
+    # are the minimum evidence required before generic shape rescue may use the
+    # lane.  Template-only rescue remains available when no lane can be learned.
+    if len(anchors) < 2:
+        return {}
+
+    line_h = max(8.0, float(median_height))
+    configured_tolerance = (
+        line_h
+        * max(
+            20,
+            min(
+                120,
+                int(inventory.get("lane_tolerance_percent") or 50),
+            ),
+        )
+        / 100.0
+    )
+    tolerance = max(8.0, min(configured_tolerance, line_h * 0.40))
+    return {
+        "bracket_open": {
+            "x": round(float(np.median(np.asarray(anchors, dtype=float))), 2),
+            "tolerance": round(float(tolerance), 2),
+            "count": len(anchors),
+            "source": "explicit_ocr_bracket_rows",
+        }
+    }
+
+
+def _apply_trusted_visual_marker_lanes(
+    candidates: list[dict[str, Any]],
+    trusted_lanes: dict[str, dict[str, Any]] | None,
+    *,
+    template_threshold: float,
+) -> list[dict[str, Any]]:
+    """Filter ambiguous visual brackets against independent lane evidence.
+
+    Generic bracket geometry is intentionally disabled when no trusted bracket
+    lane exists: Chinese body glyphs contain too many bracket-like connected
+    components.  A dictionary template may still rescue such a page, but when
+    it is the sole evidence it must clear a conservative 0.70 floor.
+    """
+    lanes = dict(trusted_lanes or {})
+    output: list[dict[str, Any]] = []
+    for item in candidates:
+        role = str(item.get("role") or "")
+        if role != "bracket_open":
+            output.append(item)
+            continue
+
+        lane = lanes.get(role)
+        family = str(item.get("family") or "")
+        if lane is None:
+            if family != "dictionary_template":
+                continue
+            if float(item.get("template_score") or 0.0) < max(
+                float(template_threshold), 0.70
+            ):
+                continue
+            item["lane_required"] = True
+            item["lane_source"] = "template_only_no_ocr_anchor"
+            item["lane_anchor_count"] = 0
+            output.append(item)
+            continue
+
+        lane_x = float(lane.get("x") or 0.0)
+        tolerance = max(1.0, float(lane.get("tolerance") or 1.0))
+        delta = abs(float(item.get("x0") or 0.0) - lane_x)
+        if delta > tolerance:
+            continue
+        item["lane_x"] = round(lane_x, 2)
+        item["lane_delta"] = round(delta, 2)
+        item["lane_required"] = True
+        item["lane_source"] = str(lane.get("source") or "trusted_lane")
+        item["lane_anchor_count"] = int(lane.get("count") or 0)
+        item["lane_tolerance"] = round(tolerance, 2)
+        output.append(item)
+    return output
+
+
 def _detect_visual_entry_markers(
     gray: np.ndarray,
     median_height: float,
@@ -2740,6 +2854,7 @@ def _detect_visual_entry_markers(
     *,
     lower_bound: int = 0,
     inventory: dict[str, Any] | None = None,
+    trusted_lanes: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Detect configured entry/bracket symbols directly from page pixels.
 
@@ -2872,8 +2987,20 @@ def _detect_visual_entry_markers(
     if not candidates:
         return []
 
+    candidates = _apply_trusted_visual_marker_lanes(
+        candidates,
+        trusted_lanes,
+        template_threshold=float(
+            inventory.get("visual_template_threshold") or 0.68
+        ),
+    )
+    if not candidates:
+        return []
+
     # Lane filtering is role-aware. A dictionary can therefore keep one marker
     # lane for ○/● and a nearby bracket lane without forcing both onto one X.
+    # Brackets with an explicit-OCR trusted lane were already filtered above;
+    # do not let surviving candidates vote themselves into a different lane.
     if bool(inventory.get("lane_required", False)):
         tolerance = max(
             6.0,
@@ -2883,6 +3010,9 @@ def _detect_visual_entry_markers(
         for role in ("entry_marker", "bracket_open"):
             group = [item for item in candidates if item.get("role") == role]
             if not group:
+                continue
+            if role in (trusted_lanes or {}):
+                filtered.extend(group)
                 continue
             if len(group) >= 3:
                 lane_x = float(np.median([item["x0"] for item in group]))
@@ -4000,6 +4130,98 @@ def _recover_image_first_oversized_cjk_records(
     return output, details
 
 
+def _suppress_raw_records_shadowed_by_verified_cjk_recovery(
+    records: list[OCRRecord],
+) -> tuple[list[OCRRecord], list[dict[str, Any]]]:
+    """Drop raw OCR boxes that duplicate verified CJK recovery rows.
+
+    Image-first recovery adds a synthetic single-Han record while preserving the
+    immutable raw Paddle cache. Without derived-record dedup, that synthetic row
+    can be merged back with its own source box, for example 摆 plus 摆1, or with
+    a giant raw box spanning several recovered heads. Suppression affects only
+    the effective derived record list; the raw cache remains untouched.
+    """
+    verified = [
+        record for record in records
+        if str(record.recovery or "") in _VERIFIED_OVERSIZED_CJK_RECOVERIES
+    ]
+    if not verified:
+        return list(records), []
+
+    def _norm(text: str) -> str:
+        return re.sub(
+            r"\s+",
+            "",
+            unicodedata.normalize("NFKC", str(text or "")),
+        )
+
+    output: list[OCRRecord] = []
+    details: list[dict[str, Any]] = []
+    for record in records:
+        if str(record.recovery or ""):
+            output.append(record)
+            continue
+
+        raw_text = _norm(record.text)
+        rx0, ry0, rx1, ry1 = (int(value) for value in record.box)
+        raw_height = max(1, ry1 - ry0)
+        suppressor: OCRRecord | None = None
+        reason = ""
+
+        for recovered in verified:
+            sx0, sy0, sx1, sy1 = (int(value) for value in recovered.box)
+            recovered_height = max(1, sy1 - sy0)
+            vertical_overlap = max(0, min(ry1, sy1) - max(ry0, sy0))
+            horizontal_overlap = max(0, min(rx1, sx1) - max(rx0, sx0))
+            if (
+                vertical_overlap < recovered_height * 0.45
+                or horizontal_overlap <= 0
+            ):
+                continue
+
+            source_text = _norm(recovered.recovery_source_text)
+            recovered_text = _norm(recovered.text)
+            if source_text and raw_text == source_text:
+                suppressor = recovered
+                reason = "same_recovery_source_text"
+                break
+
+            # Conservative fallback for engines that normalize away a sense
+            # suffix locally. Require the same leading Han plus a clearly taller
+            # raw box so ordinary neighboring OCR fragments are not removed.
+            raw_leading = _leading_cjk_ideograph(record.text)
+            if (
+                raw_leading
+                and recovered_text == raw_leading
+                and raw_height >= recovered_height * 1.20
+            ):
+                suppressor = recovered
+                reason = "same_leading_han_taller_raw_box"
+                break
+
+        if suppressor is None:
+            output.append(record)
+            continue
+
+        details.append({
+            "mode": "verified_cjk_recovery_duplicate_suppression",
+            "applied": True,
+            "status": "suppressed_raw_record",
+            "reason": reason,
+            "raw_text": str(record.text or ""),
+            "raw_box": [int(v) for v in record.box],
+            "recovered_word": str(suppressor.text or ""),
+            "recovery_source_text": str(
+                suppressor.recovery_source_text or ""
+            ),
+            "recovered_box": [int(v) for v in suppressor.box],
+            "recovery": str(suppressor.recovery or ""),
+        })
+
+    output.sort(key=lambda item: (item.box[1], item.box[0]))
+    return output, details
+
+
 def refine_separator_y(
     gray: np.ndarray,
     coarse_y: int,
@@ -4809,6 +5031,14 @@ def filter_headword_records(
             )
         )
     )
+    trusted_visual_lanes = (
+        _trusted_visual_marker_lanes(
+            lines,
+            symbol_inventory,
+            median_height,
+        )
+        if visual_symbol_enabled else {}
+    )
     visual_entry_markers = (
         _detect_visual_entry_markers(
             gray,
@@ -4816,6 +5046,7 @@ def filter_headword_records(
             left_limit,
             lower_bound=header_cutoff,
             inventory=symbol_inventory,
+            trusted_lanes=trusted_visual_lanes,
         )
         if visual_symbol_enabled else []
     )
@@ -5489,6 +5720,22 @@ def filter_headword_records(
                     float(visual_entry_marker.get("lane_delta") or 0.0)
                     if visual_entry_marker else 0.0
                 ),
+                "visual_headword_symbol_lane_source": (
+                    str(visual_entry_marker.get("lane_source") or "")
+                    if visual_entry_marker else ""
+                ),
+                "visual_headword_symbol_lane_anchor_count": (
+                    int(visual_entry_marker.get("lane_anchor_count") or 0)
+                    if visual_entry_marker else 0
+                ),
+                "visual_headword_symbol_lane_tolerance": (
+                    float(visual_entry_marker.get("lane_tolerance") or 0.0)
+                    if visual_entry_marker else 0.0
+                ),
+                "visual_headword_symbol_x0": (
+                    int(visual_entry_marker.get("x0") or 0)
+                    if visual_entry_marker else 0
+                ),
                 "visual_entry_marker_density": (
                     float(visual_entry_marker.get("density") or 0.0)
                     if visual_entry_marker else 0.0
@@ -5786,6 +6033,8 @@ def filter_headword_records(
             "separator_roi_width_ratio": int(getattr(settings, "paddle_separator_roi_width_ratio", 60)),
             "image_separator_candidates": image_separator_candidates,
             "image_separator_match_count": len(image_boundary_matches),
+            "trusted_visual_marker_lanes": trusted_visual_lanes,
+            "visual_marker_candidate_count": len(visual_entry_markers),
             "user_filter_rule_count": len(user_rules or []),
         }
     })
@@ -7743,6 +7992,12 @@ def detect_paddle_headwords(
                 pixel_scale=pixel_scale,
             )
             oversized_recovery.extend(image_first_recovery)
+            records, recovery_duplicate_suppression = (
+                _suppress_raw_records_shadowed_by_verified_cjk_recovery(
+                    records
+                )
+            )
+            oversized_recovery.extend(recovery_duplicate_suppression)
 
         paddle_lines = _records_as_merged_lines(records, settings)
         paddle_full_text = "\n".join(line.text for line in paddle_lines)
