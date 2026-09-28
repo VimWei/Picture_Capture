@@ -415,26 +415,53 @@ def _split_configured_symbols(value: str | None) -> tuple[str, ...]:
 def _configured_symbol_inventory(
     settings: AppSettings, profile: DictionaryProfile,
 ) -> dict[str, Any]:
-    """Resolve dictionary-specific symbol roles with Project Profile overrides."""
+    """Resolve dictionary-specific symbol roles with Project Profile overrides.
+
+    Standalone entry markers (○/●/◆...) and bracket openers are separate roles.
+    The historical profile_symbol_inventory_enabled switch now controls only
+    the standalone-marker inventory. Bracket openers remain active whenever
+    the user enabled the explicit bracket-headword structure; otherwise a
+    configured bracket opener/template can be silently disabled merely because
+    the dictionary has no standalone marker prefix.
+    """
     base = dict(profile.symbol_inventory or {})
     has_role_aware_inventory = bool(profile.symbol_inventory is not None)
     entry = tuple(str(x) for x in base.get("entry_markers", []) if str(x))
-    # Legacy profiles stored every structural symbol in grammar.entry_markers.
-    # Once a role-aware inventory exists, an explicitly empty entry_markers list
-    # is meaningful (e.g. cjk_visual keeps 【 as a bracket opener, not an entry
-    # marker), so do not leak those bracket glyphs back into the entry role.
     if not entry and not has_role_aware_inventory:
         entry = tuple(str(x) for x in profile.entry_leading_symbols if str(x))
     bracket = tuple(str(x) for x in base.get("bracket_openers", []) if str(x))
+
+    parser_controls = int(
+        getattr(settings, "profile_parser_controls_version", 0) or 0
+    ) >= 1
+    marker_role_enabled = (
+        bool(getattr(settings, "profile_allow_marker_prefix", False))
+        if parser_controls else profile.uses_parser("cjk_marker_pinyin")
+    )
+    bracket_role_enabled = (
+        bool(getattr(settings, "profile_cjk_allow_bracketed_headword", True))
+        if parser_controls else profile.uses_parser("cjk_bracketed")
+    )
+
     saved = int(getattr(settings, "profile_symbol_inventory_version", 0) or 0) >= 1
     if saved:
-        enabled = bool(getattr(settings, "profile_symbol_inventory_enabled", True))
-        entry = _split_configured_symbols(
-            getattr(settings, "profile_entry_marker_symbols", "")
-        ) if enabled else ()
-        bracket = _split_configured_symbols(
-            getattr(settings, "profile_bracket_open_symbols", "")
-        ) if enabled else ()
+        marker_inventory_enabled = bool(
+            getattr(settings, "profile_symbol_inventory_enabled", True)
+        )
+        entry = (
+            _split_configured_symbols(
+                getattr(settings, "profile_entry_marker_symbols", "")
+            )
+            if marker_inventory_enabled and marker_role_enabled else ()
+        )
+        # Bracket structure has its own explicit checkbox and must not be
+        # disabled by the standalone-marker switch.
+        bracket = (
+            _split_configured_symbols(
+                getattr(settings, "profile_bracket_open_symbols", "")
+            )
+            if bracket_role_enabled else ()
+        )
         visual_rescue = bool(
             getattr(settings, "profile_symbol_visual_rescue_enabled", True)
         )
@@ -448,29 +475,24 @@ def _configured_symbol_inventory(
             )
         )
     else:
-        enabled = bool(base.get("enabled", True))
+        marker_inventory_enabled = bool(base.get("enabled", True))
         visual_rescue = bool(base.get("visual_rescue", True))
         lane_required = bool(base.get("lane_expected", False))
         lane_tolerance = max(
             20, min(120, int(base.get("lane_tolerance_percent") or 50))
         )
-        # Parser-controls v1 predates dictionary-specific inventories. Preserve
-        # its documented "固定符号" checkbox semantics until the Project Profile
-        # explicitly saves an inventory (version 1).
+        if not marker_role_enabled:
+            entry = ()
+        if not bracket_role_enabled:
+            bracket = ()
         if (
             not entry
-            and int(getattr(settings, "profile_parser_controls_version", 0) or 0) >= 1
-            and bool(getattr(settings, "profile_allow_marker_prefix", False))
+            and parser_controls
+            and marker_role_enabled
+            and marker_inventory_enabled
         ):
             entry = ("○", "●", "◦", "•", "〓", "◆", "◇", "►", "▶")
-    families = {
-        _SYMBOL_FAMILY_BY_LITERAL[symbol]
-        for symbol in entry + bracket
-        if symbol in _SYMBOL_FAMILY_BY_LITERAL
-    }
-    families.update(
-        str(x) for x in base.get("visual_families", []) if str(x)
-    )
+
     template_mode = str(
         getattr(settings, "profile_symbol_template_mode", "combined") or "combined"
     )
@@ -494,8 +516,43 @@ def _configured_symbol_inventory(
         and template_mode != "off"
         else []
     )
+    templates = [
+        sample for sample in templates
+        if (
+            str(sample.get("role") or "") == "bracket_open"
+            and bracket_role_enabled
+        ) or (
+            str(sample.get("role") or "") == "entry_marker"
+            and marker_inventory_enabled
+            and marker_role_enabled
+        )
+    ]
+
+    effective_enabled = bool(
+        (marker_inventory_enabled and marker_role_enabled and entry)
+        or (bracket_role_enabled and bracket)
+        or templates
+    )
+    families = {
+        _SYMBOL_FAMILY_BY_LITERAL[symbol]
+        for symbol in entry + bracket
+        if symbol in _SYMBOL_FAMILY_BY_LITERAL
+    }
+    for family in (str(x) for x in base.get("visual_families", []) if str(x)):
+        if family == "bracket_open" and bracket_role_enabled:
+            families.add(family)
+        elif (
+            family != "bracket_open"
+            and marker_inventory_enabled
+            and marker_role_enabled
+        ):
+            families.add(family)
+
     return {
-        "enabled": enabled,
+        "enabled": effective_enabled,
+        "standalone_inventory_enabled": marker_inventory_enabled,
+        "marker_role_enabled": marker_role_enabled,
+        "bracket_role_enabled": bracket_role_enabled,
         "entry_markers": entry,
         "bracket_openers": bracket,
         "visual_rescue": visual_rescue,
@@ -507,7 +564,6 @@ def _configured_symbol_inventory(
         "visual_template_group_mode": group_mode,
         "visual_template_threshold": template_threshold,
     }
-
 
 def _starts_with_unconfigured_headword_symbol(
     text: str,
@@ -2995,10 +3051,10 @@ def _parse_visual_configured_symbol_line(
 def _leading_cjk_ideograph(text: str) -> str:
     """Return a CJK glyph only when it is the actual leading token.
 
-    Visual single-character rescue must never mine an arbitrary Han character
-    from the middle of an ordinary definition line (for example "Âm: 波 ba ...").
-    The oversized glyph may be followed by pinyin/variants, but it must itself
-    start the OCR record.
+    This helper is used only inside visually localized oversized-CJK rescue.
+    Besides pinyin/variant tails it accepts a compact sense-number suffix such
+    as 案1 / 暗2 (circled digits normalize to ASCII digits under NFKC). The
+    image-level oversized-run gate remains mandatory.
     """
     normalized = unicodedata.normalize("NFKC", text or "").lstrip()
     if not normalized or not _is_single_cjk_ideograph(normalized[0]):
@@ -3006,16 +3062,18 @@ def _leading_cjk_ideograph(text: str) -> str:
     tail = normalized[1:].lstrip()
     if not tail:
         return normalized[0]
-    # A rescue record may append pinyin/pronunciation to the display glyph, but
-    # ordinary Chinese prose beginning with several Han characters is not a
-    # single-character headword record.
     first_tail = tail[0]
     if _is_single_cjk_ideograph(first_tail):
         return ""
     if first_tail.isalpha():
         return normalized[0]
+    sense = re.match(r"^\d{1,2}(?=$|\s|\(|\[|（|［|/|·|,|，|:|：|\.|-)", tail)
+    if sense is not None:
+        remainder = tail[sense.end():].lstrip(" \t([（［/·,，:：.-")
+        if not remainder or not _is_single_cjk_ideograph(remainder[0]):
+            return normalized[0]
     if first_tail in "([（［/·,，:：":
-        remainder = tail[1:].lstrip(" 	([（［/·,，:：")
+        remainder = tail[1:].lstrip(" \t([（［/·,，:：")
         if not remainder or (
             remainder[0].isalpha()
             and not _is_single_cjk_ideograph(remainder[0])
@@ -3023,9 +3081,13 @@ def _leading_cjk_ideograph(text: str) -> str:
             return normalized[0]
     return ""
 
-
 def _cjk_visual_projection_runs(
-    gray: np.ndarray, header_cutoff: int, settings: AppSettings, pixel_scale: float,
+    gray: np.ndarray,
+    header_cutoff: int,
+    settings: AppSettings,
+    pixel_scale: float,
+    *,
+    relaxed: bool = False,
 ) -> tuple[int, list[tuple[int, int]]]:
     """Locate oversized single-character rows from image geometry alone.
 
@@ -3078,8 +3140,29 @@ def _cjk_visual_projection_runs(
         plausible = [end - start for start, end in runs if end - start >= max(6, round(5 * ratio))]
         body_median = float(np.median(np.asarray(plausible, dtype=float))) if plausible else expected_body
 
-    minimum_large = max(body_median * 1.45, expected_body * 1.55)
-    maximum_large = max(minimum_large + 1.0, body_median * 3.6)
+    if relaxed:
+        # Discovery is deliberately high-recall; final promotion still requires
+        # a tightly cropped local OCR result that resolves to one Han headword.
+        # A lower-distribution reference prevents consecutive display heads from
+        # inflating the page median and hiding one another.
+        raw_body_reference = (
+            float(np.percentile(np.asarray(body_heights, dtype=float), 35))
+            if body_heights else body_median
+        )
+        # The left strip of a character dictionary may contain almost nothing
+        # except display heads. Cap the discovery reference at the configured
+        # ordinary line height so a page full of consecutive large glyphs does
+        # not redefine "normal" upward and hide the smaller display heads.
+        body_reference = min(raw_body_reference, expected_body)
+        minimum_large = max(body_reference * 1.28, expected_body * 1.25)
+        maximum_large = max(
+            minimum_large + 1.0,
+            body_reference * 4.2,
+            expected_body * 4.0,
+        )
+    else:
+        minimum_large = max(body_median * 1.45, expected_body * 1.55)
+        maximum_large = max(minimum_large + 1.0, body_median * 3.6)
     result: list[tuple[int, int]] = []
     for start, end in runs:
         height = end - start
@@ -3710,6 +3793,208 @@ def _recover_oversized_cjk_ocr_records(
 
         output = [record for record in output if record is not parent]
         output.extend(recovered)
+
+    output.sort(key=lambda item: (item.box[1], item.box[0]))
+    return output, details
+
+
+_VERIFIED_OVERSIZED_CJK_RECOVERIES = {
+    "oversized_multi_entry_local_ocr",
+    "image_first_oversized_local_ocr",
+}
+
+
+def _record_already_represents_oversized_run(
+    record: OCRRecord,
+    run: tuple[int, int],
+    zone_width: int,
+    settings: AppSettings,
+    profile: DictionaryProfile,
+) -> bool:
+    """Return True when an existing OCR row already represents this visual run.
+
+    Giant or multi-line boxes are deliberately excluded because they are the
+    failure mode the image-first channel is intended to bypass.
+    """
+    x0, y0, _x1, y1 = (int(value) for value in record.box)
+    run_start, run_end = (int(run[0]), int(run[1]))
+    run_height = max(1, run_end - run_start)
+    record_height = max(1, y1 - y0)
+    if x0 > zone_width * 1.25 or record_height > run_height * 1.85:
+        return False
+    overlap = max(0, min(y1, run_end) - max(y0, run_start))
+    center_delta = abs(
+        ((y0 + y1) / 2.0) - ((run_start + run_end) / 2.0)
+    )
+    if overlap < run_height * 0.30 and center_delta > run_height * 0.45:
+        return False
+    if str(record.recovery or "") in _VERIFIED_OVERSIZED_CJK_RECOVERIES:
+        return True
+    parsed = parse_headword_text(record.text, settings, profile=profile)
+    return bool(parsed and _is_single_cjk_ideograph(parsed.normalized))
+
+
+def _recover_image_first_oversized_cjk_records(
+    records: list[OCRRecord],
+    band: Image.Image,
+    settings: AppSettings,
+    profile: DictionaryProfile,
+    *,
+    engine: Any | None = None,
+    pixel_scale: float = 1.0,
+) -> tuple[list[OCRRecord], list[dict[str, Any]]]:
+    """Recover large CJK heads from page pixels even when OCR has no good box.
+
+    Image geometry only discovers possible oversized runs. Each unmatched run
+    receives a tight local Paddle pass and is promoted only when that crop
+    resolves to one leading Han headword. Decorative Latin initials therefore
+    remain rejected while clipped, omitted, or out-of-parent-box CJK heads can
+    become ordinary downstream candidates.
+    """
+    if (
+        not _is_chinese_ocr(settings)
+        or str(
+            getattr(settings, "layout_writing_mode", "horizontal-tb")
+        ).startswith("vertical")
+        or not (
+            getattr(profile, "family", "") == "cjk_visual"
+            or getattr(profile, "key", "") == "cjk_visual"
+        )
+    ):
+        return list(records), []
+
+    parser_controls = int(
+        getattr(settings, "profile_parser_controls_version", 0) or 0
+    ) >= 1
+    if parser_controls and not bool(
+        getattr(settings, "profile_cjk_allow_single_headword", True)
+    ):
+        return list(records), []
+
+    gray = np.asarray(ImageOps.grayscale(band), dtype=np.uint8)
+    scale = max(0.01, float(pixel_scale))
+    header_cutoff = _header_cutoff(gray, settings, scale)
+    zone_width, visual_runs = _cjk_visual_projection_runs(
+        gray,
+        header_cutoff,
+        settings,
+        scale,
+        relaxed=True,
+    )
+    if not visual_runs or zone_width <= 0:
+        return list(records), []
+
+    local_engine = engine
+    if local_engine is None:
+        try:
+            local_engine = get_paddle_engine(settings)
+        except Exception:
+            local_engine = None
+    if local_engine is None:
+        return list(records), [{
+            "mode": "image_first_oversized_run_rescue",
+            "applied": False,
+            "reason": "local_ocr_unavailable",
+            "visual_run_count": len(visual_runs),
+        }]
+
+    rgb_band = normalize_page_rgb(band)
+    output = list(records)
+    details: list[dict[str, Any]] = []
+    for run_start, run_end in visual_runs[:32]:
+        run = (int(run_start), int(run_end))
+        if any(
+            _record_already_represents_oversized_run(
+                record,
+                run,
+                zone_width,
+                settings,
+                profile,
+            )
+            for record in output
+        ):
+            details.append({
+                "mode": "image_first_oversized_run_rescue",
+                "run": [int(run_start), int(run_end)],
+                "status": "already_represented",
+                "applied": False,
+            })
+            continue
+
+        run_height = max(1, int(run_end) - int(run_start))
+        pad_y = max(6, round(run_height * 0.14))
+        crop_top = max(0, int(run_start) - pad_y)
+        crop_bottom = min(band.height, int(run_end) + pad_y)
+        crop_right = min(
+            band.width,
+            max(
+                zone_width * 2,
+                round(run_height * 2.25),
+                zone_width + round(run_height * 1.35),
+            ),
+        )
+        local_records: list[OCRRecord] = []
+        word = ""
+        confidence = 0.0
+        source_text = ""
+        try:
+            if crop_bottom > crop_top and crop_right >= 24:
+                local_crop = rgb_band.crop(
+                    (0, crop_top, crop_right, crop_bottom)
+                )
+                local_records = run_paddle_band(
+                    local_crop,
+                    settings,
+                    engine=local_engine,
+                )
+                word, confidence, source_text = _single_cjk_from_local_records(
+                    local_records,
+                    settings,
+                    profile,
+                    max_left_x=max(12, round(zone_width * 1.20)),
+                )
+        except Exception:
+            local_records = []
+
+        if not word:
+            details.append({
+                "mode": "image_first_oversized_run_rescue",
+                "run": [int(run_start), int(run_end)],
+                "status": "local_ocr_no_single_cjk",
+                "applied": False,
+                "local_texts": [
+                    str(record.text) for record in local_records
+                ],
+            })
+            continue
+
+        synthetic_right = min(
+            band.width,
+            max(zone_width, round(run_height * 1.10)),
+        )
+        candidate = OCRRecord(
+            text=word,
+            confidence=max(0.0, min(1.0, float(confidence))),
+            box=(
+                0,
+                int(run_start),
+                max(1, int(synthetic_right)),
+                int(run_end),
+            ),
+            recovery="image_first_oversized_local_ocr",
+            recovery_source_text=source_text,
+            parent_box=None,
+        )
+        output.append(candidate)
+        details.append({
+            "mode": "image_first_oversized_run_rescue",
+            "run": [int(run_start), int(run_end)],
+            "status": "recovered",
+            "applied": True,
+            "word": word,
+            "local_text": source_text,
+            "confidence": round(float(candidate.confidence), 6),
+        })
 
     output.sort(key=lambda item: (item.box[1], item.box[0]))
     return output, details
@@ -4695,7 +4980,7 @@ def filter_headword_records(
             cjk_single_visual
             and leading_record is not None
             and str(getattr(leading_record, "recovery", "") or "")
-            == "oversized_multi_entry_local_ocr"
+            in _VERIFIED_OVERSIZED_CJK_RECOVERIES
         )
 
         cjk_candidate_right_context: dict[str, Any] | None = None
@@ -4853,10 +5138,48 @@ def filter_headword_records(
             and position_ok
             and script_compatible
         )
-        cjk_bracket_visual_supported = bool(large or bold)
+        normalized_line_text = unicodedata.normalize(
+            "NFKC", str(line.text or "")
+        ).lstrip()
+        configured_bracket_openers = tuple(
+            str(symbol)
+            for symbol in symbol_inventory.get("bracket_openers", ())
+            if str(symbol)
+        )
+        explicit_bracket_symbol = next(
+            (
+                symbol for symbol in configured_bracket_openers
+                if symbol in normalized_line_text[:24]
+            ),
+            "",
+        )
+        cjk_bracket_explicit_ocr = bool(
+            cjk_bracketed
+            and explicit_bracket_symbol
+            and parsed is not None
+            and parsed.parser_stage in {
+                "chinese_bracketed_headword",
+                "chinese_open_bracket_headword",
+            }
+        )
+        cjk_bracket_visual_marker = bool(
+            visual_entry_marker is not None
+            and str(visual_entry_marker.get("role") or "") == "bracket_open"
+        )
+        cjk_bracket_visual_supported = bool(
+            cjk_bracket_visual_marker
+            or large
+            or bold
+        )
         cjk_bracket_extra_required = bool(
             cjk_bracketed
-            and (cjk_brackets_in_body or cjk_require_visual_evidence)
+            and (
+                cjk_brackets_in_body
+                or (
+                    not cjk_bracket_explicit_ocr
+                    and cjk_require_visual_evidence
+                )
+            )
         )
         tail_required = bool(
             tail_controls_active
@@ -5188,6 +5511,9 @@ def filter_headword_records(
                 ),
                 "cjk_marker_prefixed": cjk_marker_prefixed,
                 "cjk_bracketed": cjk_bracketed,
+                "cjk_bracket_explicit_ocr": cjk_bracket_explicit_ocr,
+                "cjk_bracket_explicit_symbol": explicit_bracket_symbol,
+                "cjk_bracket_visual_marker": cjk_bracket_visual_marker,
                 "cjk_bracket_visual_supported": cjk_bracket_visual_supported,
                 "cjk_bracket_extra_required": cjk_bracket_extra_required,
                 "cjk_allow_single": cjk_allow_single,
@@ -7397,8 +7723,18 @@ def detect_paddle_headwords(
         # must be recomputed from raw records whenever Profile settings change.
         raw_paddle_records = list(records)
         oversized_recovery: list[dict[str, Any]] = []
-        if use_paddle and records:
-            records, oversized_recovery = _recover_oversized_cjk_ocr_records(
+        if use_paddle:
+            if records:
+                records, giant_box_recovery = _recover_oversized_cjk_ocr_records(
+                    records,
+                    analysis_band,
+                    settings,
+                    profile,
+                    engine=engine,
+                    pixel_scale=pixel_scale,
+                )
+                oversized_recovery.extend(giant_box_recovery)
+            records, image_first_recovery = _recover_image_first_oversized_cjk_records(
                 records,
                 analysis_band,
                 settings,
@@ -7406,6 +7742,7 @@ def detect_paddle_headwords(
                 engine=engine,
                 pixel_scale=pixel_scale,
             )
+            oversized_recovery.extend(image_first_recovery)
 
         paddle_lines = _records_as_merged_lines(records, settings)
         paddle_full_text = "\n".join(line.text for line in paddle_lines)
