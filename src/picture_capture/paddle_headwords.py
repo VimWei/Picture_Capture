@@ -990,23 +990,34 @@ def unwrap_column_band(
     ) / 100.0
     left_margin = max(0, int(settings.paddle_band_left_margin))
     if source_width is not None:
+        # Explicit callers (notably separator refinement) request an exact
+        # source width and intentionally bypass the user-facing percentage.
         band_width = max(24, int(source_width))
     else:
-        configured_band_width = max(
-            24,
-            round(max(0, int(settings.paddle_band_width)) * band_ratio),
+        # paddle_band_width_ratio is a percentage of the actual detected
+        # column width, not of the historical fixed paddle_band_width.
+        # Keep the left safety margin separate from that percentage: 100%
+        # means the complete column content plus the configured pixels to its left.
+        #
+        # The old 600px reference made 60% become 360px on every scan, which
+        # silently clipped long CJK headwords and changed meaning with DPI.
+        configured_column_width = max(
+            1, int(getattr(settings, "column_width", 0) or 0)
         )
-        # Never let the OCR candidate strip spill into the next dictionary
-        # column. This mattered little on wide two-column Latin pages but is
-        # destructive on dense three-column CJK pages: OCR would merge a large
-        # one-character head from this column with a bracketed entry in the
-        # next column and neither parser could recover the boundary.
-        column_width = (
+        geometry_interval_width = (
             int(geometry.column_widths[column])
             if 0 <= column < len(geometry.column_widths)
-            else configured_band_width
+            else configured_column_width
         )
-        band_width = max(24, min(configured_band_width, max(24, column_width + left_margin)))
+        # Geometry's last interval may extend from the final column start all
+        # the way to the page edge, so it is only an upper bound here.  The
+        # effective per-page settings.column_width is the actual dictionary
+        # column width resolved by Profile/layout analysis.
+        column_width = max(
+            1, min(configured_column_width, max(1, geometry_interval_width))
+        )
+        content_width = max(1, round(column_width * band_ratio))
+        band_width = max(24, content_width + left_margin)
     top = max(0, geometry.top)
     canonical_size = geometry.transform.canonical_size(image.size)
     bottom = min(canonical_size[1], geometry.bottom)
@@ -6164,14 +6175,16 @@ def _cache_signature(image: Image.Image, geometry: "Geometry", settings: AppSett
     # intentionally omitted so users can tune regex/weights and reuse cached
     # raw OCR without re-running the model.
     data = {
-        "version": 3,
+        "version": 4,
         "image_size": list(image.size),
         "image_fingerprint": _image_cache_fingerprint(image),
         "layout_transform": geometry.transform.kind,
         "paths": [path.points for path in geometry.column_paths],
         "geometry_top": int(geometry.top),
         "geometry_bottom": int(geometry.bottom),
-        "band_width": settings.paddle_band_width,
+        "column_widths": [int(value) for value in getattr(geometry, "column_widths", [])],
+        "configured_column_width": int(getattr(settings, "column_width", 0) or 0),
+        "band_width_semantics": "effective_column_ratio_v2",
         "band_width_ratio": max(1, min(100, int(getattr(settings, "paddle_band_width_ratio", 100)))),
         "band_left_margin": settings.paddle_band_left_margin,
         "language": _paddle_language(settings),
