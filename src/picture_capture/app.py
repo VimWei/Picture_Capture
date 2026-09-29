@@ -4830,13 +4830,13 @@ class SettingsDialog(tk.Toplevel):
             self.parent.settings.review_entry_font_size = max(6, int(self.parent.settings.review_entry_font_size))
             self.parent.settings.review_entry_vertical_padding = min(30, max(0, int(self.parent.settings.review_entry_vertical_padding)))
             self.parent.settings.review_single_cjk_line_height = min(500, max(0, int(self.parent.settings.review_single_cjk_line_height)))
-            review_zoom_percent = int(self.parent.settings.review_zoom_percent)
+            review_zoom_percent = float(self.parent.settings.review_zoom_percent)
             self.parent.settings.review_zoom_percent = (
-                0 if review_zoom_percent <= 0 else min(250, max(20, review_zoom_percent))
+                0.0 if review_zoom_percent <= 0 else min(250.0, max(20.0, review_zoom_percent))
             )
             if not 0 <= int(self.parent.settings.crop_parallel_workers) <= 8:
                 raise ValueError("切图并行进程数必须为 0–8；0 表示自动，1 表示串行。")
-            if not 1 <= int(self.parent.settings.paddle_band_width_ratio) <= 100:
+            if not 1.0 <= float(self.parent.settings.paddle_band_width_ratio) <= 100.0:
                 raise ValueError("候选带宽比例必须在 1–100 之间；100 即原候选带宽。")
             if int(self.parent.settings.paddle_max_input_side) < 256:
                 raise ValueError("OCR输入最大长边必须至少为 256 px。")
@@ -4844,7 +4844,7 @@ class SettingsDialog(tk.Toplevel):
                 "original", "grayscale", "auto_contrast", "binary",
             }:
                 raise ValueError("OCR图像预处理必须为 original/grayscale/auto_contrast/binary 之一。")
-            if not 10 <= int(self.parent.settings.paddle_separator_roi_width_ratio) <= 100:
+            if not 10.0 <= float(self.parent.settings.paddle_separator_roi_width_ratio) <= 100.0:
                 raise ValueError("Y精修横向分析范围必须在 10–100% 之间。")
             if not 1 <= float(self.parent.settings.right_ratio) <= 100:
                 raise ValueError("向右比例必须在 1–100% 之间。")
@@ -4930,14 +4930,14 @@ class ReviewWindow(tk.Toplevel):
         self.active_index = 0
         # A stored 0 means automatic fit-to-left-pane. Positive values retain
         # the historical explicit/manual percentage mode.
-        stored_review_zoom = int(getattr(parent.settings, "review_zoom_percent", 0) or 0)
+        stored_review_zoom = float(getattr(parent.settings, "review_zoom_percent", 0.0) or 0.0)
         self.review_zoom_auto = stored_review_zoom <= 0
         self.review_zoom = (
             1.0 if self.review_zoom_auto
             else max(0.20, min(2.5, float(stored_review_zoom) / 100.0))
         )
         self.review_zoom_var = tk.StringVar(
-            value="自动" if self.review_zoom_auto else f"{round(self.review_zoom * 100):d}%"
+            value="自动" if self.review_zoom_auto else f"{_format_layout_percent(self.review_zoom * 100.0)}%"
         )
         # Review typography is deliberately independent from the image zoom.
         # Expose the same persisted font settings directly in the review window
@@ -5445,8 +5445,8 @@ class ReviewWindow(tk.Toplevel):
         else:
             self._request_render_rows(focus_index=self.active_index)
 
-    def _stored_review_zoom_percent(self) -> int:
-        return 0 if self.review_zoom_auto else round(self.review_zoom * 100)
+    def _stored_review_zoom_percent(self) -> float:
+        return 0.0 if self.review_zoom_auto else round(self.review_zoom * 100.0, 2)
 
     def _build(self) -> None:
         panes = ttk.Panedwindow(self, orient="horizontal")
@@ -6479,7 +6479,7 @@ class ReviewWindow(tk.Toplevel):
             target["sequence_number"] = int(sequence_number)
         if self.review_zoom_auto:
             self.review_zoom = max(0.01, float(effective_zoom))
-            self.review_zoom_var.set(f"自动 {round(self.review_zoom * 100):d}%")
+            self.review_zoom_var.set(f"自动 {_format_layout_percent(self.review_zoom * 100.0)}%")
         self._update_filter_batch_indicator()
         self._render_filter_batch(targets, crops)
         self._reset_rows_scroll_top()
@@ -8234,7 +8234,7 @@ class ReviewWindow(tk.Toplevel):
         self.review_zoom = max(0.20, min(2.5, self.review_zoom * factor))
         self.parent.settings.review_zoom_percent = self._stored_review_zoom_percent()
         self.parent.save_settings()
-        self.review_zoom_var.set(f"{round(self.review_zoom * 100):d}%")
+        self.review_zoom_var.set(f"{_format_layout_percent(self.review_zoom * 100.0)}%")
         active = self.active_index
         self._request_render_rows(focus_index=active)
 
@@ -8249,8 +8249,8 @@ class ReviewWindow(tk.Toplevel):
             percent = float(raw.rstrip("%"))
         except ValueError:
             self.review_zoom_var.set(
-                f"自动 {round(self.review_zoom * 100):d}%"
-                if self.review_zoom_auto else f"{round(self.review_zoom * 100):d}%"
+                f"自动 {_format_layout_percent(self.review_zoom * 100.0)}%"
+                if self.review_zoom_auto else f"{_format_layout_percent(self.review_zoom * 100.0)}%"
             )
             return
         self._commit_edits()
@@ -8258,14 +8258,14 @@ class ReviewWindow(tk.Toplevel):
         self.review_zoom = min(2.5, max(0.20, percent / 100.0))
         self.parent.settings.review_zoom_percent = self._stored_review_zoom_percent()
         self.parent.save_settings()
-        self.review_zoom_var.set(f"{round(self.review_zoom * 100):d}%")
+        self.review_zoom_var.set(f"{_format_layout_percent(self.review_zoom * 100.0)}%")
         active = self.active_index
         self._request_render_rows(focus_index=active)
 
     def reset_review_zoom(self) -> None:
         self._commit_edits()
         self.review_zoom_auto = True
-        self.parent.settings.review_zoom_percent = 0
+        self.parent.settings.review_zoom_percent = 0.0
         self.parent.save_settings()
         self.review_zoom_var.set("自动")
         self._review_auto_zoom_width = self._review_image_area_width()
@@ -8577,8 +8577,8 @@ class ReviewWindow(tk.Toplevel):
                 return
             if requested_auto_zoom:
                 self.review_zoom = max(0.01, float(effective_zoom))
-                self.review_zoom_var.set(f"自动 {round(self.review_zoom * 100):d}%")
-                self.parent.settings.review_zoom_percent = 0
+                self.review_zoom_var.set(f"自动 {_format_layout_percent(self.review_zoom * 100.0)}%")
+                self.parent.settings.review_zoom_percent = 0.0
             target_focus = self._review_render_focus_index
             self.render_rows(preloaded_crops=crops)
             if reset_scroll:
@@ -12909,7 +12909,7 @@ class PictureCaptureApp(tk.Tk):
             variable=self.ocr_refresh_var, value="force",
         ).grid(row=0, column=3, columnspan=3, sticky="w")
         add_field(ocr, 1, 0, "OCR语言：", "ocr_language", str, 8)
-        add_field(ocr, 1, 2, "识别带宽%：", "paddle_band_width_ratio", int, 7)
+        add_field(ocr, 1, 2, "识别带宽%：", "paddle_band_width_ratio", float, 7)
         add_field(ocr, 1, 4, "左缘容差：", "paddle_left_tolerance", int, 7)
         engine_row = ttk.Frame(ocr); engine_row.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(4, 1))
         ttk.Label(engine_row, text="OCR引擎：").pack(side="left")
@@ -14666,11 +14666,11 @@ class PictureCaptureApp(tk.Tk):
                                 raise ValueError("页尾必须位于原图底部 35% 范围内。")
                             self.settings.profile_footer_percent = round(percent, 6)
                     value = int(value)
-                if name == "paddle_band_width_ratio" and not 1 <= int(value) <= 100:
+                if name == "paddle_band_width_ratio" and not 1.0 <= float(value) <= 100.0:
                     raise ValueError("候选带宽比例必须在 1–100 之间；100 即原候选带宽。")
                 if name == "paddle_separator_safety_px" and not 0 <= int(value) <= 50:
                     raise ValueError("Y精修安全空间必须在 0–50 px 之间。")
-                if name == "paddle_separator_roi_width_ratio" and not 10 <= int(value) <= 100:
+                if name == "paddle_separator_roi_width_ratio" and not 10.0 <= float(value) <= 100.0:
                     raise ValueError("Y精修横向分析范围必须在 10–100% 之间。")
                 if name == "right_ratio" and not 1 <= float(value) <= 100:
                     raise ValueError("向右比例必须在 1–100% 之间。")
