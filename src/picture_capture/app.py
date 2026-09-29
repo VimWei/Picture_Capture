@@ -401,37 +401,57 @@ def _mixed_ui_wrap_tokens(paragraph: str) -> list[str]:
 
 
 def _wrap_mixed_ui_text(value: object, measure, max_width: int) -> str:
-    """Pixel-wrap Chinese/Latin UI prose without relying on Tk word boundaries."""
+    """Pixel-wrap Chinese/Latin UI prose without relying on Tk word boundaries.
+
+    Tk font.measure() crosses the Python/Tcl boundary and is comparatively
+    expensive on Windows.  Measure each token/character once and accumulate
+    widths instead of repeatedly measuring an ever-growing line prefix.
+    """
     text = _normalize_ui_paragraphs(value)
     limit = max(24, int(max_width))
     if not text:
         return ""
 
+    width_cache: dict[str, int] = {}
+
+    def width(piece: str) -> int:
+        cached = width_cache.get(piece)
+        if cached is None:
+            cached = int(measure(piece))
+            width_cache[piece] = cached
+        return cached
+
+    space_width = width(" ")
     wrapped_paragraphs: list[str] = []
     for paragraph in text.split("\n\n"):
         lines: list[str] = []
         current = ""
+        current_width = 0
         pending_space = False
 
         def flush_current() -> None:
-            nonlocal current
+            nonlocal current, current_width
             if current:
                 lines.append(current.rstrip())
                 current = ""
+                current_width = 0
 
         for token in _mixed_ui_wrap_tokens(paragraph):
             if token == " ":
                 pending_space = bool(current)
                 continue
             prefix = " " if pending_space and current else ""
-            candidate = current + prefix + token
-            if not current or measure(candidate) <= limit:
-                current = candidate
+            token_width = width(token)
+            candidate_width = current_width + (space_width if prefix else 0) + token_width
+            if not current or candidate_width <= limit:
+                current += prefix + token
+                current_width = candidate_width
                 pending_space = False
                 continue
 
             if token in _UI_WRAP_CLOSING_PUNCTUATION:
                 current += token
+                current_width += token_width
                 flush_current()
                 pending_space = False
                 continue
@@ -439,23 +459,28 @@ def _wrap_mixed_ui_text(value: object, measure, max_width: int) -> str:
             if current and current[-1] in _UI_WRAP_OPENING_PUNCTUATION:
                 opening = current[-1]
                 current = current[:-1].rstrip()
+                current_width = max(0, current_width - width(opening))
                 flush_current()
                 current = opening + token
+                current_width = width(opening) + token_width
                 pending_space = False
                 continue
 
             flush_current()
             token = token.lstrip()
-            if measure(token) <= limit:
+            token_width = width(token)
+            if token_width <= limit:
                 current = token
+                current_width = token_width
             else:
                 # Extremely long Latin/URL-like tokens are the only case where
                 # a word may be split; normal English words stay intact.
                 for char in token:
-                    candidate = current + char
-                    if current and measure(candidate) > limit:
+                    char_width = width(char)
+                    if current and current_width + char_width > limit:
                         flush_current()
                     current += char
+                    current_width += char_width
             pending_space = False
         flush_current()
         wrapped_paragraphs.append("\n".join(lines))
@@ -2825,13 +2850,20 @@ class SettingsDialog(tk.Toplevel):
                         label_width = cap
                     available = max(48, label_width - 12)
                     if getattr(label, "_pc_dynamic_textvariable", False):
+                        if getattr(label, "_pc_wrap_width", None) == available:
+                            continue
+                        label._pc_wrap_width = available
                         if int(float(label.cget("wraplength"))) != available:
                             label.configure(wraplength=available)
                         continue
                     raw = getattr(label, "_pc_wrap_source", label.cget("text"))
+                    cache_key = (str(raw), int(available))
+                    if getattr(label, "_pc_wrap_cache_key", None) == cache_key:
+                        continue
                     rendered = _wrap_mixed_ui_text(
                         raw, _label_measure(label), available
                     )
+                    label._pc_wrap_cache_key = cache_key
                     if label.cget("text") != rendered or int(float(label.cget("wraplength"))) != 0:
                         label.configure(text=rendered, wraplength=0)
                 except (tk.TclError, TypeError, ValueError):
@@ -2841,14 +2873,21 @@ class SettingsDialog(tk.Toplevel):
             try:
                 if pending["job"] is not None:
                     self.after_cancel(pending["job"])
-                pending["job"] = self.after_idle(refresh)
+                # Debounce onto the normal event loop instead of the idle queue.
+                # update_idletasks() drains idle callbacks synchronously; with
+                # many Settings Center help labels that turned one geometry
+                # flush into a full all-tab font-measure pass on Windows.
+                pending["job"] = self.after(80, refresh)
             except tk.TclError:
                 return
 
         try:
+            # Container width is the authoritative wrapping constraint. Binding
+            # each label's own <Configure> event creates a self-triggering loop:
+            # rewrapping changes label geometry, which schedules another rewrap.
+            # That became especially expensive after detailed inline Settings
+            # help was restored and could stall Windows/Tk indefinitely.
             container.bind("<Configure>", schedule, add="+")
-            for label in labels:
-                label.bind("<Configure>", schedule, add="+")
             schedule()
         except tk.TclError:
             pass
@@ -3252,8 +3291,8 @@ class SettingsDialog(tk.Toplevel):
         )
         help_hint = ttk.Label(
             help_box,
-            text="把鼠标停在设置项上，或用 Tab/鼠标进入输入框，"
-                 "这里会显示完整说明。高级设置不确定时保持默认即可。",
+            text="每个参数下方已直接显示详细说明；把鼠标停在设置项上、点击 ⓘ，"
+                 "或用 Tab/鼠标进入输入框时，右侧会同步显示完整说明与版面图解。",
             foreground="#7a8088",
             justify="left",
         )
@@ -3877,11 +3916,11 @@ class SettingsDialog(tk.Toplevel):
                 _var.trace_add("write", lambda *_args: self._schedule_autosave())
             except Exception:
                 pass
-        self.update_idletasks()
-        for _canvas in self._settings_canvases.values():
-            _bbox = _canvas.bbox("all")
-            if _bbox:
-                _canvas.configure(scrollregion=_bbox)
+        # Each scrollable settings page already updates its scrollregion from
+        # the content <Configure> event.  Do not force a synchronous
+        # update_idletasks() across every hidden tab here: after restoring
+        # detailed inline help that can trigger a very large wrapping/layout
+        # cascade on Windows/Tk and make Settings Center construction appear hung.
         # Keep Settings Center modeless: users often need to move the pointer
         # over the main image to read coordinates while entering layout values.
         # Do not use transient()/grab_set(), which would keep this window in
@@ -10630,10 +10669,26 @@ class PictureCaptureApp(tk.Tk):
         widget = getattr(event, "widget", None)
         if widget is None:
             return
+        # Applying a native title-bar appearance may itself trigger another
+        # <Map> event on Windows.  Keep only one pending idle callback per
+        # Toplevel so icon/titlebar refreshes cannot form a remap loop.
+        if getattr(widget, "_pc_appearance_map_pending", False):
+            return
+        widget._pc_appearance_map_pending = True
+
+        def apply_mapped_appearance(w=widget) -> None:
+            try:
+                self._apply_current_appearance(w)
+            finally:
+                try:
+                    w._pc_appearance_map_pending = False
+                except (AttributeError, tk.TclError):
+                    pass
+
         try:
-            self.after_idle(lambda w=widget: self._apply_current_appearance(w))
+            self.after_idle(apply_mapped_appearance)
         except tk.TclError:
-            pass
+            widget._pc_appearance_map_pending = False
 
     def _appearance_mode_selected(self, _event: tk.Event | None = None) -> None:
         self.set_appearance_mode(

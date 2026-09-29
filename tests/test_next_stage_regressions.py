@@ -1120,6 +1120,24 @@ def test_mixed_ui_wrap_collapses_hard_breaks_and_keeps_latin_words():
     assert "\n" in wrapped
 
 
+
+def test_mixed_ui_wrap_measures_tokens_incrementally_not_growing_prefixes():
+    from picture_capture.app import _wrap_mixed_ui_text
+
+    calls: list[str] = []
+
+    def measure(value: str) -> int:
+        calls.append(value)
+        return len(value) * 10
+
+    wrapped = _wrap_mixed_ui_text("测" * 240, measure, 120)
+    assert "\n" in wrapped
+    # Repeated CJK characters should be measured once from the cache rather
+    # than measuring 240 successively longer prefixes through Tk.
+    assert len(calls) <= 4
+    assert max(map(len, calls)) <= 1
+
+
 def test_usage_guide_is_modern_task_oriented_and_centered():
     source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
     text = source.read_text(encoding="utf-8")
@@ -4948,3 +4966,36 @@ def test_paddle_temp_page_match_uses_stem_boundaries():
     assert matches(Path("0001-tiles"), "0001")
     assert not matches(Path("00010.json"), "0001")
     assert not matches(Path("other_0001.json"), "0001")
+
+
+def test_settings_center_avoids_full_hidden_tab_idle_layout_cascade():
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    start = text.index('    def __init__(self, parent: "PictureCaptureApp", initial_tab: str | None = None) -> None:')
+    end = text.index("    @staticmethod\n    def _crop_nonnegative_int", start)
+    block = text[start:end]
+    # The early update_idletasks() used only to obtain screen/window geometry is
+    # allowed.  The old trailing all-tab layout flush after autosave binding was
+    # the Windows/Tk hang and must not return.
+    tail = block[block.index("        self._autosave_ready = True"):]
+    assert "self.update_idletasks()" not in tail
+    assert "for _canvas in self._settings_canvases.values():" not in tail
+    assert "content.bind(" in text
+    assert 'cv.configure(scrollregion=cv.bbox("all"))' in text
+    assert "每个参数下方已直接显示详细说明" in text
+    assert 'pending["job"] = self.after(80, refresh)' in text
+    assert 'pending["job"] = self.after_idle(refresh)' not in text
+
+
+
+def test_responsive_help_wrapping_does_not_self_trigger_on_label_configure():
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    start = text.index("    def _bind_responsive_labels(")
+    end = text.index("    def _setting_var(", start)
+    block = text[start:end]
+    assert 'container.bind("<Configure>", schedule, add="+")' in block
+    assert 'label.bind("<Configure>", schedule, add="+")' not in block
+    assert "_pc_wrap_cache_key" in block
+    assert "_pc_wrap_width" in block
+
