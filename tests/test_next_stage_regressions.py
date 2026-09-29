@@ -50,7 +50,8 @@ from picture_capture.paddle_headwords import (
     _repair_multiline_headword_state_machine,
     _selected_tail_structure_evidence, filter_headword_records, HeadwordParse,
     parse_headword_filter_rules, parse_headword_text, prepare_ocr_band,
-    run_paddle_band, _recover_oversized_cjk_ocr_records,
+    run_paddle_band, unwrap_column_band, _separator_analysis_x_bounds,
+    _recover_oversized_cjk_ocr_records,
 )
 from picture_capture.profile_setup import (
     _normalize_cjk_visual_symbol_roles,
@@ -1607,6 +1608,57 @@ def test_raw_ocr_cache_signature_tracks_pixels_and_inference_settings():
     # Candidate/parser-only settings deliberately do not invalidate raw OCR.
     assert _cache_signature(image, geometry, replace(base, paddle_min_candidate_score=9.0)) == sig
     assert _cache_signature(image, geometry, replace(base, paddle_headword_regex=r"^foo")) == sig
+
+
+def test_decimal_percentage_settings_preserve_runtime_precision(tmp_path):
+    path = tmp_path / "settings.json"
+    settings = AppSettings(
+        columns=1,
+        manual_x=20,
+        column_width=200,
+        gutter=0,
+        start_y=0,
+        bottom_y=200,
+        paddle_band_left_margin=10,
+        paddle_band_width_ratio=60.5,
+        paddle_separator_roi_width_ratio=60.5,
+        review_zoom_percent=88.5,
+        follow_column_deformation=False,
+    )
+    settings.to_json(path)
+    restored = AppSettings.from_json(path)
+    assert restored.paddle_band_width_ratio == 60.5
+    assert restored.paddle_separator_roi_width_ratio == 60.5
+    assert restored.review_zoom_percent == 88.5
+
+    image = Image.new("RGB", (400, 200), "white")
+    geometry = derive_geometry(image, restored)
+    band, _, left_margin = unwrap_column_band(image, geometry, 0, restored)
+    assert left_margin == 10
+    assert band.width == round(200 * 0.605) + 10
+
+    x0, x1 = _separator_analysis_x_bounds(200, restored)
+    usable = 200 - 2 * restored.paddle_separator_column_margin
+    assert x0 == restored.paddle_separator_column_margin
+    assert x1 == x0 + round(usable * 0.605)
+
+    cache_base = replace(restored, paddle_band_width_ratio=60.1)
+    cache_other = replace(restored, paddle_band_width_ratio=60.9)
+    assert _cache_signature(image, geometry, cache_base) != _cache_signature(
+        image, geometry, cache_other
+    )
+
+
+def test_decimal_percentage_ui_paths_do_not_integer_cast_values():
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    assert 'add_field(ocr, 1, 2, "识别带宽%：", "paddle_band_width_ratio", float, 7)' in text
+    assert "review_zoom_percent = float(self.parent.settings.review_zoom_percent)" in text
+    assert "stored_review_zoom = float(getattr(parent.settings, \"review_zoom_percent\", 0.0) or 0.0)" in text
+    assert "def _stored_review_zoom_percent(self) -> float:" in text
+    assert "round(self.review_zoom * 100.0, 2)" in text
+    assert "int(self.parent.settings.paddle_band_width_ratio)" not in text
+    assert "int(self.parent.settings.paddle_separator_roi_width_ratio)" not in text
 
 
 def test_project_profile_samples_front_middle_back_and_keeps_pairs():
