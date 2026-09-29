@@ -645,7 +645,7 @@ class AppSettings:
         if int(raw.get("review_font_semantics_version", 1) or 1) < 2:
             try:
                 old_size = max(6, int(raw.get("review_entry_font_size", cls().review_entry_font_size)))
-                old_zoom = min(250, max(20, int(raw.get("review_zoom_percent", 64))))
+                old_zoom = min(250.0, max(20.0, float(raw.get("review_zoom_percent", 64.0))))
                 if old_size > 36 and old_zoom < 100:
                     raw["review_entry_font_size"] = max(6, min(48, round(old_size * old_zoom / 100.0)))
             except (TypeError, ValueError):
