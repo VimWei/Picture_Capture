@@ -1232,10 +1232,12 @@ def test_main_workspace_modern_styles_are_scoped_and_dense():
     for tooltip_key in (
         '"普通画线":', '"仅OCR":', '"融合画线+OCR":', '"OCR画线(默认)":', '"清除画线":', '"清除文本":', '"精修画线":', '"新旧比较":',
         '"词条校对":', '"填充词条":', '"备份PDIC":', '"恢复PDIC":',
-        '"插图识别":', '"编辑插图":', '"保存当前页":',
+        '"插图识别":', '"编辑插图":', '"清理临时文件":', '"保存当前页":',
     ):
         assert tooltip_key in actions
     assert '("恢复PDIC", self.restore_from_pdic_backup)' in actions
+    assert '("清理临时文件", self.cleanup_paddleocr_temp_selected_scope)' in actions
+    assert actions.index('("清理临时文件", self.cleanup_paddleocr_temp_selected_scope)') < actions.index('("保存当前页", self.save_current_page)')
     assert '"success" if text == "保存当前页"' in actions
     assert '"primary" if text == "词条校对"' in actions
     assert '"danger_soft"' not in actions
@@ -1370,6 +1372,38 @@ def test_vertical_proxy_reuses_editor_membership_and_confidence_style():
     missing = PictureCaptureApp._entry_overlay_style(fake, Entry("missing", 0, 0, confidence=.5))
     assert known == ("#c8e6c9", "#b0b0b0", 1)
     assert missing == ("#ffcdd2", "#d32f2f", 2)
+
+def test_main_entry_border_is_light_gray_when_wordslist_file_is_absent(tmp_path):
+    fake = SimpleNamespace(
+        project=SimpleNamespace(root=tmp_path),
+        _project_words=set(),
+        settings=AppSettings(main_entry_default_color="#ffffff", wordslist_path="missing_wordslist.txt"),
+        _main_ocr_review_option_enabled=lambda _name: False,
+        _confidence_bg=lambda _confidence: "#eeeeee",
+    )
+    style = PictureCaptureApp._entry_overlay_style(
+        fake, Entry("anything", 0, 0, confidence=None)
+    )
+    assert style == ("#ffffff", "#c7c7c7", 1)
+
+
+def test_main_entry_sequence_numbers_use_page_uniform_width():
+    fmt = PictureCaptureApp._entry_sequence_text
+    assert [fmt(i, 9) for i in (0, 8)] == ["0", "8"]
+    assert [fmt(i, 10) for i in (0, 9)] == ["00", "09"]
+    assert [fmt(i, 99) for i in (0, 98)] == ["00", "98"]
+    assert [fmt(i, 100) for i in (0, 99)] == ["000", "099"]
+
+
+def test_main_entry_sequence_label_uses_light_gray_black_style():
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    draw_start = text.index("        index_label = tk.Label(")
+    draw_end = text.index("        index_label._pc_skip_classic_appearance", draw_start)
+    block = text[draw_start:draw_end]
+    assert "text=self._entry_sequence_text(index, len(self.entries))" in block
+    assert 'bg="#e6e6e6"' in block
+    assert 'fg="#000000"' in block
 
 
 def test_entry_sequence_label_sits_before_editor_in_reading_direction():
@@ -4885,3 +4919,32 @@ def test_cjk_profile_ui_explains_bracket_role_at_the_controls():
     assert "不包括【括号】" in source
     assert "【不要填这里】" in source
     assert "采【时按“括号起始”保存" in source
+
+
+def test_selected_paddle_temp_cleanup_is_scoped_warned_and_non_destructive():
+    source = Path(__file__).resolve().parents[1] / "src" / "picture_capture" / "app.py"
+    text = source.read_text(encoding="utf-8")
+    start = text.index("    def cleanup_paddleocr_temp_selected_scope(self) -> None:")
+    end = text.index("    def jump_to_page_spec", start)
+    block = text[start:end]
+    assert "indices = self.selected_page_indices()" in block
+    assert "cache_root = ocr_cache_root(self.project.root)" in block
+    assert "_paddle_temp_matches_page" in block
+    assert "shutil.rmtree(target)" in block
+    assert "target.unlink(missing_ok=True)" in block
+    assert "messagebox.askyesno(" in block
+    assert "该操作会删除这些页面的 OCR 缓存、诊断及复核临时文件" in block
+    assert "不会删除原始扫描图片、PDIC/PPP、已保存词条文字、校对结果或其他页面的数据" in block
+    assert "重新执行 OCR" in block
+    assert "无法在 Picture Capture 内撤销" in block
+
+
+def test_paddle_temp_page_match_uses_stem_boundaries():
+    from picture_capture.app import PictureCaptureApp
+
+    matches = PictureCaptureApp._paddle_temp_matches_page
+    assert matches(Path("0001.json"), "0001")
+    assert matches(Path("0001_ocr_diagnostics.txt"), "0001")
+    assert matches(Path("0001-tiles"), "0001")
+    assert not matches(Path("00010.json"), "0001")
+    assert not matches(Path("other_0001.json"), "0001")
