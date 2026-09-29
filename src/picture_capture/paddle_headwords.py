@@ -986,7 +986,7 @@ def unwrap_column_band(
         if source.shape[2] != 3:
             source = source[:, :, :3]
     band_ratio = max(
-        1, min(100, int(getattr(settings, "paddle_band_width_ratio", 100)))
+        1.0, min(100.0, float(getattr(settings, "paddle_band_width_ratio", 100.0)))
     ) / 100.0
     left_margin = max(0, int(settings.paddle_band_left_margin))
     if source_width is not None:
@@ -2361,7 +2361,7 @@ def _separator_analysis_x_bounds(
     width = max(1, int(width))
     margin = max(0, round(max(0, settings.paddle_separator_column_margin) * pixel_scale))
     margin = min(margin, max(0, width // 4))
-    ratio = max(10, min(100, int(getattr(settings, "paddle_separator_roi_width_ratio", 60)))) / 100.0
+    ratio = max(10.0, min(100.0, float(getattr(settings, "paddle_separator_roi_width_ratio", 60.0)))) / 100.0
     usable = max(1, width - margin * 2)
     x0 = margin
     x1 = min(width - margin, x0 + max(16, round(usable * ratio)))
@@ -6041,7 +6041,7 @@ def filter_headword_records(
             "line_count": len(lines),
             "left_limit_band_x": left_limit,
             "separator_band_width": int(separator_gray.shape[1]),
-            "separator_roi_width_ratio": int(getattr(settings, "paddle_separator_roi_width_ratio", 60)),
+            "separator_roi_width_ratio": float(getattr(settings, "paddle_separator_roi_width_ratio", 60.0)),
             "image_separator_candidates": image_separator_candidates,
             "image_separator_match_count": len(image_boundary_matches),
             "trusted_visual_marker_lanes": trusted_visual_lanes,
@@ -6185,7 +6185,7 @@ def _cache_signature(image: Image.Image, geometry: "Geometry", settings: AppSett
         "column_widths": [int(value) for value in getattr(geometry, "column_widths", [])],
         "configured_column_width": int(getattr(settings, "column_width", 0) or 0),
         "band_width_semantics": "effective_column_ratio_v2",
-        "band_width_ratio": max(1, min(100, int(getattr(settings, "paddle_band_width_ratio", 100)))),
+        "band_width_ratio": max(1.0, min(100.0, float(getattr(settings, "paddle_band_width_ratio", 100.0)))),
         "band_left_margin": settings.paddle_band_left_margin,
         "language": _paddle_language(settings),
         "device": settings.paddle_device,
